@@ -46,7 +46,7 @@ static void add_arc(yk_rim_pic_t *p, float a0, float len, uint32_t color, int wi
 
 static uint32_t mode_color(yk_rim_mode_t m) {
     switch (m) {
-    case YK_RIM_CONNECTING: return YK_INK3;
+    case YK_RIM_CONNECTING: return YK_SAGE;  // as Yay's (connecting delivery doc A, B); ink3 before 0.1.13
     case YK_RIM_COUNTDOWN:
     case YK_RIM_HOLD: return YK_CORAL;
     case YK_RIM_ALERT: return YK_AMBER;
@@ -368,9 +368,9 @@ int yk_caption_layout(const char *text, yk_glyph_width_fn width, void *ctx, int 
 
 static const yk_notice_spec_t NOTICES[YK_NOTICE_COUNT] = {
     [YK_NOTICE_NONE] = {YK_YAY_READY, YK_RIM_OFF, NULL, NULL, false},
-    [YK_NOTICE_CONNECTING] = {YK_YAY_READY, YK_RIM_CONNECTING, NULL, NULL, false},
-    [YK_NOTICE_OFFLINE] = {YK_YAY_READY, YK_RIM_OFF, "回 Yay 设置网络", "Set up Wi-Fi in Yay", false},
-    [YK_NOTICE_NOT_ADDED] = {YK_YAY_READY, YK_RIM_OFF, "先在 Yay 里添加", "Add me in Yay first", false},
+    [YK_NOTICE_CONNECTING] = {YK_YAY_READY, YK_RIM_CONNECTING, "正在连接…", "Connecting…", false},
+    [YK_NOTICE_OFFLINE] = {YK_YAY_READY, YK_RIM_OFF, "回 Tikpal 设置网络", "Set up Wi-Fi in Tikpal", false},
+    [YK_NOTICE_NOT_ADDED] = {YK_YAY_READY, YK_RIM_OFF, "先在 Tikpal App 里添加", "Add me in the Tikpal app first", false},
     [YK_NOTICE_NO_CREDITS] = {YK_YAY_READY, YK_RIM_OFF, "今天的点数用完了", "Out of points today", false},
     [YK_NOTICE_NOT_HEARD] = {YK_YAY_HELP, YK_RIM_OFF, "再说一次？", "Say it again?", false},
     [YK_NOTICE_BUSY] = {YK_YAY_HELP, YK_RIM_OFF, "等一下再试", "Try again soon", true},
@@ -460,4 +460,11 @@ int yk_yay_blink_gap_ms(uint32_t *seed) {
     x ^= x << 13, x ^= x >> 17, x ^= x << 5;
     *seed = x;
     return 4000 + (int)(x % 2001);
+}
+
+// ---------------------------------------------------------------- the buddy
+
+const char *yk_buddy_name(int buddy) {
+    static const char *const NAMES[] = {"Yay", "Wow", "Aha"};  // names, not words: never translated
+    return buddy >= 0 && buddy < (int)(sizeof(NAMES) / sizeof(NAMES[0])) ? NAMES[buddy] : NAMES[0];
 }

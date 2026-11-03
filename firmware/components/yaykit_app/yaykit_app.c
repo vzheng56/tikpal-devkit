@@ -296,6 +296,9 @@ esp_err_t yk_app_start(const yk_app_config_t *cfg) {
     s_started = true;
     const int slot = running_slot();
     if (slot >= 0) guard_boot();  // an app built into factory has nowhere to go back to
+    // The shared settings read; an extension looks at the battery before anything draws power (the board, the radio),
+    // and sleeps here when it is too low (0.1.13, yk_app_power.h). After the crash loop guard: it counts this too.
+    yk_app_power_start();
     if (slot >= 0) {
         const int64_t now = unix_ms();
         if (now / 1000 >= YK_APP_TIME_VALID_S) {
@@ -317,7 +320,7 @@ esp_err_t yk_app_start(const yk_app_config_t *cfg) {
 esp_err_t yk_app_ready(void) {
     if (s_ready) return ESP_OK;
     s_ready = true;
-    yk_mem_ready();  // the 40 KB line is read from here on (yk_mem.h)
+    yk_mem_ready();  // the line of 40,000 bytes is read from here on (yk_mem.h)
     esp_err_t err = yk_app_confirm();
     if (err != ESP_OK) ESP_LOGE(TAG, "confirm failed: %s", esp_err_to_name(err));
     keep_devid();
@@ -338,6 +341,7 @@ esp_err_t yk_app_ready(void) {
         printf("YAY_APP update trial version=%s confirm_in=%ds\n", u.version, (int)(confirm_ms / 1000));
     }
     if (s_started && !s_cfg.quiet) xTaskCreate(banner_task, "yk_banner", 3072, NULL, 1, NULL);
+    yk_app_power_ready();  // an extension: the battery watched from now on (yk_app_power.h)
     return err;
 }
 
@@ -448,6 +452,10 @@ static void run_leave(const char *to) {
     printf("YAY_APP leave to=%s ms=%lld%s\n", to, (long long)((esp_timer_get_time() - t0) / 1000),
            ran ? "" : " cut=1");
 }
+
+void yk_app_run_leave(const char *to) { run_leave(to); }
+
+bool yk_app_leaving(void) { return s_leave.left; }
 
 // ---------------------------------------------------------------- the record outbox
 
@@ -713,6 +721,16 @@ bool yk_app_home_usable(void) {
     return yk_slot_read(0, &s0) == ESP_OK && yk_home_slot(s0.slug, s0.state) == 0;
 }
 
+esp_err_t yk_app_boot_home_next(const char **home) {
+    const bool yay = yk_app_home_usable();
+    *home = yay ? "yay" : "recovery";
+    const esp_partition_t *p = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, yay ? ESP_PARTITION_SUBTYPE_APP_OTA_0 : ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+    return p ? esp_ota_set_boot_partition(p) : ESP_ERR_NOT_FOUND;
+}
+
+bool yk_app_is_extension(void) { return s_started && !s_cfg.is_home && running_slot() > 0; }
+
 bool yk_app_should_forward(void) {
     uint8_t flag = 0;
     const bool asked = sys_get_u8("recovery", &flag) && flag;
@@ -771,7 +789,7 @@ static int app_cmd(int argc, char **argv) {
     }
     if (!strcmp(sub, "recovery")) return yk_app_recovery() == ESP_OK ? 0 : 1;
     if (!strcmp(sub, "mem")) {
-        // min_since_ready: the 40 KB line (yk_mem.h); min_ever: the figure from before 10-24, while they are compared.
+        // min_since_ready: the 40,000 bytes line (yk_mem.h); min_ever: the figure before 10-24, kept to compare.
         printf("YAY_APP mem internal=%u min_since_ready=%u min_ever=%u largest=%u psram=%u ready=%d\n",
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)yk_mem_min_since_ready(),
                (unsigned)yk_mem_min_ever(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -871,10 +889,13 @@ static int yay_cmd(int argc, char **argv) {
         return yk_app_open(slot, argv[2], "dev", argc > 3 ? argv[3] : NULL) == ESP_OK ? 0 : 1;
     }
     if (!strcmp(sub, "record") && argc > 2) return yk_app_record(argv[2], argc > 3 ? argv[3] : NULL) == ESP_OK ? 0 : 1;
+    // An extension's battery guard (yk_app_power.h); Yay registers its own `yay power` (below).
+    if (!strcmp(sub, "power") && yk_app_is_extension()) return yk_app_power_dev(argc - 1, argv + 1);
     for (int i = 0; i < DEV_MAX; i++)
         if (s_dev[i].name && !strcmp(s_dev[i].name, sub)) return s_dev[i].fn(argc - 1, argv + 1);
     printf("yay tap | double | hold <ms> | say <s> [text] | records [drop <seq>] | ring <slug>|yay|paper"
            " | launch <slug> [json] | crash [boots] | record <kind> [json]");
+    if (yk_app_is_extension()) printf(" | power [<pct> [usb]|off|next <pct> [usb]|sleep]");
     for (int i = 0; i < DEV_MAX; i++)
         if (s_dev[i].name) printf(" | %s", s_dev[i].help ? s_dev[i].help : s_dev[i].name);
 #else

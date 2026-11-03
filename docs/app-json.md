@@ -12,7 +12,7 @@
   "name": {"zh": "计时器", "en": "Timer"},
   "boards": ["tikpal-r1"],
   "layout": "yaykit-v1",
-  "minYay": "0.1.10",
+  "minYay": "0.1.12",
   "apiLevel": 3,
   "capabilities": {},
   "launch": {
@@ -47,6 +47,7 @@
 | `settings` 等 | 否 | 可以在手机 App 里调的设置（`settings`、`settingOptions`、`settingLabels`、`settingRules`）。要的话立项时说，我们一起定 |
 | `records` | 用了 `yk_app_record()` 就要 | 记录进「动态」的格式，和 `capabilities.records` 一起写，见下面的[记录 `records`](#记录-records)。立项时一起定 |
 | `ephemeral` | 否 | `true`：什么都不留（不写记录、不存数据和文件），比如翻译 |
+| `voiceCode` | 要亮应用码就要 | 立项时给的应用编号，和「问伙伴」的几句话，见下面的[应用码 `voiceCode`](#应用码-voicecode) |
 
 ### 启动参数 `launch.params`
 
@@ -122,7 +123,8 @@ Yay 打开你时能带的参数，键名是参数名，值说明它：
 - 最外层是 `"type": "object"`：一条记录是一个对象。
 - 每个 `"type": "object"` 都列出 `properties`，并写 `"additionalProperties": false`（只能写 `false`）：没列的字段不收。
 - 每个 `"type": "array"` 都写 `items`。
-- `required` 里的字段要在 `properties` 里。
+- `required` 里的字段要在 `properties` 里，每个只写一次。
+- `enum` 里的值每个只写一次。
 - 字段名小写字母开头，只用字母、数字和下划线，1–41 个字符：`bestCombo`、`new_words` 可以，`best-combo` 不行。
 - 可以为空的写 `{"anyOf": [{"type": "integer"}, {"type": "null"}]}`。
 - `data` 本身不超过 512 字节（应用开发指南第 5 节）。
@@ -138,7 +140,46 @@ Yay 打开你时能带的参数，键名是参数名，值说明它：
 ### `./kit check` 怎么核
 
 - `records` 和 `capabilities.records` 照 Tikpal 的契约逐条核，不过就不能提交。
+- `voiceCode` 也照契约核：编号是 1–65535 的整数，`ask` 各语言句数一样，`own` 只用动作 8–15、每个都写 zh 和 en；写的是测试号会打一行「提示」。
+- 第一版加的 `permissions`、`privacy`、`ageRating`、`miniapp` 也照契约核：小程序要的手机能力（摄像头、麦克风、姿态、定位）都要在 `permissions.phone` 里写为什么用，`miniapp.capabilityLevel` 不能低于要的能力。
 - 固件里 `yk_app_record("…")` 写的种类，`records` 里没有的，会打一行「提示」（不算不过）：服务端不收这种记录。模板（`./kit new`）在 `on_leave` 里写了一条 `<简称>.count`，没有 `records`：要留进「动态」就照上面补上，不要就删掉那一句。
+
+## 应用码 `voiceCode`
+
+圆屏上亮出 Tikpal 的声波码，手机 App 一扫就打开你这个应用的页面。码里带三样：应用编号、一个动作、一个值。不经过服务器。
+
+```json
+"voiceCode": {
+  "number": 256,
+  "ask": {
+    "zh": ["我今天专注了多久？", "这周哪天最专注？"],
+    "en": ["How long did I focus today?", "Which day this week did I focus most?"]
+  }
+}
+```
+
+- **`number`**：立项通过时我们在立项单上回给你的应用编号。
+  - 一旦给了永远不改，也不会再给别的应用，应用下架了也占着。
+  - 打包时会核它和商城里登记的是不是同一个。
+  - 还没拿到编号时，可以先写本机测试号（65280–65535 里随便一个），在自己的圆屏上试。App 扫到测试号只打开一个调试页，不进商城。**提交前要换成正式编号**，审核不收测试号，`./kit check` 也会提示。
+- **`ask`**：动作 3「问伙伴」用的几句话，码里的值就是第几句（从 0 数）。
+  - `zh`、`en` 必填，`ja`、`es-419` 翻好了再加；每种语言句数一样、一一对应；最多 16 句，每句不超过 80 个字符。
+  - **只能往后加**：不能改顺序、不能删、不能把一句改成问别的。老版本固件亮的还是原来的序号，App 拿最新的列表去对。
+  - 这几句跟应用别的文字一样过审。
+- **`own`**：动作 8–15 归应用自己（第一版起开放）。每个动作写它的意思，连值的意思一起，zh 和 en 都要；先写进来再用，发出去以后只能往后加，不能改意思。
+
+四个通用动作，不用登记：
+
+| 动作 | 值 | 扫了打开什么 |
+|---|---|---|
+| 0 | 0 | 应用页 |
+| 1 | 0 | 整页服务页 |
+| 2 | 1970-01-01 起的天数（圆屏本地日期） | 那一天的记录 |
+| 3 | `ask` 里第几句 | 问伙伴那一句 |
+
+动作 4–7 暂时不用，App 不认识的动作一律打开应用页。用户没装你这个应用的，打开商城里它的页面。
+
+怎么在固件里亮码（共享组件的接口），等声波码组件进开发包时写在 `docs/voice-code.md`。
 
 ## 常见的错
 
@@ -148,3 +189,5 @@ Yay 打开你时能带的参数，键名是参数名，值说明它：
 - 写了 `launch.params`，固件却不读：用户说了参数也没用。
 - `records` 写成 `{"<种类>": {"fields": {…}}}`：不是这个写法，照上面「记录 `records`」的例子写。
 - `capabilities.records.kinds` 和 `records.kinds` 没对上，或者 `kind` 和固件里 `yk_app_record()` 写的差一个字。
+- `voiceCode.ask` 里改了一句的意思、删了一句或调了顺序：老固件亮的序号就对不上了。只能往后加。
+- 提交时 `voiceCode.number` 还是测试号。

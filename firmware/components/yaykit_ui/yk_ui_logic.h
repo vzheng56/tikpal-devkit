@@ -98,3 +98,9 @@ yk_yay_mouth_t yk_yay_mouth_step(yk_yay_mouth_t now, uint8_t level);
 
 /** Next blink in 4000..6000 ms (xorshift on *seed). */
 int yk_yay_blink_gap_ms(uint32_t *seed);
+
+// ---------------------------------------------------------------- the buddy (0.1.12)
+
+/** The buddy's name for a YK_PREF_BUDDY value (yaykit_board's BOARD_BUDDY_*): 0 Yay, 1 Wow, 2 Aha, anything else
+ *  Yay. The same in every language. yk_ui_buddy_name() is this for the device's setting. */
+const char *yk_buddy_name(int buddy);

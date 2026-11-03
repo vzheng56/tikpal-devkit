@@ -16,7 +16,8 @@
  *   Touch    CST820, RST=40; INT is TP_INT on the reference schematic (docs/hardware/ESP32-S3-1.75-AMOLED-AI.pdf),
  *            GPIO11 or GPIO13 there; CONFIG_YK_BOARD_TOUCH_INT_GPIO says which once measured (-1: polled)
  *   Battery  V_BAT / 2 (100k + 100k) on GPIO17 (ADC2 ch 6); USB 5 V / 2 (200k + 200k) on GPIO18 (ADC2 ch 7), same
- *            schematic; the SW6106 power chip (I2C 0x3C) is read-only
+ *            schematic; the SW6106 power chip (I2C 0x3C) is read, and written only for its 5 V charge current
+ *            (0.5 A, board_init: docs/delivery/2026-10-31-battery-charge-limit.md)
  *   Audio    I2S0: MCLK=42 BCLK=9 WS=45 DOUT=8 DIN=10, amplifier enable=43 (high = on)
  */
 #pragma once
@@ -70,11 +71,12 @@ void      board_unlock(void);
 lv_indev_t *board_touch_indev(void);
 
 /* The battery (P20). The voltage comes from the ESP32's own ADC on V_BAT / 2 (GPIO17), which reads on battery and
- * on USB alike; the SW6106's registers 0x14/0x15 (read-only over I2C, nothing is ever written to that chip: it is
- * the power path) read 0 on battery and are only a cross-check now. mv averaged over a few reads; percent from the
- * resting cell's curve, corrected for the rise while charging (yk_board_logic.h), -1 when unknown. usb: external
- * power is present (USB 5 V / 2 on GPIO18). charging: on USB and not yet full. `status` is SW6106 register 0x06
- * as read (-1 when that read failed), for diagnostics. ESP_ERR_NOT_FOUND when no voltage could be read at all. */
+ * on USB alike; the SW6106's registers 0x14/0x15 (read over I2C; that chip is the power path and the only write
+ * it gets is the charge current at start, board_init) read 0 on battery and are only a cross-check now. mv
+ * averaged over a few reads; percent from the resting cell's curve, corrected for the rise while charging
+ * (yk_board_logic.h), -1 when unknown. usb: external power is present (USB 5 V / 2 on GPIO18). charging: on USB and
+ * not yet full. `status` is SW6106 register 0x06 as read (-1 when that read failed), for diagnostics.
+ * ESP_ERR_NOT_FOUND when no voltage could be read at all. */
 typedef struct {
     int mv;
     int percent;
@@ -83,8 +85,9 @@ typedef struct {
     bool charging;  /* on USB and the cell is not full yet */
 } board_battery_t;
 esp_err_t board_battery(board_battery_t *out);
-/* Development: the SW6106's registers 0x00..0x3F as read (still nothing written), to find what plugging in
- * changes. A register that did not answer reads 0xFF. */
+/* Development: the SW6106's registers 0x00..0x3F as read (nothing written), to find what plugging in changes. A
+ * register that did not answer reads 0xFF. Prints the start's YK_BOARD_CHARGE line again: the USB console is
+ * usually not back yet when board_init() first prints it. */
 esp_err_t board_battery_regs(uint8_t regs[64]);
 
 /* AMOLED brightness, 0..100, set through the panel controller. Takes the board lock itself (recursive): safe from any
@@ -116,8 +119,8 @@ void board_sleep_release(void);
 bool      board_display_asleep(void);
 
 /* ---------------------------------------------------------------- shared preferences (P10)
- * Volume, brightness and the screen-off time are the device's, not an app's: NVS namespace "yk_pref", shared by
- * every firmware (main, apps, recovery). Set in Yay, every app opens with the same values; an app that changes
+ * Volume, brightness, the screen-off time and the buddy are the device's, not an app's: NVS namespace "yk_pref",
+ * shared by every firmware (main, apps, recovery). Set in Yay, every app opens with the same values; an app that changes
  * one (its own volume dial) writes it back. NVS must be initialised. Reads never fail: a missing or bad value
  * reads as the default (the first read also takes the volume the main firmware kept before, namespace `yay`). */
 #define BOARD_PREF_VOLUME_DEFAULT     6   /* 0..10, yaykit_speak's steps */
@@ -129,6 +132,15 @@ int       board_pref_brightness(void);
 esp_err_t board_pref_set_brightness(int percent);   /* clamped to 5..100 (0 would look like a dead device) */
 int       board_pref_screen_off_s(void);
 esp_err_t board_pref_set_screen_off_s(int seconds); /* 0 or 15..3600 */
+/* The buddy, who talks with you (0.1.12, YK_PREF_BUDDY): key `buddy`, a u8. The main firmware sets it; apps only read
+ * it (yaykit_ui's 「回到 Yay 说？」 takes its name). A value this build does not know reads as Yay. Added without
+ * changing anything above: YK_API_LEVEL stays 3, and an app built before it simply never reads it (it shows Yay). */
+#define BOARD_BUDDY_YAY 0
+#define BOARD_BUDDY_WOW 1
+#define BOARD_BUDDY_AHA 2
+#define BOARD_PREF_BUDDY_DEFAULT BOARD_BUDDY_YAY
+int       board_pref_buddy(void);                   /* BOARD_BUDDY_*; missing or unknown: BOARD_BUDDY_YAY */
+esp_err_t board_pref_set_buddy(int buddy);          /* the main firmware's; unknown values are stored as Yay */
 
 /* ---------------------------------------------------------------- fast touch (P20)
  * LVGL reads the touch controller once a frame (about every 33 ms). For a reaction game, board_touch_fast_start()

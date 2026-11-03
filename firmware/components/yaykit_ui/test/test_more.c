@@ -335,7 +335,7 @@ static void test_state_line(void) {
     CHECK(!strcmp(yk_more_state_line(YK_MORE_CACHE, false, true, 3100000, 570, false, out, sizeof(out)), "预览版 · 下载过"));
     CHECK(!strcmp(yk_more_state_line(YK_MORE_CACHE, false, false, 3100000, 570, false, out, sizeof(out)), "下载过 · 10 分钟以上"));
     // Not to download nor downloaded: as before, whatever the size and estimate.
-    CHECK(!strcmp(yk_more_state_line(YK_MORE_SLOT, false, false, 3100000, 36, false, out, sizeof(out)), "在圆屏上 · 点一下打开"));
+    CHECK(!strcmp(yk_more_state_line(YK_MORE_SLOT, false, false, 3100000, 36, false, out, sizeof(out)), "已装好 · 点一下打开"));
     CHECK(!strcmp(yk_more_state_line(YK_MORE_SLOT, true, false, 0, 0, false, out, sizeof(out)), "正在用"));
     CHECK(!strcmp(yk_more_state_line(YK_MORE_SOON, false, false, 3100000, 36, false, out, sizeof(out)), "即将推出"));
     // Every one fits the line (222 px at 16), the longest a preview's 10+ minutes; 预览版 · 要下载 · 10 分钟以上 would not.

@@ -1,0 +1,36 @@
+{
+  "name": "@tikpal/miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tikpal 小程序开发包：桥的接口和类型、组件、浏览器预览、打包和检查",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "tikpal-miniapp": "./bin/tikpal-miniapp.mjs"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./components": "./src/components/index.ts",
+    "./preview": "./preview/types.ts",
+    "./contract": "./src/contract/miniapps.ts",
+    "./recordings": "./src/contract/recordings.ts",
+    "./tools/build": "./tools/build.ts",
+    "./tools/check": "./tools/check.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "preview",
+    "tools",
+    "template",
+    "README.md"
+  ],
+  "dependencies": {
+    "esbuild": "0.25.12",
+    "tsx": "4.20.6",
+    "zod": "4.1.12"
+  }
+}

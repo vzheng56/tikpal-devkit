@@ -22,3 +22,5 @@ void yk_draw_text(lv_layer_t *layer, const char *str, const lv_font_t *font, uin
 void yk_draw_download_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa);
 /** In the package cache: a hollow sage ring (paper inside) on the disc's lower right. */
 void yk_draw_cached_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa);
+/** A newer version (0.1.12): a coral dot in a paper ring on the disc's upper right (yk_apps_update_dot). */
+void yk_draw_update_dot(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa);

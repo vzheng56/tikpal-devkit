@@ -49,6 +49,6 @@
 
 | 项 | 证据 |
 |---|---|
-| 内部 RAM 从 ready 起的最低（`./kit info` 的 `heap.internalMinSinceReady`）不低于 40 KB；低于 60 KB 写明原因 | 用到最重的那一刻以后的 `./kit info` 输出 |
+| 内部 RAM 从 ready 起的最低（`./kit info` 的 `heap.internalMinSinceReady`）不低于 40,000 字节；低于 60,000 字节写明原因 | 用到最重的那一刻以后的 `./kit info` 输出 |
 | 打开到界面出现不超过 2.5 秒；回到 Yay 不超过 3 秒 | 日志的时间 |
 | 用了半小时以上没有重启、没有卡死 | — |

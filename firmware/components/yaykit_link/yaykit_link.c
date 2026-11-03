@@ -106,11 +106,15 @@ static void on_idle(void *arg) {
 static void on_transport(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg;
     (void)data;
+#ifdef CONFIG_BT_ENABLED
     if (base == PROTOCOMM_TRANSPORT_BLE_EVENT) {
         connected = id == PROTOCOMM_TRANSPORT_BLE_CONNECTED;
         touch();
         emit(connected ? YK_LINK_BLE_CONNECTED : YK_LINK_BLE_DISCONNECTED);
-    } else if (base == PROTOCOMM_SECURITY_SESSION_EVENT) {
+        return;
+    }
+#endif
+    if (base == PROTOCOMM_SECURITY_SESSION_EVENT) {
         if (id == PROTOCOMM_SECURITY_SESSION_SETUP_OK) ESP_LOGI(TAG, "secure session ready");
         else ESP_LOGW(TAG, "secure session rejected (%ld)", (long)id);
     }
@@ -172,7 +176,7 @@ char *yk_link_info_json(void) {
 
     cJSON *heap = cJSON_AddObjectToObject(root, "heap");
     cJSON_AddNumberToObject(heap, "internalFree", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    // Since the app was ready: the 40 KB line; from boot: the figure before 10-24, while the two are compared (yk_mem.h).
+    // Since the app was ready: the 40,000 bytes line; from boot: the figure before 10-24, kept to compare (yk_mem.h).
     cJSON_AddNumberToObject(heap, "internalMinSinceReady", yk_mem_min_since_ready());
     cJSON_AddNumberToObject(heap, "internalMinEver", yk_mem_min_ever());
     cJSON_AddNumberToObject(heap, "internalLargest", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
@@ -311,6 +315,9 @@ static void release_session_material(void) {
 }
 
 esp_err_t yk_link_ble_start(void) {
+#ifndef CONFIG_BT_ENABLED
+    return ESP_ERR_NOT_SUPPORTED;  // a firmware built without Bluetooth (自拍屏 since 0.3.0): `yk ble on` says so
+#endif
     if (yk_link_keep_running) return ESP_ERR_INVALID_STATE;  // the long mode has NimBLE (yk_link_keep.h)
     xSemaphoreTake(lock, portMAX_DELAY);
     if (active) {
@@ -358,7 +365,11 @@ esp_err_t yk_link_ble_start(void) {
         };
         strlcpy(ble.device_name, ble_name, sizeof(ble.device_name));
         memcpy(ble.service_uuid, service_uuid, sizeof(service_uuid));
+#ifdef CONFIG_BT_ENABLED
         err = protocomm_ble_start(pc, &ble);
+#else
+        err = ESP_ERR_NOT_SUPPORTED;  // not reached (above)
+#endif
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "BLE start failed: %s", esp_err_to_name(err));
@@ -414,7 +425,9 @@ static esp_err_t ble_stop_here(void) {
         return ESP_OK;
     }
     esp_timer_stop(idle_timer);
+#ifdef CONFIG_BT_ENABLED
     protocomm_ble_stop(pc);
+#endif
     protocomm_delete(pc);
     pc = NULL;
     drop_pending();
@@ -579,7 +592,9 @@ esp_err_t yk_link_init(const yk_link_config_t *config) {
 
     esp_err_t err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+#ifdef CONFIG_BT_ENABLED
     ESP_ERROR_CHECK(esp_event_handler_register(PROTOCOMM_TRANSPORT_BLE_EVENT, ESP_EVENT_ANY_ID, on_transport, NULL));
+#endif
     ESP_ERROR_CHECK(esp_event_handler_register(PROTOCOMM_SECURITY_SESSION_EVENT, ESP_EVENT_ANY_ID, on_transport, NULL));
     const esp_timer_create_args_t timer = {.callback = on_idle, .name = "yk_idle"};
     return esp_timer_create(&timer, &idle_timer);

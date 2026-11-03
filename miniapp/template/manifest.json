@@ -1,0 +1,9 @@
+{
+  "slug": "__SLUG__",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "name": { "en": "__TITLE__", "zh-Hans": "__TITLE__", "ja": "__TITLE__", "es-419": "__TITLE__" },
+  "capabilities": ["clipboard", "share"],
+  "capabilityLevel": 2,
+  "minFirmware": null
+}

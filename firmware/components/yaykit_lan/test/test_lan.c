@@ -35,6 +35,11 @@ int main(void) {
     // Unknown fields are fine; no name is fine.
     snprintf(msg, sizeof(msg), "{\"t\":\"hello\",\"token\":\"%s\",\"v\":2}", tok);
     CHECK(yk_lan_hello(msg, tok, name, sizeof(name)) == YK_LAN_HELLO_OK && name[0] == 0);
+    // No token to check (any_hello): a hello with a token or without is in; anything else is still not a hello.
+    CHECK(yk_lan_hello("{\"t\":\"hello\",\"name\":\"iPhone\"}", NULL, name, sizeof(name)) == YK_LAN_HELLO_OK &&
+          !strcmp(name, "iPhone"));
+    CHECK(yk_lan_hello("{\"t\":\"hello\",\"token\":\"nope\"}", NULL, name, sizeof(name)) == YK_LAN_HELLO_OK);
+    CHECK(yk_lan_hello("{\"t\":\"captured\"}", NULL, name, sizeof(name)) == YK_LAN_NOT_HELLO);
     CHECK(yk_lan_hello("{\"t\":\"hello\",\"token\":\"nope\",\"name\":\"x\"}", tok, name, sizeof(name)) == YK_LAN_HELLO_BAD &&
           name[0] == 0);
     CHECK(yk_lan_hello("{\"t\":\"hello\"}", tok, name, sizeof(name)) == YK_LAN_HELLO_BAD);

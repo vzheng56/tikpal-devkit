@@ -8,8 +8,9 @@
 // app-ecosystem.md 2: 在圆屏上 / 下载过 · 约 20 秒 (the copying) / 要下载 · 约 40 秒, from the last download's speed,
 // or its size).
 //
-// Marks as on the app ring: in a slot none; in the package cache a hollow sage ring on the lower right; to download
-// dimmed to 42 % with the sage download mark; in use a sage ring around it. On the app's disc its icon (Yay 0.1.5,
+// Marks as on the app ring: in a slot none (a coral dot on the upper right when it has a newer version, `update`); in
+// the package cache a hollow sage ring on the lower right; to download dimmed to 42 % with the sage download mark; in
+// use a sage ring around it. On the app's disc its icon (Yay 0.1.5,
 // #531: the store's 64 x 64 A8 in its colour, at 84, 61, 45 or 34 px by the disc's size), or without one the name's
 // first character. Coming soon (即将推出): all of it at 42 %, no mark; the middle one tapped only shakes a little. A
 // preview (the store has no stable release of it) says 预览版 before where it is.
@@ -51,6 +52,8 @@ typedef struct {
                        // in the package cache: how long the copying takes (0: its size not known)
     const uint8_t *icon;  // its icon, 64 x 64 A8 (yk_catalog.h's YK_ICON_A8), drawn in icon_color; NULL: the first
     uint32_t icon_color;  // character. Read while the page is open: the caller keeps it until yk_more_close()
+    bool update;          // in a slot with a newer version: a coral dot on the upper right, as on the app ring (Yay
+                          // 0.1.12; added last, as yk_apps_item_t's)
 } yk_more_item_t;
 
 /** The page's apps in the order of the delivery (2026-10-23-more-page.md 1.2): those on the device first (in a slot,

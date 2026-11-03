@@ -159,7 +159,7 @@ esp_err_t yk_install_resume(yk_install_listener_t listener, void *ctx);
 /** Whether yk_install_resume() would have something for the listener: a replacement cut short is on record and its
  *  slot does not hold an app. Read only (the record, the slot's image, the cache's index), nothing started. Yay starts
  *  its session held closed then (docs/delivery/2026-10-25-yay-0.1.4.md 7: its WebSocket beside the restore took
- *  internal RAM to 40 KB). */
+ *  internal RAM to the line of 40,000 bytes). */
 bool yk_install_resume_pending(void);
 
 /** Stops the running install at its next chunk (FAILED, CANCELLED) in ① and ②: the slot keeps its app. In ③ and

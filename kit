@@ -39,12 +39,21 @@ Tikpal 开发包 ${VERSION}（Yay $(field yay) 起，接口级别 $(field apiLev
                                 USB 写进测试圆屏的位置 2 或 3，写完直接打开（不擦别的，不用签名）
   ./kit logs [秒数]             看圆屏的日志（默认 30 秒）
   ./kit snap [文件.png]         截一张圆屏的图
-  ./kit heap                    看内存（内部 RAM 不能低于 40 KB）
+  ./kit heap                    看内存（底线读 ./kit info 的 heap.internalMinSinceReady：不低于 40,000 字节）
   ./kit info                    圆屏上现在跑的是什么
                                 插着不止一台圆屏时，用 YAYKIT_PORT=/dev/cu.usbmodem… 选一台
   ./kit check                   提交前的检查：清单、版本、开发包没改过、改动都提交了、提交用的那份编过且合规
+  ./kit submit [--miniapp-only] [--ci-sha <SHA-256>]
+                                打提交包 <slug>-<版本>.tikpal（源码、清单、镜像、小程序、自测报告），到开发者平台上传；
+                                --ci-sha 填应用仓库 CI 里 ./kit check 打的那一串，重编就要一字不差
   ./kit version                 这个应用用的开发包版本
   ./kit update <版本>           换一版开发包（比如 1.1）
+
+小程序（手机 App 里的网页，docs/miniapp.md；要 Node.js 20 或更新）：
+  kit miniapp new <slug>        起一个小程序：在应用目录里建在 miniapp/，别处建在 <slug>/
+  ./kit miniapp preview         打包、检查，传成你的开发版，在自己手机上看（第一次要在浏览器里允许登录）
+  ./kit miniapp login | logout  开发包用你的开发者账号登录、退出
+  在小程序目录里：npm run dev（浏览器预览）、npm run build（打包并检查）、npm run check
 EOF
 }
 
@@ -309,6 +318,11 @@ case "${1:-help}" in
   version) cat "$KIT/devkit.json" ;;
   update) shift; cmd_update "$@" ;;
   check) /usr/bin/env python3 "$KIT/tools/check_app.py" "$KIT" "$(app_dir)" ;;
+  submit) shift; /usr/bin/env python3 "$KIT/tools/submit_app.py" "$KIT" "$(app_dir)" "$@" ;;
+  miniapp)
+    shift
+    command -v node >/dev/null || die "小程序要 Node.js 20 或更新（docs/miniapp.md）"
+    exec node "$KIT/miniapp/bin/tikpal-miniapp.mjs" "$@" ;;
   help | -h | --help) usage ;;
   *) usage; exit 1 ;;
 esac

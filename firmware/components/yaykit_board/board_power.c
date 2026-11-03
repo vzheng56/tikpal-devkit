@@ -1,8 +1,12 @@
 // The battery (P20). The cell's voltage from the ESP32's own ADC on V_BAT / 2 (GPIO17), which reads on battery as on
 // USB, and external power from USB 5 V / 2 (GPIO18), per the reference schematic. The SW6106 power chip (I2C 0x3C)
-// is read only, for its status register and as a cross-check: its voltage registers read 0 on battery. Nothing is
-// ever written to it: it is the power path.
+// is read for its status register and as a cross-check: its voltage registers read 0 on battery. It is the power
+// path: the one thing ever written to it is the 5 V charge current, down to its lowest at start
+// (board_charge_limit, docs/delivery/2026-10-31-battery-charge-limit.md).
+#include <stdio.h>
+
 #include "board.h"
+#include "board_priv.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
@@ -39,6 +43,26 @@ static esp_err_t power_read(uint8_t reg, uint8_t *value)
     return i2c_master_transmit_receive(s_power, &reg, 1, value, 1, 20);
 }
 
+static yk_charge_limit_t s_charge = {.before = -1, .wrote = -1, .after = -1, .result = YK_CHARGE_NO_READ};
+static bool s_charge_done;
+
+static const char *reg_hex(int v, char buf[12])
+{
+    if (v < 0) return "none";
+    snprintf(buf, 12, "0x%02x", (unsigned)(v & 0xFF));
+    return buf;
+}
+
+/* The start's result, as one line (board_charge_limit, and again with the register dump). */
+static void charge_log(void)
+{
+    const yk_charge_limit_t c = s_charge;
+    char b[12], w[12], a[12];
+    printf("YK_BOARD_CHARGE before=%s before_ma=%d wrote=%s after=%s after_ma=%d result=%s\n", reg_hex(c.before, b),
+           c.before >= 0 ? yk_board_charge_5v_ma((uint8_t)c.before) : -1, reg_hex(c.wrote, w), reg_hex(c.after, a),
+           c.after >= 0 ? yk_board_charge_5v_ma((uint8_t)c.after) : -1, yk_board_charge_result_name(c.result));
+}
+
 esp_err_t board_battery_regs(uint8_t regs[64])
 {
     ESP_RETURN_ON_ERROR(power_dev(), TAG, "battery");
@@ -51,7 +75,33 @@ esp_err_t board_battery_regs(uint8_t regs[64])
                 break;
             }
     }
+    if (s_charge_done) charge_log();
     return ok ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static int charge_read(void *ctx, uint8_t reg, uint8_t *value)
+{
+    (void)ctx;
+    for (int i = 0; i < 3; i++)  // the touch controller shares the bus (not started yet at board_init, but later)
+        if (power_read(reg, value) == ESP_OK) return 0;
+    return -1;
+}
+
+/* One register written: the only write this chip ever gets (board_charge_limit). */
+static int charge_write(void *ctx, uint8_t reg, uint8_t value)
+{
+    (void)ctx;
+    const uint8_t frame[2] = {reg, value};
+    return i2c_master_transmit(s_power, frame, sizeof(frame), 20) == ESP_OK ? 0 : -1;
+}
+
+void board_charge_limit(void)
+{
+    // Every start, every firmware: the register keeps its value through ESP restarts and slot switches but goes back to
+    // the chip's default (2.5 A) when the chip loses power, and a firmware cannot tell. none / -1: not read or written.
+    if (power_dev() == ESP_OK) s_charge = yk_board_charge_limit(charge_read, charge_write, NULL);
+    s_charge_done = true;
+    charge_log();
 }
 
 static adc_cali_handle_t cali(adc_channel_t ch)

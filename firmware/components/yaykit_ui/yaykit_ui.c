@@ -21,6 +21,8 @@ void yk_ui_set_english(bool on) { english = on; }
 
 bool yk_ui_is_english(void) { return english; }
 
+const char *yk_ui_buddy_name(void) { return yk_buddy_name(board_pref_buddy()); }
+
 lv_obj_t *yk_ui_label(lv_obj_t *parent, const char *text, int x, int y, int width, int size, uint32_t color) {
     lv_obj_t *o = lv_label_create(parent);
     lv_label_set_text(o, text);

@@ -4,10 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <sys/time.h>
+
 #include "esp_console.h"
 #include "esp_crt_bundle.h"
+#include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
@@ -16,7 +20,19 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/ssl.h"
 #include "sdkconfig.h"
+#include "yk_conn_timing.h"
+#include "yk_ticket.h"
+#if CONFIG_YK_SESSION_TLS_TICKETS
+#include "esp_rtc_time.h"
+#include "esp_tls.h"
+#include "esp_transport.h"
+#include "esp_transport_ssl.h"
+#include "esp_transport_ws.h"
+#include "mbedtls/platform_time.h"
+#include "soc/soc.h"
+#endif
 
 static const char *TAG = "yk_session";
 
@@ -24,6 +40,9 @@ static const char *TAG = "yk_session";
 #define FRAME_MAX (YK_PROTO_HEADER + 1276)
 #define TEXT_MAX 16384  // the longest text frame taken (stt text is at most 2000 characters)
 #define CONNECT_WAIT_MS 15000
+// No address yet (a start, an app switch): wait for it rather than try, fail and back off (~1.8 s lost before, B). The
+// address's event cuts the wait short; this long without one, it tries anyway, as before.
+#define IP_WAIT_MAX_MS 20000
 
 // BIT_PEER_CLOSE: the server's close frame came (yk_session_close waits for it); BIT_GONE: the client said the
 // connection went (BIT_DOWN is the task's, which clears it).
@@ -46,6 +65,13 @@ static struct {
     volatile bool hold;    // yk_session_hold(true): closed until released
     volatile bool usb_peer;  // the USB bridge's side is up (`ys c` … `ys d`)
     bool closing;            // yk_session_close sent the close frame: nothing goes after it (under send_lock)
+    bool wss;                // TLS (the YAY_CONN line's tls=; a ticket kept and offered)
+    // This connection's moments (YAY_CONN, yk_conn_timing.h), esp_timer µs, 0 not yet; set in the session's task before
+    // the WebSocket client starts, then each by one task in turn.
+    int64_t dial_us, upgrade_us, hello_us;
+    volatile bool cert_seen;  // the server's certificate was checked: a whole handshake (a resumed one sends none)
+    bool offered;             // a kept ticket was offered
+    bool timed;               // the line is out
     yk_session_stats_t st;
 } S;
 
@@ -68,14 +94,190 @@ static void set_state(yk_session_state_t s) {
 
 yk_session_state_t yk_session_state(void) { return S.state; }
 
+// ---------------------------------------------------------------- TLS: a whole handshake, or resumed
+
+static int (*s_verify)(void *, mbedtls_x509_crt *, int, uint32_t *);
+static void *s_verify_ctx;
+
+/** The certificate bundle's own check, unchanged; that it ran says the handshake was a whole one. */
+static int verify(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
+    (void)ctx;
+    S.cert_seen = true;
+    return s_verify(s_verify_ctx, crt, depth, flags);
+}
+
+/** esp_crt_bundle_attach, then its check wrapped by verify(). Its check missing (not expected): left as it is. */
+static esp_err_t bundle_attach(void *conf) {
+    const esp_err_t err = esp_crt_bundle_attach(conf);
+    mbedtls_ssl_config *c = conf;
+    if (err != ESP_OK || !c || !c->MBEDTLS_PRIVATE(f_vrfy)) return err;
+    s_verify = c->MBEDTLS_PRIVATE(f_vrfy);
+    s_verify_ctx = c->MBEDTLS_PRIVATE(p_vrfy);
+    mbedtls_ssl_conf_verify(c, verify, NULL);
+    return ESP_OK;
+}
+
+#if CONFIG_YK_SESSION_TLS_TICKETS
+// The ticket kept across restarts (yk_ticket.h): the last YK_TICKET_AREA (2 KB) bytes of RTC slow memory, the same address in
+// every firmware. Each firmware's own RTC variables sit at the bottom of it (tens of bytes); one that reached this far
+// would keep none.
+#define TICKET_AREA ((uint8_t *)(SOC_RTC_DATA_HIGH - YK_TICKET_AREA))
+
+// The start of tcp_transport's own context for an SSL transport (transport_ssl.c, ESP-IDF 5.5.5, pinned): the
+// connection, and the esp-tls settings it is made with. Used only once it checks out (tls_make): what the public calls
+// set is where it should be. There is no public call to offer a kept session to a transport.
+typedef struct {
+    esp_tls_t *tls;
+    esp_tls_cfg_t cfg;
+} ssl_head_t;
+
+static struct {
+    esp_transport_handle_t ssl, ws;     // this connection's own transports (the WebSocket client's ext_transport)
+    esp_tls_client_session_t *offered;  // the kept session offered (ours to free)
+    char host[96];
+} T;
+
+static uint8_t *ticket_area(void) {
+    extern char _rtc_force_slow_end[];
+    return (uintptr_t)_rtc_force_slow_end <= (uintptr_t)TICKET_AREA ? TICKET_AREA : NULL;
+}
+
+static void tls_free(void) {
+    if (T.ws) esp_transport_destroy(T.ws);  // not its parent: that one is ours too
+    if (T.ssl) esp_transport_destroy(T.ssl);
+    T.ws = T.ssl = NULL;
+    if (T.offered) esp_tls_free_client_session(T.offered);
+    T.offered = NULL;
+}
+
+/** wss:// over transports of the session's own, so that a kept session can be offered and the new one kept: what the
+ *  WebSocket client would set on its own (the certificate bundle, the path, the headers, control frames passed up).
+ *  The kept ticket is offered once and forgotten (offered again it is rarely taken); hello.ok keeps the new one. False:
+ *  the client makes its own, as before. */
+static bool tls_make(const char *headers) {
+    const char *path;
+    if (!yk_ticket_url(S.cfg.url, T.host, sizeof(T.host), &path)) return false;
+    T.ssl = esp_transport_ssl_init();
+    if (!T.ssl) return false;
+    esp_transport_set_default_port(T.ssl, 443);
+    esp_transport_ssl_crt_bundle_attach(T.ssl, bundle_attach);
+    ssl_head_t *head = esp_transport_get_context_data(T.ssl);
+    if (!head || head->tls || head->cfg.is_plain_tcp || head->cfg.crt_bundle_attach != bundle_attach ||
+        head->cfg.client_session) {
+        printf("YAY_NET ticket off why=layout\n");  // not the context this was written for
+        tls_free();
+        return false;
+    }
+    T.ws = esp_transport_ws_init(T.ssl);
+    const esp_transport_ws_config_t wc = {.ws_path = path, .headers = headers, .propagate_control_frames = true};
+    if (!T.ws || esp_transport_set_default_port(T.ws, 443) != ESP_OK || esp_transport_ws_set_config(T.ws, &wc) != ESP_OK) {
+        tls_free();
+        return false;
+    }
+    uint8_t *area = ticket_area();
+    const uint8_t *data;
+    size_t len;
+    uint32_t age_ms;
+    const yk_ticket_why_t why = yk_ticket_get(area, YK_TICKET_AREA, T.host, esp_rtc_get_time_us(), &data, &len, &age_ms);
+    if (why == YK_TICKET_OK) {
+        esp_tls_client_session_t *s = calloc(1, sizeof(*s));
+        if (s) {
+            mbedtls_ssl_session_init(&s->saved_session);
+            if (mbedtls_ssl_session_load(&s->saved_session, data, len) == 0) {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_HAVE_TIME) && defined(MBEDTLS_SSL_SESSION_TICKETS) && \
+    defined(MBEDTLS_SSL_CLI_C)
+                // TLS 1.3: its reception time in this start's clock (mbedTLS's counts from the start): its age goes on. A
+                // negative age would make mbedTLS leave it out.
+                if (s->saved_session.MBEDTLS_PRIVATE(tls_version) == MBEDTLS_SSL_VERSION_TLS1_3)
+                    s->saved_session.MBEDTLS_PRIVATE(ticket_reception_time) = mbedtls_ms_time() - (mbedtls_ms_time_t)age_ms;
+#endif
+                head->cfg.client_session = T.offered = s;
+                S.offered = true;
+            } else {
+                esp_tls_free_client_session(s);
+            }
+        }
+        printf("YAY_NET ticket %s age_s=%u bytes=%u\n", S.offered ? "offered" : "unreadable", (unsigned)(age_ms / 1000),
+               (unsigned)len);
+    } else if (why != YK_TICKET_NONE) {
+        printf("YAY_NET ticket none why=%s\n", yk_ticket_why_name(why));
+    }
+    yk_ticket_clear(area, YK_TICKET_AREA);
+    return true;
+}
+
+/** hello.ok: the connection's newest ticket kept for the next one (this firmware's, or the next after a restart). In
+ *  the WebSocket client's task, the one that reads: esp-tls replaces its ticket while reading (TLS 1.3 sends tickets
+ *  after the handshake). A TLS 1.2 session (its ticket, or a resumed one's new ticket) carries the server's
+ *  certificate: ~1.3 KB, within the area. */
+static void tls_keep(void) {
+    uint8_t *area = ticket_area();
+    ssl_head_t *head = T.ssl ? esp_transport_get_context_data(T.ssl) : NULL;
+    if (!area || !head || !head->tls) return;
+    esp_tls_client_session_t *s = esp_tls_get_client_session(head->tls);
+    if (!s) {
+        printf("YAY_NET ticket kept=0 why=none_sent\n");
+        return;
+    }
+    size_t n = 0;
+    mbedtls_ssl_session_save(&s->saved_session, NULL, 0, &n);
+    uint8_t *buf = n && n <= YK_TICKET_AREA ? heap_caps_malloc(n, MALLOC_CAP_SPIRAM) : NULL;
+    uint32_t age_ms = 0, life_s = 0;  // TLS 1.2: the ticket came with this handshake, its age is none
+#if defined(MBEDTLS_SSL_SESSION_TICKETS) && defined(MBEDTLS_SSL_CLI_C)
+    life_s = s->saved_session.MBEDTLS_PRIVATE(ticket_lifetime);  // what the ticket says (Fly: 86400)
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_HAVE_TIME)
+    if (s->saved_session.MBEDTLS_PRIVATE(tls_version) == MBEDTLS_SSL_VERSION_TLS1_3) {
+        const mbedtls_ms_time_t age = mbedtls_ms_time() - s->saved_session.MBEDTLS_PRIVATE(ticket_reception_time);
+        age_ms = age > 0 ? (uint32_t)age : 0;
+    }
+#endif
+#endif
+    const bool kept = buf && mbedtls_ssl_session_save(&s->saved_session, buf, n, &n) == 0 &&
+                      yk_ticket_put(area, YK_TICKET_AREA, T.host, esp_rtc_get_time_us(), age_ms, life_s, buf, n);
+    // stack_left: this task's least ever (6 KB: the handshake, and this copy of the session with its certificate).
+    printf("YAY_NET ticket kept=%d tls=1.%d bytes=%u lifetime_s=%u stack_left=%u\n", kept,
+           s->saved_session.MBEDTLS_PRIVATE(tls_version) == MBEDTLS_SSL_VERSION_TLS1_3 ? 3 : 2, (unsigned)n,
+           (unsigned)life_s, (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    heap_caps_free(buf);
+    esp_tls_free_client_session(s);
+}
+#endif
+
+/** hello.ok: the connection's YAY_CONN line (once a connection), and its ticket kept. */
+static void connected(const yk_srv_msg_t *m) {
+    if (S.usb || S.timed) return;
+    S.timed = true;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    const int64_t clock_ms = tv.tv_sec > 1600000000 ? (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000 : 0;
+    const yk_conn_timing_t t = {.dial_us = S.dial_us,
+                                .upgrade_us = S.upgrade_us,
+                                .hello_us = S.hello_us,
+                                .ok_us = esp_timer_get_time(),
+                                .at_ms = m->time_ms > 0 ? m->time_ms : clock_ms,
+                                .firmware = S.cfg.firmware,
+                                .tls = !S.wss                       ? YK_CONN_TLS_NONE
+                                       : S.offered && !S.cert_seen ? YK_CONN_TLS_RESUMED
+                                                                   : YK_CONN_TLS_FULL};
+    static char line[192];  // the WebSocket client's task: its stack is small
+    yk_conn_timing_line(line, sizeof(line), &t);
+    printf("%s\n", line);
+#if CONFIG_YK_SESSION_TLS_TICKETS
+    if (S.wss) tls_keep();
+#endif
+}
+
 // ---------------------------------------------------------------- receiving
 
 static void got_text(const char *json, size_t len) {
     S.st.recv_text++;
     yk_srv_msg_t m;
     const yk_srv_type_t type = yk_proto_parse(json, len, &m);
-    if (type == YK_SRV_HELLO_OK) S.attempt = 0;  // only now is the connection good: a server that takes the socket
-                                                  // and closes it again must not be hammered every second
+    if (type == YK_SRV_HELLO_OK) {
+        S.attempt = 0;  // only now is the connection good: a server that takes the socket and closes it again must not
+                        // be hammered every second
+        connected(&m);
+    }
     if (type == YK_SRV_INVALID) {
         S.st.invalid++;
         ESP_LOGW(TAG, "ignored a message that does not fit the protocol: %.*s", len > 120 ? 120 : (int)len, json);
@@ -171,6 +373,7 @@ static void say_hello(void) {
         xEventGroupSetBits(S.events, BIT_DOWN);
         return;
     }
+    S.hello_us = esp_timer_get_time();
     S.st.sent_text++;
     S.st.connects++;
     S.st.connect_ms = (uint32_t)((esp_timer_get_time() - S.connect_t0) / 1000);
@@ -184,6 +387,7 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     const esp_websocket_event_data_t *e = data;
     switch (id) {
     case WEBSOCKET_EVENT_CONNECTED:
+        S.upgrade_us = esp_timer_get_time();  // its 101 came
         xEventGroupSetBits(S.events, BIT_UP);
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
@@ -233,10 +437,12 @@ static void ws_connect(void) {
     snprintf(headers, TOKEN_MAX + 128, "%s%s%sX-Yaykit-Firmware: %s\r\n", have ? "Authorization: Bearer " : "",
              have ? token : "", have ? "\r\n" : "", S.cfg.firmware ? S.cfg.firmware : "");
     free(token);
-    const esp_websocket_client_config_t wc = {
+    S.upgrade_us = S.hello_us = 0;
+    S.cert_seen = S.offered = S.timed = false;
+    esp_websocket_client_config_t wc = {
         .uri = S.cfg.url,
         .headers = headers,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .crt_bundle_attach = bundle_attach,
         .ping_interval_sec = 20,
         .pingpong_timeout_sec = 45,  // nothing back for 45 s: drop and reconnect (4.1)
         .disable_auto_reconnect = true,
@@ -245,12 +451,22 @@ static void ws_connect(void) {
         .task_stack = 6144,
         .task_prio = 5,
     };
+#if CONFIG_YK_SESSION_TLS_TICKETS
+    if (S.wss && tls_make(headers)) {
+        wc.ext_transport = T.ws;
+        wc.headers = NULL;  // the transport has them
+    }
+#endif
     S.ws = esp_websocket_client_init(&wc);
     if (!S.ws) {
+#if CONFIG_YK_SESSION_TLS_TICKETS
+        tls_free();
+#endif
         xEventGroupSetBits(S.events, BIT_DOWN);
         return;
     }
     esp_websocket_register_events(S.ws, WEBSOCKET_EVENT_ANY, ws_event, NULL);
+    S.dial_us = esp_timer_get_time();  // DNS, TCP, TLS and the upgrade from here (YAY_CONN upgradeMs)
     if (esp_websocket_client_start(S.ws) != ESP_OK) xEventGroupSetBits(S.events, BIT_DOWN);
     stage("ws_start");
 }
@@ -263,6 +479,21 @@ static void ws_close(void) {
     xSemaphoreGive(S.send_lock);
     esp_websocket_client_stop(ws);
     esp_websocket_client_destroy(ws);
+#if CONFIG_YK_SESSION_TLS_TICKETS
+    tls_free();  // its task is gone: nothing reads them any more
+#endif
+}
+
+/** The station has an address (a WebSocket before it only fails). */
+static bool have_ip(void) {
+    esp_netif_t *n = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip;
+    return n && esp_netif_get_ip_info(n, &ip) == ESP_OK && ip.ip.addr != 0;
+}
+
+static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    (void)arg, (void)base, (void)id, (void)data;
+    if (S.events) xEventGroupSetBits(S.events, BIT_KICK);  // an address: connect now, not at the end of a back-off
 }
 
 /** session.reauth: a fresh token (not the cached one, which may still have minutes left), sent as `auth`. Not
@@ -299,6 +530,15 @@ static void session_task(void *arg) {
         xEventGroupClearBits(S.events, BIT_UP | BIT_DOWN);
         if (S.usb && S.usb_peer) xEventGroupSetBits(S.events, BIT_UP);  // a `ys c` that came during the back-off
         if (S.hold) continue;  // held just now: no connection while the phone link needs the memory
+        if (!S.usb && !have_ip()) {
+            // A start or an app switch: Wi-Fi is still joining. The address's event (on_ip) wakes this at once.
+            const int64_t t0 = esp_timer_get_time();
+            printf("YAY_NET session waits_ip\n");
+            while (!S.hold && !have_ip() && esp_timer_get_time() - t0 < IP_WAIT_MAX_MS * 1000LL)
+                xEventGroupWaitBits(S.events, BIT_KICK, pdTRUE, pdFALSE, pdMS_TO_TICKS(500));
+            if (S.hold) continue;
+            printf("YAY_NET session ip=%d after_ms=%u\n", have_ip(), (unsigned)((esp_timer_get_time() - t0) / 1000));
+        }
         S.closing = false;     // a new connection (S.ws is NULL here: nothing sends)
         S.connect_t0 = esp_timer_get_time();
         set_state(YK_SESSION_CONNECTING);
@@ -334,6 +574,7 @@ esp_err_t yk_session_start(const yk_session_config_t *cfg) {
     if (!cfg || !cfg->url) return ESP_ERR_INVALID_ARG;
     S.cfg = *cfg;
     S.usb = !strcmp(cfg->url, YK_SESSION_USB);
+    S.wss = !strncmp(cfg->url, "wss://", 6);
 #if !CONFIG_YAY_DEV
     if (S.usb) return ESP_ERR_NOT_SUPPORTED;
 #endif
@@ -344,6 +585,8 @@ esp_err_t yk_session_start(const yk_session_config_t *cfg) {
     S.text = heap_caps_malloc(TEXT_MAX, MALLOC_CAP_SPIRAM);
     S.frame = heap_caps_malloc(FRAME_MAX, MALLOC_CAP_SPIRAM);
     if (!S.events || !S.send_lock || !S.text || !S.frame) return ESP_ERR_NO_MEM;
+    // The address's event connects at once (no default event loop yet: the wait polls instead).
+    if (!S.usb) esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL);
     // 8 KB of internal stack: the token comes over HTTPS (yaykit_cloud), here.
     if (xTaskCreatePinnedToCore(session_task, "yk_session", 8192, NULL, 5, &S.task, 0) != pdPASS) return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "session to %s", cfg->url);
@@ -407,6 +650,24 @@ void yk_session_stats(yk_session_stats_t *out) { *out = S.st; }
 // ---------------------------------------------------------------- console
 
 static int session_cmd(int argc, char **argv) {
+#if CONFIG_YK_SESSION_TLS_TICKETS
+    // session ticket [forget]: the TLS ticket kept for the next connection (none, its age), or forget it.
+    if (argc >= 2 && !strcmp(argv[1], "ticket")) {
+        uint8_t *area = ticket_area();
+        if (argc >= 3 && !strcmp(argv[2], "forget")) yk_ticket_clear(area, YK_TICKET_AREA);
+        char host[96];
+        const char *path;
+        const uint8_t *data;
+        size_t len;
+        uint32_t age_ms;
+        yk_ticket_url(S.cfg.url, host, sizeof(host), &path);
+        const yk_ticket_why_t why =
+            yk_ticket_get(area, YK_TICKET_AREA, host, esp_rtc_get_time_us(), &data, &len, &age_ms);
+        printf("SESSION_TICKET %s area=%d bytes=%u age_s=%u\n", yk_ticket_why_name(why), area != NULL, (unsigned)len,
+               (unsigned)(age_ms / 1000));
+        return 0;
+    }
+#endif
     (void)argc, (void)argv;
     printf("SESSION_STAT state=%s url=%s connects=%u drops=%u sent_text=%u sent_audio=%u recv_text=%u recv_audio=%u "
            "invalid=%u connect_ms=%u\n",
@@ -447,7 +708,9 @@ static int ys_cmd(int argc, char **argv) {
 #endif
 
 esp_err_t yk_session_register_console(void) {
-    const esp_console_cmd_t stat = {.command = "session", .help = "session: connection state and counts", .func = session_cmd};
+    const esp_console_cmd_t stat = {.command = "session",
+                                    .help = "session [ticket [forget]]: connection state and counts; the TLS ticket kept",
+                                    .func = session_cmd};
     esp_err_t err = esp_console_cmd_register(&stat);
 #if CONFIG_YAY_DEV
     if (err == ESP_OK) {

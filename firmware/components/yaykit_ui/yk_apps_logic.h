@@ -26,7 +26,7 @@
 #define YK_APPS_NAME_MAX_W 96   // a longer name is cut with "…" (the lower two: yk_apps_name_room())
 #define YK_APPS_NAME_APART 12   // the lower two names keep this far apart
 #define YK_APPS_LABEL_DY   62   // the top of the middle's label, below the centre (its disc ends at 56)
-#define YK_APPS_LABEL_MAX_W 96  // "回到 Yay" is about 61 px at 16
+#define YK_APPS_LABEL_MAX_W 108 // "Back to Tikpal" is 108 px at 16 (0.1.12; 96 before): the most the 5 places' lower discs leave
 #define YK_APPS_INK_TOP    4    // a 16 px line's box is empty this far down from its top (Noto Sans SC) ...
 #define YK_APPS_INK_BOTTOM 1    // ... and this far up from its bottom (Latin descenders reach lower than Han)
 #define YK_APPS_BADGE_D    27   // the download mark's centre, right and down from the app's
@@ -37,6 +37,9 @@
 #define YK_APPS_CACHE_D    29   // the cached mark's centre, right and down from the app's (the design's 76 px disc)
 #define YK_APPS_CACHE_R    7    // ... its outer radius, a hollow ring ...
 #define YK_APPS_CACHE_W    3    // ... this wide, filled with paper
+#define YK_APPS_UPDATE_D   27   // the update dot's centre (`update`, 0.1.12), right and up from the app's: on the disc's
+#define YK_APPS_UPDATE_R   6    // ... edge at 45 degrees, coral, 12 across (the settings tile's dot) ...
+#define YK_APPS_UPDATE_EDGE 2   // ... in a paper ring this wide, apart from the disc
 #define YK_APPS_MORE_PLACE 4    // 「更多」 stands at the fifth place, upper left (288 degrees)
 #define YK_APPS_DOT_R      5    // 「更多」's three dots ...
 #define YK_APPS_DOT_GAP    14   // ... this far apart
@@ -48,6 +51,7 @@
 #define YK_APPS_MORE_PLACE6     (YK_APPS_SIX + 4)  // 「更多」: lower left (240 degrees)
 #define YK_APPS_SETTINGS_PLACE  (YK_APPS_SIX + 5)  // 「设置」: upper left (300 degrees)
 #define YK_APPS_GEAR_UNIT  1.5f // 「设置」's gear: the canvas's 24-unit icon at 36 px
+#define YK_APPS_LABEL_MAX_W6 128 // the middle's label on the ring with 「设置」: its discs beside the label stand further out
 
 typedef struct {
     int16_t x, y, w, h;
@@ -84,6 +88,12 @@ int yk_apps_name_room(int slot, int name_h);
 void yk_apps_layout(int n, const int name_w[], int name_h, int label_w, yk_apps_layout_t *out);
 /** The same at the places given (yk_apps_item_slots()). */
 void yk_apps_layout_at(int n, const int slots[], const int name_w[], int name_h, int label_w, yk_apps_layout_t *out);
+/** The widest the middle's label may be on a ring with these places (yk_apps_item_slots()): YK_APPS_LABEL_MAX_W6 with
+ *  「设置」, else YK_APPS_LABEL_MAX_W. */
+int yk_apps_label_max(int n, const int slots[]);
+/** The update dot (`update`, 0.1.12) of an app's disc centred at (cx, cy) drawn at scale k (1: full size, as on the
+ *  ring at rest; 「我的应用」 scales it with the disc): its centre, its coral radius and its paper ring's outer one. */
+void yk_apps_update_dot(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r);
 
 // ---------------------------------------------------------------- motion
 
@@ -107,6 +117,10 @@ bool yk_apps_frame(const yk_apps_layout_t *L, int t_ms, bool closing, yk_apps_po
 
 /** What a touch at (x, y) hits: 0 the middle, 1..n an app (its disc or its name), -1 the paper. */
 int yk_apps_hit(const yk_apps_layout_t *L, int x, int y);
+
+/** The ask card's line with the buddy's name (yk_buddy_name(); NULL: Yay): 「回到 Yay 说？」 / "Talk in Yay?". Returns
+ *  `out`. */
+const char *yk_apps_ask_text(const char *buddy, bool english, char *out, size_t size);
 
 /** `text` cut to max_w px (glyph widths from `width`), ending in "…" when it was longer. Returns its width. */
 int yk_text_fit(const char *text, yk_glyph_width_fn width, void *ctx, int max_w, char *out, size_t size);

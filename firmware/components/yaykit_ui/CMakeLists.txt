@@ -9,10 +9,15 @@
 # (yk_more, Yay's page behind the ring's 「更多」); pure parts in yk_more_logic.c, host tested.
 include(${CMAKE_CURRENT_LIST_DIR}/../../assets/yay/yay_art.cmake)
 idf_component_register(SRCS "yaykit_ui.c" "yk_ui_pair.c" "yk_ui_logic.c" "yk_rim.c" "yk_yay.c" "yk_notice.c" "yk_caption.c"
-                            "yk_transition.c" "yk_apps_logic.c" "yk_apps.c" "yk_catalog.c" "yk_hint.c" "yk_more_logic.c" "yk_more.c"
+                            "yk_transition.c" "yk_apps_logic.c" "yk_apps.c" "yk_catalog.c" "yk_hint.c" "yk_more_logic.c" "yk_more.c" "yk_mark.c"
                             ${YAY_ART_SRCS}
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS ${YAY_ART_INCLUDE_DIRS}
     EMBED_FILES ${YAY_ART_EMBED_FILES}
     REQUIRES lvgl__lvgl
     PRIV_REQUIRES yaykit_board yaykit_link console mbedtls esp_psram esp_partition esp_timer nvs_flash)
+# The Tikpal mark's size for a trial build (`build-yay.sh YK_MARK_PX=88`), passed on to whatever draws with yaykit_ui;
+# yk_mark_fit.h has the size the pages use otherwise.
+if(YK_MARK_PX)
+  target_compile_definitions(${COMPONENT_LIB} PUBLIC "YK_MARK_PX=${YK_MARK_PX}")
+endif()

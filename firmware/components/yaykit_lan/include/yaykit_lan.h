@@ -40,6 +40,9 @@ typedef struct {
     /** The client that said hello is gone. */
     void (*on_close)(void *ctx);
     void *ctx;
+    /** Any hello is taken, with a token or without (the hotspot's own password is the key: 自拍屏 without Bluetooth,
+     *  where the phone joins from a QR code and nothing carries a token to it). Off: the token is checked. */
+    bool any_hello;
 } yk_lan_config_t;
 
 /** Starts the server (any interface; the hotspot's is 192.168.4.1). Again while running: ESP_OK. */

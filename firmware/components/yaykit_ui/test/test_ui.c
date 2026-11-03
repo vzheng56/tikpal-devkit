@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "yk_mark_fit.h"
 #include "yk_round.h"
 #include "yk_ui_logic.h"
 
@@ -70,7 +71,7 @@ static void test_rim_states(void) {
     in.mode = YK_RIM_CONNECTING;
     in.t_ms = 0;
     yk_rim_picture(&in, &P);
-    CHECK(P.n == 1 && P.arc[0].color == YK_INK3 && fabsf(covered(&P) - 40) < 0.01f && P.arc[0].a0 == 0);
+    CHECK(P.n == 1 && P.arc[0].color == YK_SAGE && fabsf(covered(&P) - 40) < 0.01f && P.arc[0].a0 == 0);
     in.t_ms = 750;
     yk_rim_picture(&in, &P);
     CHECK(fabsf(P.arc[0].a0 - 90) < 0.5f);
@@ -265,28 +266,44 @@ static void test_caption(void) {
 static void test_notices(void) {
     const yk_notice_spec_t *s = yk_notice_spec(YK_NOTICE_NOT_HEARD);
     CHECK(s->pose == YK_YAY_HELP && !strcmp(s->zh, "再说一次？") && !strcmp(s->en, "Say it again?"));
-    CHECK(yk_notice_spec(YK_NOTICE_CONNECTING)->zh == NULL && yk_notice_spec(YK_NOTICE_CONNECTING)->rim == YK_RIM_CONNECTING);
+    // Connecting delivery doc B: the words Yay says (after 2 s, yk_notice_show), the sage arc.
+    CHECK(!strcmp(yk_notice_spec(YK_NOTICE_CONNECTING)->zh, "正在连接…") &&
+          !strcmp(yk_notice_spec(YK_NOTICE_CONNECTING)->en, "Connecting…") &&
+          yk_notice_spec(YK_NOTICE_CONNECTING)->rim == YK_RIM_CONNECTING);
+    CHECK(YK_NOTICE_CONNECTING_WORDS_MS == 2000 && YK_NOTICE_OFFLINE_AFTER_MS == 30000);
     CHECK(yk_notice_spec(YK_NOTICE_BUSY)->retry_once);
     CHECK(yk_notice_spec(YK_NOTICE_BATTERY_LOW)->rim == YK_RIM_ALERT && !yk_notice_spec(YK_NOTICE_BATTERY_LOW)->zh);
     CHECK(yk_notice_spec(99) == yk_notice_spec(YK_NOTICE_NONE));
-    // Spec 1 and 9: a notice is at most 8 characters (Chinese).
+    // Spec 1 and 9: a notice is at most 8 characters (Chinese). A Latin name is not counted letter by letter (0.1.12:
+    // 「回 Tikpal 设置网络」 is 5 characters and a name); instead every notice, in both languages, is one line inside
+    // the safe circle at yk_notice_create()'s default height (18 px, the line box from 342), Latin at 0.5 em.
     for (int k = 0; k < YK_NOTICE_COUNT; k++) {
         const char *zh = yk_notice_spec(k)->zh;
         if (!zh) continue;
         int chars = 0, len;
         for (const char *p = zh; *p; p += len) {
             const uint32_t cp = yk_utf8_next(p, &len);
-            chars += cp != ' ';
+            chars += cp >= 0x2E80;
         }
         CHECK(chars <= YK_NOTICE_MAX_CHARS);
+        const double far = 360 - YK_SIZE_STATUS + YK_SIZE_STATUS * 1.2 - YK_CY, room = 2 * sqrt(200.0 * 200 - far * far);
+        for (int en = 0; en < 2; en++) {
+            double w = 0;
+            for (const char *p = en ? yk_notice_spec(k)->en : zh; *p; p += len)
+                w += yk_utf8_next(p, &len) >= 0x2E80 ? YK_SIZE_STATUS : YK_SIZE_STATUS * 0.5;
+            CHECK(w <= room);
+            if (w > room) printf("  notice %d too wide: %.0f px of %.0f\n", k, w, room);
+        }
     }
-    // Network: connecting at first, offline after 45 s of trying, gone when connected.
+    CHECK(!strcmp(yk_notice_spec(YK_NOTICE_OFFLINE)->zh, "回 Tikpal 设置网络"));
+    CHECK(!strcmp(yk_notice_spec(YK_NOTICE_NOT_ADDED)->en, "Add me in the Tikpal app first"));
+    // Network: connecting at first, offline after 30 s of trying (Yay's grace), gone when connected.
     yk_notice_net_t net = {0};
     CHECK(yk_notice_net(&net, false, 1000) == YK_NOTICE_CONNECTING);
-    CHECK(yk_notice_net(&net, false, 45999) == YK_NOTICE_CONNECTING);
-    CHECK(yk_notice_net(&net, false, 46000) == YK_NOTICE_OFFLINE);
-    CHECK(yk_notice_net(&net, true, 47000) == YK_NOTICE_NONE);
-    CHECK(yk_notice_net(&net, false, 50000) == YK_NOTICE_CONNECTING);
+    CHECK(yk_notice_net(&net, false, 30999) == YK_NOTICE_CONNECTING);
+    CHECK(yk_notice_net(&net, false, 31000) == YK_NOTICE_OFFLINE);
+    CHECK(yk_notice_net(&net, true, 32000) == YK_NOTICE_NONE);
+    CHECK(yk_notice_net(&net, false, 35000) == YK_NOTICE_CONNECTING);
 }
 
 static bool art_has(yk_yay_pose_t pose, int size) {
@@ -360,13 +377,37 @@ static void test_yay_palette(void) {
     CHECK(YK_YAY_TRANSPARENT > 0xFFFFFF);
 }
 
+// The buddy's name (0.1.12, YK_PREF_BUDDY): 0 Yay, 1 Wow, 2 Aha; anything else (a later buddy, a bad byte, the -1 of
+// a missing value) is Yay. Names, the same in every language.
+static void test_buddy(void) {
+    CHECK(!strcmp(yk_buddy_name(0), "Yay") && !strcmp(yk_buddy_name(1), "Wow") && !strcmp(yk_buddy_name(2), "Aha"));
+    CHECK(!strcmp(yk_buddy_name(3), "Yay") && !strcmp(yk_buddy_name(-1), "Yay") && !strcmp(yk_buddy_name(255), "Yay"));
+}
+
+// The Tikpal mark's checks (yk_mark_fit.h, 0.1.12): inside the safe circle up to its edge, not a pixel past it; clear
+// of a box only with the gap kept; a page's room caps the size.
+static void test_mark_fit(void) {
+    CHECK(yk_mark_within(YK_CX, YK_CY, 2 * YK_R_CONTENT, YK_R_CONTENT));
+    CHECK(!yk_mark_within(YK_CX, YK_CY, 2 * YK_R_CONTENT + 2, YK_R_CONTENT));
+    CHECK(yk_mark_within(YK_CX, YK_CY - 168, 64, YK_R_CONTENT));   // its top on the circle's top (33)
+    CHECK(!yk_mark_within(YK_CX, YK_CY - 169, 64, YK_R_CONTENT));
+    CHECK(!yk_mark_within(YK_CX + 120, YK_CY - 120, 64, YK_R_CONTENT));  // a corner: 170 + 32 out
+    CHECK(yk_mark_clear(233, 100, 64, 0, 0, 132, 466, 20));   // its square ends at 132, the box starts there
+    CHECK(!yk_mark_clear(233, 100, 64, 1, 0, 132, 466, 20));  // ... not with a gap of one
+    CHECK(yk_mark_clear(233, 100, 64, 6, 300, 60, 100, 80));  // beside it
+    CHECK(!yk_mark_clear(233, 100, 64, 6, 260, 60, 100, 80));
+    CHECK(YK_MARK_UPTO(1000) == YK_MARK_PX && YK_MARK_UPTO(10) == 10);
+}
+
 int main(void) {
+    test_mark_fit();
     test_rim_states();
     test_rim_repaints();
     test_caption();
     test_notices();
     test_yay();
     test_yay_palette();
+    test_buddy();
     printf("%s: %d checks, %d failed\n", failures ? "FAIL" : "ok", checks, failures);
     return failures ? 1 : 0;
 }

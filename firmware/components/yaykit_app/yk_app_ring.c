@@ -362,6 +362,11 @@ static void key(const yk_key_event_t *ev, void *ctx) {
 
 void yk_app_ring_key(const yk_key_event_t *ev) { key(ev, NULL); }
 
+void yk_app_ring_quit(void) {
+    s_leaving = true;
+    yk_key_grab(key, NULL);  // and `key` does nothing now
+}
+
 int yk_app_ring_dev_tap(const char *what) {
     if (!s_active) return -1;
     if (board_lock(500) != ESP_OK) return 1;

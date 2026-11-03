@@ -1,0 +1,36 @@
+/*
+ * The page's look. The colours, the room to keep clear and the text size come from the app (applyEnv writes them
+ * as variables), so the page matches it in light and dark and with the colour the user picked. The fallbacks are
+ * for a page opened without the app.
+ */
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper, #faf7ef); color: var(--ink, #282d29); }
+body {
+  font: calc(15px * var(--font-scale, 1)) / 1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans", "Noto Sans SC", system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* Draw from under the capsule's row down, never beside it; keep clear of the system's bar. */
+  padding: calc(var(--inset-top, 0px) + 8px) 16px calc(var(--inset-bottom, 0px) + 24px);
+}
+h1 { margin: 0; font-size: 1.6em; line-height: 1.25; }
+.lead { margin: -8px 0 0; color: var(--ink2, #646b62); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+button.primary, button.secondary {
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 12px;
+  font: inherit;
+  font-weight: 600;
+  background: var(--accent, #5e7255);
+  color: var(--onAccent, #ffffff);
+}
+button.primary:active { background: var(--accentStrong, #4a5c43); }
+button.secondary { background: var(--card, #ffffff); color: var(--accentText, #4f6247); box-shadow: 0 0 0 1px var(--line, #e5e6dd); }
+.status { margin: 0; min-height: 1.5em; color: var(--ink3, #979d93); }
+/* Coral only for what goes wrong; sage for what went through. */
+.status[data-tone="error"] { color: var(--coralText, #a8492f); }
+.status[data-tone="done"] { color: var(--sageStrong, #5e7255); }

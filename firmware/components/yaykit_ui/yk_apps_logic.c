@@ -3,6 +3,7 @@
 #include "yk_apps_logic.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -90,10 +91,22 @@ void yk_apps_layout(int n, const int name_w[], int name_h, int label_w, yk_apps_
     yk_apps_layout_at(n, slots, name_w, name_h, label_w, out);
 }
 
+int yk_apps_label_max(int n, const int slots[]) {
+    return n > 0 && slots && slots[n - 1] == YK_APPS_SETTINGS_PLACE ? YK_APPS_LABEL_MAX_W6 : YK_APPS_LABEL_MAX_W;
+}
+
+void yk_apps_update_dot(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r) {
+    *x = cx + (int)lroundf(YK_APPS_UPDATE_D * k);
+    *y = cy - (int)lroundf(YK_APPS_UPDATE_D * k);
+    *r = YK_APPS_UPDATE_R * k;
+    *edge_r = (YK_APPS_UPDATE_R + YK_APPS_UPDATE_EDGE) * k;
+}
+
 void yk_apps_layout_at(int n, const int slots[], const int name_w[], int name_h, int label_w, yk_apps_layout_t *out) {
     memset(out, 0, sizeof(*out));
     out->n = n < 0 ? 0 : n > YK_APPS_MAX ? YK_APPS_MAX : n;
-    if (label_w > YK_APPS_LABEL_MAX_W) label_w = YK_APPS_LABEL_MAX_W;
+    const int label_max = yk_apps_label_max(out->n, slots);
+    if (label_w > label_max) label_w = label_max;
     out->label = (yk_box_t){(int16_t)(YK_CX - label_w / 2), (int16_t)(YK_CY + YK_APPS_LABEL_DY), (int16_t)label_w,
                             (int16_t)name_h};
     for (int i = 0; i < out->n; i++) {
@@ -165,6 +178,12 @@ int yk_apps_hit(const yk_apps_layout_t *L, int x, int y) {
     const int dx = x - YK_CX, dy = y - YK_CY;
     if (dx * dx + dy * dy <= YK_APPS_CENTER_HIT_R * YK_APPS_CENTER_HIT_R || in_box(&L->label, x, y, 4)) return 0;
     return -1;
+}
+
+const char *yk_apps_ask_text(const char *buddy, bool english, char *out, size_t size) {
+    if (!buddy || !buddy[0]) buddy = yk_buddy_name(0);
+    snprintf(out, size, english ? "Talk in %s?" : "回到 %s 说？", buddy);
+    return out;
 }
 
 int yk_apps_pick(const yk_apps_slot_t *installed, int n, const yk_catalog_t *cat, yk_apps_item_t *out, int max) {

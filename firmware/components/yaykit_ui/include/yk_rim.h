@@ -4,7 +4,7 @@
 // firmware measured 71 ms a frame that way; a band of boxes is what it does now, yay-device.md 6.5).
 //
 //   LISTEN      sage, wider and brighter with the voice (yk_rim_level; restyled at most 4 times a second)
-//   CONNECTING  a short ink3 arc turning slowly; never says "offline"
+//   CONNECTING  a short sage arc turning slowly (ink3 before 0.1.13; opts.color still picks); never says "offline"
 //   THINKING    a short sage arc sweeping back and forth (waiting for the cloud)
 //   COUNTDOWN   coral, what is left (yk_rim_value: permille)
 //   PROGRESS    sage, what is done (downloads, installs)

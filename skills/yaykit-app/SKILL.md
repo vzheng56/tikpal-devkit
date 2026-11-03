@@ -45,7 +45,7 @@ description: tikpal-app 的旧名字，内容一样，开发包 1.4 起留一版
 6. **NVS**：只写自己的命名空间 `yk_<简称>`（≤ 15 个字符）；绝不 `nvs_flash_erase()`。
 7. **名字**：项目名 `yaykit_<slug，连字符换下划线>`；记录的 kind、`yk cmd` 的命令名用去掉连字符的简称做前缀（`mytimer.session`），只用小写字母、数字和点。
 8. **界面**：只用 `yk_round.h` 的主题色和字号（同一目录的 `yk_theme.h` 是生成它的底层令牌，数值和圆屏规范不完全一样，应用里别直接用），不写死颜色，不用蓝色；文字在半径 200 的安全圆里；正文 22–24（三行放不下可以用 20），说明不小于 16，不为塞字缩字；说人话，不显示错误码。
-9. **内存**：内部 RAM 从 ready 起的最低不低于 40 KB；大东西放 PSRAM。
+9. **内存**：内部 RAM 从 ready 起的最低（`./kit info` 的 `heap.internalMinSinceReady`）不低于 40,000 字节，低于 60,000 字节在提交单里写原因；大东西放 PSRAM。
 10. **云**：调之前 `yk_cloud_has()`；限额从 `/me.capabilities` 读；提示词和模型不写进固件；忽略不认识的字段。
 11. **安全**：代码、日志、提交单里不出现密钥、令牌、账号、设备编号（`kit logs`、`kit info` 已经把设备编号抹掉了）。
 12. **版本**：`app.json` 的 `version` 和 `CMakeLists.txt` 的 `PROJECT_VER` 一起改；`minYay`、`apiLevel` 照开发包（`./kit version`）。

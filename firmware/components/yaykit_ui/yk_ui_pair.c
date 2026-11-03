@@ -32,8 +32,8 @@ void yk_ui_pair_content(lv_obj_t *screen, bool starting, lv_event_cb_t on_turn_o
     snprintf(text, sizeof(text), "%.4s %.4s", pin, pin + 4);
     yk_ui_label(screen, text, 0, 286, 466, 30, YK_INK);
     bool connected = yk_link_ble_connected();
-    const char *hint = yk_ui_is_english() ? (connected ? "Phone connected" : "Scan with the Yay app or enter the code")
-                               : (connected ? "已连接手机" : "用 Yay App 扫码或输入配对码");
+    const char *hint = yk_ui_is_english() ? (connected ? "Phone connected" : "Tikpal app: scan or enter the code")
+                               : (connected ? "已连接手机" : "用 Tikpal App 扫码或输入配对码");
     yk_ui_label(screen, hint, 35, 326, 396, 20, connected ? YK_SAGE : YK_INK2);
     yk_ui_button(screen, yk_ui_is_english() ? "Turn off" : "关闭蓝牙", 143, 366, 180, 44, on_turn_off, NULL, YK_PANEL);
 }

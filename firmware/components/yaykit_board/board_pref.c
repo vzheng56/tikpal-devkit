@@ -1,5 +1,6 @@
 // The device's shared preferences (P10): volume, brightness, screen-off time in NVS namespace yk_pref, read and
-// written by every firmware. Values are checked on the way in and out (yk_board_logic.c).
+// written by every firmware; since 0.1.12 also the buddy (written by the main firmware only). Values are checked on
+// the way in and out (yk_board_logic.c).
 #include <stdbool.h>
 
 #include "board.h"
@@ -11,7 +12,7 @@ static const char *TAG = "board_pref";
 
 #define NS "yk_pref"
 
-static const char *const KEYS[] = {"volume", "bright", "screen_off"};
+static const char *const KEYS[] = {"volume", "bright", "screen_off", "buddy"};  // by yk_pref_t; buddy is a u8
 
 /** The stored value or -1. */
 static int load(yk_pref_t which) {
@@ -69,4 +70,35 @@ int board_pref_screen_off_s(void) { return yk_board_pref_read(YK_PREF_SCREEN_OFF
 
 esp_err_t board_pref_set_screen_off_s(int seconds) {
     return store(YK_PREF_SCREEN_OFF, yk_board_pref_clamp(YK_PREF_SCREEN_OFF, seconds));
+}
+
+// The buddy (0.1.12): a u8 under its own key. Only additions: the keys above keep their names and types, and
+// YK_API_LEVEL stays where it is. Firmware built before this never reads it (its 「回到 Yay 说？」 keeps Yay);
+// firmware built with it, on a main firmware that never wrote it (0.1.12 does not), reads the default: Yay.
+
+int board_pref_buddy(void) {
+    nvs_handle_t h;
+    uint8_t v = 0xFF;
+    if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_u8(h, KEYS[YK_PREF_BUDDY], &v) != ESP_OK) v = 0xFF;
+        nvs_close(h);
+    }
+    return yk_board_pref_read(YK_PREF_BUDDY, v == 0xFF ? -1 : v);
+}
+
+esp_err_t board_pref_set_buddy(int buddy) {
+    const uint8_t value = (uint8_t)yk_board_pref_clamp(YK_PREF_BUDDY, buddy);
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s not saved: %s", KEYS[YK_PREF_BUDDY], esp_err_to_name(err));
+        return err;
+    }
+    uint8_t old = 0xFF;
+    if (nvs_get_u8(h, KEYS[YK_PREF_BUDDY], &old) != ESP_OK || old != value) {  // no flash write for the same value
+        err = nvs_set_u8(h, KEYS[YK_PREF_BUDDY], value);
+        if (err == ESP_OK) err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
 }

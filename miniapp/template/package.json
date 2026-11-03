@@ -1,0 +1,17 @@
+{
+  "name": "__SLUG__-miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tikpal-miniapp dev",
+    "build": "tikpal-miniapp build",
+    "check": "tikpal-miniapp check",
+    "verify": "tikpal-miniapp verify",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@tikpal/miniapp": "file:__KIT__",
+    "typescript": "5.9.3"
+  }
+}

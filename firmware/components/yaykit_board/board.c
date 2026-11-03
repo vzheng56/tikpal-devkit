@@ -81,6 +81,7 @@ esp_err_t board_init(void)
 
     s_inited = true;
     ESP_LOGI(TAG, "power on, I2C ready (SDA=%d SCL=%d)", BOARD_PIN_I2C_SDA, BOARD_PIN_I2C_SCL);
+    board_charge_limit();  // before touch polls the bus; logs, never fails the start
     return ESP_OK;
 }
 

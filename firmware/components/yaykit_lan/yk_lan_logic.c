@@ -32,7 +32,8 @@ yk_lan_hello_t yk_lan_hello(const char *text, const char *token, char *name, siz
     const cJSON *t = cJSON_GetObjectItemCaseSensitive(doc, "t");
     if (cJSON_IsObject(doc) && cJSON_IsString(t) && !strcmp(t->valuestring, "hello")) {
         const cJSON *tok = cJSON_GetObjectItemCaseSensitive(doc, "token");
-        out = cJSON_IsString(tok) && yk_lan_token_equal(token, tok->valuestring) ? YK_LAN_HELLO_OK : YK_LAN_HELLO_BAD;
+        out = !token || (cJSON_IsString(tok) && yk_lan_token_equal(token, tok->valuestring)) ? YK_LAN_HELLO_OK
+                                                                                            : YK_LAN_HELLO_BAD;
         const cJSON *n = cJSON_GetObjectItemCaseSensitive(doc, "name");
         if (out == YK_LAN_HELLO_OK && name && size && cJSON_IsString(n)) {
             snprintf(name, size, "%s", n->valuestring);

@@ -1,10 +1,12 @@
 // Host tests for the app ring, the app catalog and the hint arrow (yk_apps_logic.c). Run: bash test/run.sh
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "yk_apps_logic.h"
+#include "yk_more.h"
 #include "yk_round.h"
 
 static int failures, checks;
@@ -96,7 +98,7 @@ static void test_layout(void) {
     // Every count, the widest names and labels, two line heights: every text inside the content circle (r 200),
     // nothing overlapping, every disc (with the in-use ring) inside too.
     const int name_ws[] = {16, 48, 80, 96, 140};
-    const int label_ws[] = {28, 61, 96, 130};
+    const int label_ws[] = {28, 61, 96, 108, 130};
     const int hs[] = {22, 24};
     int combos = 0;
     for (int n = 0; n <= 5; n++)
@@ -139,7 +141,7 @@ static void test_layout(void) {
                     CHECK(ok);
                     combos++;
                 }
-    CHECK(combos == 6 * 5 * 4 * 2);
+    CHECK(combos == 6 * 5 * 5 * 2);
 
     // How wide a name may be: 96 at the top and the sides, less for the lower two (they share the bottom).
     CHECK(yk_apps_name_room(0, 23) == YK_APPS_NAME_MAX_W && yk_apps_name_room(1, 23) == YK_APPS_NAME_MAX_W);
@@ -358,12 +360,12 @@ static void test_pick_ring(void) {
     // 「中间 Yay 名字底到正下方圆盘顶」, an English name like Recording at the bottom).
     {
         const int name_ws[] = {16, 48, 80, 96, 140};
-        const int label_ws[] = {28, 61, 96, 130};
+        const int label_ws[] = {28, 61, 96, 108, 130};  // 130: as wide as the ring with 「设置」 lets it be (128)
         const int hs[] = {22, 24};
         int combos = 0, gap_min = 99;
         for (int apps = 0; apps <= 4; apps++)
             for (size_t a = 0; a < 5; a++)
-                for (size_t b = 0; b < 4; b++)
+                for (size_t b = 0; b < 5; b++)
                     for (size_t c = 0; c < 2; c++) {
                         yk_apps_item_t items[YK_APPS_MAX];
                         const int k = apps + 2;
@@ -375,7 +377,8 @@ static void test_pick_ring(void) {
                         for (int i = 0; i < k; i++) w[i] = name_ws[(a + i) % 5];
                         yk_apps_layout_t L;
                         yk_apps_layout_at(k, slots, w, hs[c], label_ws[b], &L);
-                        bool ok = box_in(&L.label, YK_R_CONTENT);
+                        bool ok = box_in(&L.label, YK_R_CONTENT) && L.label.w <= YK_APPS_LABEL_MAX_W6;
+                        if (label_ws[b] >= YK_APPS_LABEL_MAX_W6) ok = ok && L.label.w == YK_APPS_LABEL_MAX_W6;
                         yk_box_t texts[1 + YK_APPS_MAX];
                         int nt = 0, discs[1 + YK_APPS_MAX][3], nd = 0;
                         texts[nt++] = L.label;
@@ -408,9 +411,17 @@ static void test_pick_ring(void) {
                         CHECK(ok);
                         combos++;
                     }
-        CHECK(combos == 5 * 5 * 4 * 2);
+        CHECK(combos == 5 * 5 * 5 * 2);
         printf("  six-place ring: the middle's label to the bottom disc (in-use ring included): %d px at least\n", gap_min);
         CHECK(gap_min >= 1);
+        // The middle's label (0.1.12): "Back to Tikpal" is 108 px at 16 on the device's font, within either ring's room.
+        int six[YK_APPS_MAX], five[YK_APPS_MAX];
+        const yk_apps_item_t ring6[] = {{.slug = "a"}, {.slug = YK_APPS_MORE}, {.slug = YK_APPS_SETTINGS}};
+        const yk_apps_item_t ring5[] = {{.slug = "a"}, {.slug = YK_APPS_MORE}};
+        yk_apps_item_slots(ring6, 3, six);
+        yk_apps_item_slots(ring5, 2, five);
+        CHECK(yk_apps_label_max(3, six) == YK_APPS_LABEL_MAX_W6 && yk_apps_label_max(2, five) == YK_APPS_LABEL_MAX_W);
+        CHECK(yk_apps_label_max(0, five) == YK_APPS_LABEL_MAX_W && YK_APPS_LABEL_MAX_W >= 108);
     }
     // The bottom place's name: as wide as elsewhere (a long English name is cut with … to it, inside the circle).
     CHECK(yk_apps_name_room(YK_APPS_SIX + 3, 23) >= 80);
@@ -439,6 +450,26 @@ static void test_text(void) {
     CHECK(c[0] == 0);
     yk_first_char(NULL, c);
     CHECK(c[0] == 0);
+}
+
+// 「回到 Yay 说？」 with the buddy's name (0.1.12, YK_PREF_BUDDY): Yay until the main firmware sets another.
+static void test_ask_text(void) {
+    char ask[48];
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(0), false, ask, sizeof(ask)), "回到 Yay 说？"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(0), true, ask, sizeof(ask)), "Talk in Yay?"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(1), true, ask, sizeof(ask)), "Talk in Wow?"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(2), false, ask, sizeof(ask)), "回到 Aha 说？"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(7), false, ask, sizeof(ask)), "回到 Yay 说？"));  // unknown: Yay
+    CHECK(!strcmp(yk_apps_ask_text(NULL, true, ask, sizeof(ask)), "Talk in Yay?"));
+    CHECK(!strcmp(yk_apps_ask_text("", false, ask, sizeof(ask)), "回到 Yay 说？"));
+    // Every buddy's line, both languages, on the card (290 px at 22: Han a full em, the rest 9/16).
+    for (int b = 0; b < 3; b++)
+        for (int en = 0; en < 2; en++) {
+            yk_apps_ask_text(yk_buddy_name(b), en, ask, sizeof(ask));
+            int w = 0, len;
+            for (const char *p = ask; *p; p += len) w += yk_utf8_next(p, &len) < 0x80 ? 22 * 9 / 16 : 22;
+            CHECK(w <= 290);
+        }
 }
 
 static void test_catalog(void) {
@@ -692,14 +723,72 @@ static void test_hint_rules(void) {
     }
 }
 
+// 0.1.12 (docs/delivery/2026-10-30-yay-0.1.12.md 5): yk_apps_item_t's `update` is added last, so that an extension
+// built before keeps its layout; nobody but the main firmware sets it (the picks leave it false); the dot sits on each
+// disc's upper right, inside the content circle on every ring, clear of the lower right's marks and of the names.
+static void test_update_dot(void) {
+    _Static_assert(offsetof(yk_apps_item_t, update) > offsetof(yk_apps_item_t, cached), "update is added last");
+    _Static_assert(offsetof(yk_apps_item_t, update) >= offsetof(yk_apps_item_t, icon), "update is added last");
+    _Static_assert(offsetof(yk_more_item_t, update) > offsetof(yk_more_item_t, icon_color), "update is added last");
+    const yk_apps_item_t plain = {.slug = "breathe", .installed = true};  // as an extension's ring makes them
+    CHECK(!plain.update);
+    yk_catalog_t cat;
+    memset(&cat, 0, sizeof(cat));
+    const yk_apps_slot_t inst[] = {{"party-play", 100}, {"breathe", 200}};
+    yk_apps_item_t out[YK_APPS_MAX];
+    const int n = yk_apps_pick_ring(inst, 2, NULL, 0, &cat, out, YK_APPS_MAX);
+    bool any = false;
+    for (int i = 0; i < n; i++) any |= out[i].update;
+    CHECK(n == 4 && !any);
+    // Where it goes: on the disc's edge at 45 degrees, upper right; scaled with the disc.
+    int x, y;
+    float r, edge;
+    yk_apps_update_dot(233, 91, 1.0f, &x, &y, &r, &edge);
+    CHECK(x == 233 + YK_APPS_UPDATE_D && y == 91 - YK_APPS_UPDATE_D && r == YK_APPS_UPDATE_R && edge > r);
+    CHECK(fabs(hypot(x - 233, y - 91) - YK_APPS_SAT_R) < 2);
+    yk_apps_update_dot(233, 233, 100.0f / (2 * YK_APPS_SAT_R), &x, &y, &r, &edge);  // 「我的应用」's middle one (100 px)
+    CHECK(fabs(hypot(x - 233, y - 233) - 50) < 2 && r > YK_APPS_UPDATE_R);
+    // Every ring: 1-5 places at r 142, and the 6 at r 128 (with 「更多」 and 「设置」).
+    const int w[YK_APPS_MAX] = {96, 96, 96, 96, 96, 96};
+    for (int six = 0; six < 2; six++)
+        for (int k = 1; k <= (six ? 1 : 5); k++) {
+            yk_apps_layout_t L;
+            if (six) {
+                yk_apps_item_t items[6] = {{.slug = "a"}, {.slug = "b"}, {.slug = "c"}, {.slug = "d"},
+                                           {.slug = YK_APPS_MORE}, {.slug = YK_APPS_SETTINGS}};
+                int slots[YK_APPS_MAX];
+                yk_apps_item_slots(items, 6, slots);
+                yk_apps_layout_at(6, slots, w, 24, 96, &L);
+            } else {
+                yk_apps_layout(k, w, 24, 96, &L);
+            }
+            for (int i = 0; i < L.n; i++) {
+                const int cx = L.sat[i].cx, cy = L.sat[i].cy;
+                yk_apps_update_dot(cx, cy, 1.0f, &x, &y, &r, &edge);
+                const int e = (int)ceilf(edge);
+                CHECK(corner_in(x + e, y - e, YK_R_CONTENT) && corner_in(x - e, y - e, YK_R_CONTENT) &&
+                      corner_in(x + e, y + e, YK_R_CONTENT));
+                // apart from the cached mark and the download badge (lower right)
+                const double to_badge = hypot(x - (cx + YK_APPS_BADGE_D), y - (cy + YK_APPS_BADGE_D));
+                CHECK(to_badge > edge + YK_APPS_BADGE_R);
+                // above its own name
+                const yk_box_t dot = {(int16_t)(x - e), (int16_t)(y - e), (int16_t)(2 * e), (int16_t)(2 * e)};
+                for (int j = 0; j < L.n; j++) CHECK(!meet(&dot, &L.sat[j].name));
+                CHECK(!meet(&dot, &L.label));
+            }
+        }
+}
+
 int main(void) {
     test_slots();
     test_layout();
+    test_update_dot();
     test_motion();
     test_hit();
     test_pick();
     test_pick_ring();
     test_text();
+    test_ask_text();
     test_catalog();
     test_icon();
     test_hint_geometry();

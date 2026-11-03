@@ -11,6 +11,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "yaykit_ui.h"
 #include "yk_apps_logic.h"
 #include "yk_hint.h"
 #include "yk_round.h"
@@ -30,6 +31,7 @@ typedef struct {
     bool cached;                 // in the package cache (not in a slot): a hollow sage ring, not dimmed
     bool more;                   // 「更多」: three dots
     bool settings;               // 「设置」: a gear
+    bool update;                 // a newer version (0.1.12): a coral dot on the upper right
     const lv_image_dsc_t *icon;  // the caller's, or `own`
     lv_image_dsc_t own;          // from the catalog: RGB565A8 in PSRAM, already dimmed when not installed
 } sat_t;
@@ -103,6 +105,13 @@ static lv_area_t element_area(int e, const yk_apps_pose_t *p) {
     const lv_area_t badge = disc_area(p->cx + (int)lroundf(YK_APPS_BADGE_D * k), p->cy + (int)lroundf(YK_APPS_BADGE_D * k),
                                       YK_APPS_BADGE_R * k);
     join(&a, &badge);
+    if (s.sat[e - 1].update) {  // the update dot, upper right
+        int dx, dy;
+        float r, edge;
+        yk_apps_update_dot(p->cx, p->cy, k, &dx, &dy, &r, &edge);
+        const lv_area_t dot = disc_area(dx, dy, edge);
+        join(&a, &dot);
+    }
     const lv_area_t name = carried(&st->name, st->cx, st->cy, p);
     join(&a, &name);
     return a;
@@ -175,6 +184,14 @@ void yk_draw_cached_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t op
     yk_draw_disc(layer, mx, my, (YK_APPS_CACHE_R - YK_APPS_CACHE_W) * k, YK_PAPER, opa);
 }
 
+void yk_draw_update_dot(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
+    int x, y;
+    float r, edge;
+    yk_apps_update_dot(cx, cy, k, &x, &y, &r, &edge);
+    yk_draw_disc(layer, x, y, edge, YK_PAPER, opa);
+    yk_draw_disc(layer, x, y, r, YK_CORAL, opa);
+}
+
 /** 「设置」's gear (the canvas's 24-unit icon at 36 px): a ring, a hub and eight spokes, on the disc. */
 static void draw_gear(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
     const float u = YK_APPS_GEAR_UNIT * k, w = 2 * u;
@@ -240,6 +257,8 @@ static void draw_sat(lv_layer_t *layer, int i) {
     const bool own = t->more || t->settings;  // the ring's own places: no marks, never dimmed
     if (t->cached && !t->installed && !own) yk_draw_cached_mark(layer, p->cx, p->cy, k, p->opa);
     else if (!local && !own) yk_draw_download_mark(layer, p->cx, p->cy, k, p->opa);
+    // A newer version (0.1.12): on an app in a slot, or on 「设置」 when Tikpal or any app has one (the main firmware's).
+    if (t->update && (t->installed || t->settings)) yk_draw_update_dot(layer, p->cx, p->cy, k, p->opa);
     const lv_area_t na = carried(&s.L.sat[i].name, s.L.sat[i].cx, s.L.sat[i].cy, p);
     const uint32_t color = t->current ? YK_SAGE_TEXT : local || own ? YK_INK : YK_INK2;
     yk_draw_text(layer, t->name, s.font, color, text_opa(p, 0.6f), &na);
@@ -405,6 +424,7 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
         t->settings = !strcmp(t->slug, YK_APPS_SETTINGS);
         t->installed = items[i].installed;
         t->cached = items[i].cached;
+        t->update = items[i].update && !t->more;
         t->current = current && !strcmp(t->slug, current);
         const yk_catalog_entry_t *e = have_cat && !t->more && !t->settings ? yk_catalog_find(cat, t->slug) : NULL;
         const char *name = items[i].name ? items[i].name
@@ -426,9 +446,10 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
     heap_caps_free(raw);
     heap_caps_free(cat);
     s_stats.icons_ms = (int)((esp_timer_get_time() - t_icons) / 1000);
-    const char *label = s.home ? "Yay" : en ? "Back to Yay" : "回到 Yay";
-    int label_w = YK_APPS_LABEL_MAX_W;
-    if (s.font) label_w = yk_text_fit(label, glyph_w, (void *)s.font, YK_APPS_LABEL_MAX_W, s.label, sizeof(s.label));
+    const char *label = s.home ? "Tikpal" : en ? "Back to Tikpal" : "回到 Tikpal";
+    const int label_max = yk_apps_label_max(n, slots);
+    int label_w = label_max;
+    if (s.font) label_w = yk_text_fit(label, glyph_w, (void *)s.font, label_max, s.label, sizeof(s.label));
     else snprintf(s.label, sizeof(s.label), "%s", label);
     yk_apps_layout_at(n, slots, name_w, s.line_h, label_w, &s.L);
 
@@ -557,7 +578,8 @@ bool yk_apps_ask(lv_obj_t *parent, yk_apps_cb_t cb, void *ctx) {
     lv_obj_set_style_bg_color(card, lv_color_hex(ASK_CARD), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_clickable(card, false);  // the tap is the paper's, anywhere
-    ask_label(card, 22, 22, YK_INK, en ? "Talk in Yay?" : "回到 Yay 说？");
+    char ask[48];  // the buddy's name (YK_PREF_BUDDY): 「回到 Yay 说？」 until the main firmware sets another
+    ask_label(card, 22, 22, YK_INK, yk_apps_ask_text(yk_ui_buddy_name(), en, ask, sizeof(ask)));
     ask_label(card, 62, YK_SIZE_MIN, YK_INK3, en ? "Tap to go · press to stay" : "点屏幕回去 · 短按留下");
     lv_obj_add_event_cb(root, ask_tapped, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(root, ask_deleted, LV_EVENT_DELETE, NULL);
@@ -627,7 +649,7 @@ void yk_apps_leaving(const char *slug, const char *name) {
     lv_obj_set_clickable(o, true);  // nothing under it takes a touch now
     // The prototype's baselines (214 and 252) for 16 and 24 px lines.
     leaving_label(o, 196, YK_SIZE_MIN, YK_INK2, home ? (en ? "Back to" : "正在回到") : (en ? "Opening" : "正在打开"));
-    leaving_label(o, 226, YK_SIZE_HEADING, YK_INK, home ? "Yay" : name);
+    leaving_label(o, 226, YK_SIZE_HEADING, YK_INK, home ? "Tikpal" : name);
     ESP_LOGI(TAG, "leaving for %s", home ? YK_APPS_HOME : slug);
 }
 

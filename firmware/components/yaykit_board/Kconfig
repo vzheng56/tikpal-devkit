@@ -7,7 +7,7 @@ config YK_BOARD_LCD_BUFFER_LINES
     help
         One band of this many lines (466 x lines x 2 bytes) in internal, DMA-capable RAM. 40 lines (37 KB) by
         default; the Yay main firmware, which also runs Wi-Fi, TLS and the speech models, uses fewer to keep
-        40 KB of internal RAM free. Keep it even (the panel's even-start rule).
+        40,000 bytes of internal RAM free. Keep it even (the panel's even-start rule).
 
 config YK_BOARD_LVGL_CORE
     int "Core for the LVGL task (-1: either)"

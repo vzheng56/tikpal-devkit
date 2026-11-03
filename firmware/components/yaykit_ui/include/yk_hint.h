@@ -6,7 +6,7 @@
 //   TALK   just added: the first 3 times the screen wakes on Yay's home, "按住这里说话"; never again after 3 turns
 //   TAP    a tap on Yay's home that did nothing: "按侧键说话", once per wake
 //   APPS   the first time in each extension: "双击：应用和回家"; never again once the app ring was opened
-//   BACK   back in Yay from "回到 Yay 说？": "按住这里说话"
+//   BACK   back in the main firmware from "回到 Yay 说？" (the buddy's name): "按住这里说话"
 // Never while the app ring is open; listening, thinking, replying, installing, counting down and the screen being
 // off are the caller's to check.
 //

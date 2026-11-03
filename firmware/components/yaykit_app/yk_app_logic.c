@@ -257,13 +257,13 @@ yk_guard_action_t yk_boot_guard(uint8_t stored, yk_reset_t reset, bool is_home, 
 static const struct {
     const char *slug, *zh, *en;
 } NAMES[] = {
-    {"yay", "Yay", "Yay"},
+    {"yay", "Tikpal", "Tikpal"},
     {"party-play", "聚会玩", "Party Play"},
     {"language-buddy", "口语陪练", "Language Buddy"},
     {"homework-buddy", "作业伙伴", "Homework Buddy"},
     {"breathe", "呼吸之间", "Breathe"},
     {"template", "扩展模板", "Counter Template"},
-    {"tikpal", "Tikpal", "Tikpal"},
+    {"tikpal", "Tikpal 原厂", "Tikpal Classic"},  // the old Tikpal factory firmware, not the main firmware
     {"recording-card", "录音卡", "Recording Card"},
     {"translator", "面对面翻译", "Face to Face"},
 };

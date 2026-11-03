@@ -15,7 +15,7 @@
 3. **上架和下架。** 上不上架由 Tikpal 决定。发现安全问题、违反本协议、用户投诉或法律要求时，Tikpal 可以暂停或下架；已经装在用户设备上的，可以停止更新、从应用市场撤下。尽量提前通知你，紧急的先下架后通知。
 4. **云能力。** AI 对话、语音识别、语音合成、存数据等由 Tikpal 提供，按用量扣**用户账户的点数**，跟 Tikpal 自己的应用一样；每个应用有限额，立项时定。开发者现在不付费、不分成；以后可能调整，会提前通知。
 5. **收费。** 现在应用都免费（`app.json` 的 `pricing` 只有 `free`）。你不在应用里另外收费，也不引导用户到别处付费。以后开放付费另定。
-6. **隐私。** 应用不收集用户的个人信息；确实要收集的，立项时说明、应用页写清、得到用户同意。数据不传到 Tikpal 以外的服务器。面向儿童的应用照 Tikpal 的儿童规则。审核时 Tikpal 会处理你的 GitHub 账号、提交的代码和日志，正式版会写清楚怎么处理。
+6. **隐私。** 应用不收集用户的个人信息；确实要收集的，立项时说明、应用页写清、得到用户同意。数据不传到 Tikpal 以外的服务器。面向儿童的应用照 Tikpal 的儿童规则。审核时 Tikpal 会处理你的 GitHub 账号、提交的代码和日志，正式版会写清楚怎么处理。审核时，Tikpal 会把你提交的源码和小程序交给它选用的 AI 模型服务商读，只为这次审核；Tikpal 只选不拿这些数据训练模型的服务。具体是哪家、存多久，正式版写清楚。
 7. **不许做的。** 恶意代码；绕过签名或审核；冒充别的应用或 Tikpal；碰别的应用的数据、分区和硬件资源；擦用户数据；违法、色情、暴力、侵权的内容；未经允许录音、录像；在单子或仓库里放别人的个人信息。
 8. **版本和更新。** 版本号只往上走；每一版都要重新审核；有安全问题时，Tikpal 可以要求你限期修复。
 9. **不保证。** 开发包和服务按现状提供；云能力和限额可能调整，会提前通知。
@@ -57,7 +57,9 @@ Contracting party: **Spatial Therapy Inc**.
 6. **Privacy.** An app does not collect users' personal information; where it truly must, say so in the proposal and on
    the app's page, and ask the user's consent. Data does not go to servers other than Tikpal's. Apps for children
    follow Tikpal's rules for children. For the review Tikpal handles your GitHub account, the code you submit and your
-   logs; the final version will say how.
+   logs; the final version will say how. For the review, Tikpal gives the source code and mini app you submit to an AI
+   model provider of its choosing to read, for that review only; Tikpal chooses only services that do not train models
+   on this data. The final version will name the provider and say how long the data is kept.
 7. **Not allowed.** Malicious code; getting around signing or review; posing as another app or as Tikpal; touching
    other apps' data, partitions or hardware; erasing users' data; illegal, pornographic, violent or infringing
    content; recording sound or pictures without permission; putting other people's personal information in issues or

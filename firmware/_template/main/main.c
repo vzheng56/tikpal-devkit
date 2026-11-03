@@ -168,7 +168,10 @@ void app_main(void) {
     show();
     lv_screen_load(screen);
     lv_refr_now(NULL);
-    board_brightness_set(board_pref_brightness());  // the device's brightness, set in Yay (P10)
+    // Yay's settings through yaykit_app (0.1.13): the brightness (capped while the battery is low), and as needed
+    // yk_app_screen_off_s() for the screen-off, yk_app_volume() / yk_app_set_volume(), yk_app_english(). The battery
+    // guard (sleep when it runs out) comes with yk_app_start() and yk_app_ready() by itself.
+    board_brightness_set(yk_app_brightness());
     // The first time in this app: an arrow at the side key, 「双击：应用和回家」 (yk_hint, P24), until the app ring was
     // opened once. Any press takes it away (yaykit_app).
     if (yk_hint_should(YK_HINT_APPS)) yk_hint_show(screen, YK_HINT_APPS, NULL);

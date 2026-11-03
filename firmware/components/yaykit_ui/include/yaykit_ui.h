@@ -34,6 +34,11 @@ lv_obj_t *yk_ui_button(lv_obj_t *parent, const char *text, int x, int y, int w, 
 void yk_ui_pair_content(lv_obj_t *screen, bool starting, lv_event_cb_t on_turn_on, lv_event_cb_t on_turn_off);
 /** English text in the shared pages (default Chinese). Call with the board lock held, before drawing. */
 void yk_ui_set_english(bool on);
+/** The buddy's name, who talks with you: Yay, Wow or Aha, the same in every language (0.1.12). From the device's
+ *  shared setting (yaykit_board's board_pref_buddy(), YK_PREF_BUDDY), read each call; Yay while the main firmware has
+ *  not set another (0.1.12 never does) and for a value this build does not know. Only an addition: YK_API_LEVEL
+ *  stays, firmware built before keeps its Yay. Needs NVS initialised. */
+const char *yk_ui_buddy_name(void);
 /** Registers `snap`: prints the real LVGL frame as base64 RGB565 between SNAP_BEGIN/SNAP_END. */
 void yk_ui_register_snapshot(void);
 /** True while `snap` is streaming, so periodic banners can stay quiet. */

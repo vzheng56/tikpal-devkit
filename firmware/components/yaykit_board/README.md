@@ -11,10 +11,10 @@ tikpal-r1 圆屏（ESP32-S3R8、32 MB Flash、8 MB PSRAM、466×466 AMOLED）的
 | `include/cjk_font.h`、`cjk_font.c`、`yk_font_pack.c` | 从 `fonts` 分区映射字体包，按语言选主字体，交给 LVGL TinyTTF |
 | `fonts/cjk/yaykit_fonts.bin`、`OFL.txt`、`OFL-NotoSansJP.txt` | 共享字体分区的内容：简中、日文两份子集加索引，3 MB 整个分区的镜像（SIL OFL 1.1，见下文「字体包」） |
 | `fonts/gen_font_pack.py`、`fonts/cjk/tikpal_sc_chars.txt` | 生成字体包；原来那份字体的全部字符（生成时照样放进简中） |
-| `board_pref.c` | 全设备共用的音量、亮度、息屏时间（共享 NVS `yk_pref`，公共层计划 P10） |
-| `board_power.c` | 电量（ESP32 ADC 读 GPIO17 的 V_BAT/2、GPIO18 的 USB 5 V/2，P20）和 SW6106 只读对照 |
+| `board_pref.c` | 全设备共用的音量、亮度、息屏时间、伙伴（共享 NVS `yk_pref`，公共层计划 P10；伙伴 0.1.12 起） |
+| `board_power.c` | 电量（ESP32 ADC 读 GPIO17 的 V_BAT/2、GPIO18 的 USB 5 V/2，P20）和 SW6106 对照；开机把 SW6106 的 5 V 充电电流限到 0.5 A（`board_charge_limit`，唯一的写，`docs/delivery/2026-10-31-battery-charge-limit.md`） |
 | `board_touch_fast.c` | 指定时段每 5 ms 读触摸、带时间戳（P20；接了中断脚就用中断） |
-| `yk_board_logic.c`、`rtc_regs.c` | 不依赖 ESP-IDF 的部分（含电量换算、设置的范围），`test/run.sh` 在主机上测 |
+| `yk_board_logic.c`、`rtc_regs.c` | 不依赖 ESP-IDF 的部分（含电量换算、充电电流那几位、设置的范围），`test/run.sh` 在主机上测 |
 
 依赖全是公开组件，版本和 Tikpal 0.4.9 在设备上跑的完全一致（对照它在 `5a299f5c` 的 `dependencies.lock`，每个组件的版本和 `component_hash` 都相同）：`lvgl/lvgl` 9.6.0、`espressif/esp_lvgl_adapter` 0.6.4、`waveshare/esp_lcd_sh8601` 2.0.0、`espressif/esp_codec_dev` 1.5.11，间接依赖 `espressif/button` 4.2.1、`espressif/libpng` 1.6.58~1 也钉住了（`require: no`，只管版本）。版本写死在 `idf_component.yml`，各固件的 `dependencies.lock` 提交进仓库；要升级就连同真机验收一起改。
 
@@ -32,7 +32,7 @@ esptool_py_flash_to_partition(flash "fonts" "${CMAKE_CURRENT_LIST_DIR}/../../com
 
 音频：`audio_init()` 就是 `audio_init_rate(24000)`；要 16 kHz 就调用 `audio_init_rate(16000)`。放音和录音共用时钟，开起来以后不能换采样率：再按另一个采样率启动会得到 `ESP_ERR_INVALID_STATE`（`audio_init()` 也一样），打开 codec 设备时用 `audio_sample_rate()`。I2S 默认每个 DMA 帧 20 ms，8 帧共 160 ms 余量；`audio_init_cfg()` 可以设帧长和帧数（低延迟 4 × 5 ms，P13），收发共用一个设置。
 
-共享设置（P10）：`board_pref_*()` 读写 NVS `yk_pref` 的 `volume`、`bright`、`screen_off`；第一次读音量时，如果 `yk_pref` 里还没有，就从主固件原来的 `yay/volume` 搬一次。`board_display_start_opts()` 的 `start_dark` 让屏幕起来时保持黑（初始化序列里亮度写 0），应用画完第一帧再调亮度；`board_brightness_raw_set(0..255)` 直接写面板刻度。息屏默认 30 秒（P22 起；以前是 180 秒）。
+共享设置（P10）：`board_pref_*()` 读写 NVS `yk_pref` 的 `volume`、`bright`、`screen_off`，0.1.12 起还有伙伴 `buddy`（`YK_PREF_BUDDY`，u8：0 Yay、1 Wow、2 Aha，不认识的值当 Yay；只由主固件写，扩展只读；只加不改，`YK_API_LEVEL` 不变）；第一次读音量时，如果 `yk_pref` 里还没有，就从主固件原来的 `yay/volume` 搬一次。`board_display_start_opts()` 的 `start_dark` 让屏幕起来时保持黑（初始化序列里亮度写 0），应用画完第一帧再调亮度；`board_brightness_raw_set(0..255)` 直接写面板刻度。息屏默认 30 秒（P22 起；以前是 180 秒）。
 
 息屏（P22）：`board_display_sleep()` 把亮度降到 0、SH8601 关显示（`0x28`），并关掉 LVGL 的重画（`lv_display_enable_invalidation`，是计数，和 `lv_qrcode` 自己的开关不冲突）；触摸芯片不再读，息屏期间 `board_touch_read()` 返回 `ESP_ERR_INVALID_STATE`。`board_display_wake(percent)` 开显示、设亮度（`-1` 用共享亮度）、整屏重画，触摸马上照常读。CST820 不进深度休眠：深度休眠只能靠复位脚出来，真机上亮屏时的这次复位和开麦撞在同一条 I2C 上，5 次里 3 次 ES7210 读写出错，1 次麦克风没打开（2026-10-21）。不读它时，芯片没被触摸就自己进低功耗扫描。
 

@@ -90,10 +90,12 @@ esp_err_t yk_lan_send(const char *text) {
 static esp_err_t on_text(httpd_req_t *req, int fd, size_t len) {
     if (len > YK_LAN_TEXT_MAX) return ESP_FAIL;
     char buf[YK_LAN_TEXT_MAX + 1];
-    httpd_ws_frame_t f = {.payload = (uint8_t *)buf};
-    esp_err_t err = httpd_ws_recv_frame(req, &f, len);
+    // ws_handler read the header: only the payload is left. (A frame with len 0 makes httpd_ws_recv_frame read a
+    // header again, taking the payload's first bytes for one: hello refused at random, "too long", "not masked".)
+    httpd_ws_frame_t f = {.payload = (uint8_t *)buf, .len = len, .type = HTTPD_WS_TYPE_TEXT};
+    esp_err_t err = len ? httpd_ws_recv_frame(req, &f, len) : ESP_OK;
     if (err != ESP_OK) return err;
-    buf[f.len] = 0;
+    buf[len] = 0;
     if (fd == s_client) {
         if (s_cfg.on_text) s_cfg.on_text(buf, f.len, s_cfg.ctx);
         return ESP_OK;
@@ -101,7 +103,7 @@ static esp_err_t on_text(httpd_req_t *req, int fd, size_t len) {
     // Not in yet: only hello.
     char name[48];
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    const yk_lan_hello_t hello = yk_lan_hello(buf, s_token, name, sizeof(name));
+    const yk_lan_hello_t hello = yk_lan_hello(buf, s_cfg.any_hello ? NULL : s_token, name, sizeof(name));
     xSemaphoreGive(s_lock);
     wipe(buf, sizeof(buf));  // the token
     if (hello != YK_LAN_HELLO_OK) {

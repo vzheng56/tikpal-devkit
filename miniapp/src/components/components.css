@@ -1,0 +1,46 @@
+/* 生成的，别手改：packages/page-runtime/page.html 里图表、日历、环的样式，套在 .tk-block 里。颜色跟 App 走（applyEnv 写的变量），没写的用 page.html 的。改那份，再跑 pnpm miniapp:sync。 */
+.tk-block { --tk-paper: var(--paper, #FAF8F3); --tk-card: var(--card, #FFFEFA); --tk-sunken: #F2EFE7; --tk-line: var(--line, #E5E6DD); --tk-line-strong: #D6D8CC; --tk-ink: var(--ink, #282D29); --tk-ink-2: var(--ink2, #646B62); --tk-ink-3: var(--ink3, #979D93); --tk-coral: var(--coral, #D66E55); --tk-coral-soft: #F8E4DC; --tk-coral-text: var(--coralText, #A8492F); --tk-sage: var(--sage, #A6B49B); --tk-sage-strong: var(--sageStrong, #5E7255); --tk-sage-soft: #E8EDE1; --tk-sun: #D9A54A; --tk-sun-soft: #F6EBD8; --tk-wake: #E8805E; --tk-focus: #8FA87C; --tk-sleep: #A85832; --tk-mine: #BEA37A; }
+[data-scheme="dark"] .tk-block { --tk-paper: var(--paper, #171C19); --tk-card: var(--card, #1F2521); --tk-sunken: #121613; --tk-line: var(--line, rgba(250,247,239,.09)); --tk-line-strong: rgba(250,247,239,.16); --tk-ink: var(--ink, #FAF7EF); --tk-ink-2: var(--ink2, #A5AA9E); --tk-ink-3: var(--ink3, #737A70); --tk-coral: var(--coral, #DF795D); --tk-coral-soft: rgba(223,121,93,.16); --tk-coral-text: var(--coralText, #EE9A80); --tk-sage: var(--sage, #9FB38C); --tk-sage-strong: var(--sageStrong, #B9CAA8); --tk-sage-soft: rgba(159,179,140,.16); --tk-sun: #E6BE78; --tk-sun-soft: rgba(230,190,120,.14); }
+.tk-block { min-width: 0; }
+.tk-block .chart { margin: 0; padding: 10px 12px 6px; border-radius: 14px; background: var(--tk-card); box-shadow: 0 0 0 1px var(--tk-line); }
+.tk-block .chart figcaption { font-size: 12.5px; color: var(--tk-ink-3); margin-bottom: 2px; }
+.tk-block .chart svg { display: block; width: 100%; height: auto; }
+.tk-block .chart .axis { stroke: var(--tk-line-strong); }
+.tk-block .chart .bar { fill: var(--tk-sage); }
+.tk-block .chart .hot { fill: var(--tk-coral); }
+.tk-block .chart .line { fill: none; stroke: var(--tk-sage); stroke-width: 2.5; stroke-linejoin: round; }
+.tk-block .chart text { fill: var(--tk-ink-3); font-size: 11px; }
+.tk-block .chart text.strong { fill: var(--tk-ink-2); font-weight: 600; }
+.tk-block .t-coral { fill: var(--tk-coral); stroke: var(--tk-coral); background: var(--tk-coral); }
+.tk-block .t-sage { fill: var(--tk-sage); stroke: var(--tk-sage); background: var(--tk-sage); }
+.tk-block .t-sun { fill: var(--tk-sun); stroke: var(--tk-sun); background: var(--tk-sun); }
+.tk-block .t-ink { fill: var(--tk-ink-3); stroke: var(--tk-ink-3); background: var(--tk-ink-3); }
+.tk-block .t-wake { fill: var(--tk-wake); stroke: var(--tk-wake); background: var(--tk-wake); }
+.tk-block .t-focus { fill: var(--tk-focus); stroke: var(--tk-focus); background: var(--tk-focus); }
+.tk-block .t-sleep { fill: var(--tk-sleep); stroke: var(--tk-sleep); background: var(--tk-sleep); }
+.tk-block .t-mine { fill: var(--tk-mine); stroke: var(--tk-mine); background: var(--tk-mine); }
+.tk-block .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--tk-ink-3); padding: 4px 0 2px; }
+.tk-block .legend span { display: inline-flex; align-items: center; gap: 5px; }
+.tk-block .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; }
+.tk-block .chart svg.cal { max-width: 420px; }
+.tk-block .cal rect.l0, .tk-block .scale i.l0 { fill: var(--tk-sunken); background: var(--tk-sunken); }
+.tk-block .cal rect.l1, .tk-block .scale i.l1 { opacity: .35; }
+.tk-block .cal rect.l2, .tk-block .scale i.l2 { opacity: .55; }
+.tk-block .cal rect.l3, .tk-block .scale i.l3 { opacity: .78; }
+.tk-block .cal rect.l4, .tk-block .scale i.l4 { opacity: 1; }
+.tk-block .cal-sage rect:not(.l0), .tk-block .scale.cal-sage i { fill: var(--tk-sage-strong); background: var(--tk-sage-strong); }
+.tk-block .cal-coral rect:not(.l0), .tk-block .scale.cal-coral i { fill: var(--tk-coral); background: var(--tk-coral); }
+.tk-block .cal-sun rect:not(.l0), .tk-block .scale.cal-sun i { fill: var(--tk-sun); background: var(--tk-sun); }
+.tk-block .cal-ink rect:not(.l0), .tk-block .scale.cal-ink i { fill: var(--tk-ink-2); background: var(--tk-ink-2); }
+.tk-block .scale { gap: 3px; align-items: center; justify-content: flex-end; }
+.tk-block .ring-body { display: flex; align-items: center; gap: 14px; }
+.tk-block .ring svg { flex: none; width: 110px; height: 110px; }
+.tk-block .ring .track { fill: none; stroke: var(--tk-sunken); stroke-width: 12; }
+.tk-block .ring .arc { fill: none; stroke-width: 12; }
+.tk-block .ring text { fill: var(--tk-ink-3); font-size: 10px; }
+.tk-block .ring text.big { fill: var(--tk-ink); font-size: 17px; font-weight: 700; }
+.tk-block .ring-rows { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; font-size: 13.5px; }
+.tk-block .ring-rows div { display: flex; align-items: center; gap: 8px; }
+.tk-block .ring-rows i { flex: none; width: 9px; height: 9px; border-radius: 3px; }
+.tk-block .ring-rows span { flex: 1; min-width: 0; }
+.tk-block .ring-rows b { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--tk-ink-2); }

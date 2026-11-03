@@ -2,6 +2,10 @@
 """kit check: what an app has to pass before it is submitted, here and in its repository's CI.
 
   check_app.py <kit> <app>
+  check_app.py <kit> <app> --static <build dir>
+
+--static is the review machine's: the app is a source.tar unpacked (no git, no devkit/), the build is the one the review
+rebuilt in its container, and nothing of the app runs (no host tests). Everything else is checked the same way.
 
 The app's manifest (the main rules of Tikpal's contract, and its `records` rule for rule; the review checks it against
 the contract itself), its version and project name, the kit untouched at a version, everything committed, the release
@@ -25,7 +29,8 @@ LANGS = {"zh", "en", "ja", "es-419"}
 KEYS = {
     "slug", "kind", "version", "name", "icon", "iconLarge", "boards", "layout", "minYay", "apiLevel", "minFirmware",
     "capabilities", "launch", "aliases", "scenes", "audience", "records", "settings", "settingOptions", "settingLabels",
-    "settingRules", "settingsScope", "ephemeral", "pricing",
+    "settingRules", "settingsScope", "ephemeral", "pricing", "voiceCode",
+    "permissions", "privacy", "ageRating", "miniapp",
 }
 REQUIRED = {"slug", "kind", "version", "name", "boards", "layout", "capabilities", "aliases", "scenes", "audience", "pricing"}
 FAKE_DEVICES = {"yk_00000000beef", "yk_0a1b2c3d4e5f", "yk_000000000000", "yk_0123456789ab"}
@@ -57,6 +62,27 @@ SCHEMA_KEYS = [
 SCHEMA_TYPES = {"object", "array", "string", "number", "integer", "boolean", "null"}
 RECORDS_KEYS = ["ask", "kinds", "collections", "milestones", "feed", "pages"]
 RECORDS_DOC = "写法见 devkit/docs/app-json.md 的「记录 records」"
+# `voiceCode` (应用码) as Tikpal's contract has it: app-spec.ts `voiceCode` and voice-code.ts VOICE_CODE.numbers.
+VOICE_CODE_KEYS = ["number", "ask", "own"]
+OWN_ACTION = re.compile(r"8|9|1[0-5]")
+# The first version's parts of app.json (app-spec.ts permissions, privacy, ageRating, miniapp) and the 小程序's
+# capabilities (miniapp-capabilities.ts): what a manifest may ask for (some level offers it), the level each needs,
+# the kind 1 ones app.json says why for, and the ones only named 小程序 may ask for. Tikpal's tests hold these to the
+# contract (tests/devkit.test.ts).
+DEVICE_HARDWARE = ["microphone", "speaker", "motion", "tf_card", "bluetooth"]
+PRIVACY_DATA = ["voice", "text", "photos", "location", "usage"]
+AGE_RATINGS = ["4+", "9+", "12+", "17+"]
+MINIAPP_LEVELS = {
+    "recordings": 1, "clipboard": 1, "audio": 1,
+    "camera": 2, "microphone": 2, "motion": 2, "location": 2, "scan": 2, "share": 2, "photos": 2,
+    "records": 2, "settings": 2, "user": 2,
+}
+PHONE_ABILITIES = ["camera", "microphone", "motion", "location"]
+MINIAPP_ONLY = {"recordings": ["recording-card"], "audio": ["recording-card"]}
+MINIAPP_PATH = re.compile(r"(?!.*(?:^|/)\.\.?(?:/|$))(?!/)(?!.*//)(?!.*/$)[a-z0-9._/-]{1,120}")
+SPEC_VERSION = re.compile(r"\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.-]{1,30})?")
+VOICE_CODE_DOC = "写法见 devkit/docs/app-json.md 的「应用码 voiceCode」"
+TEST_NUMBERS = (65280, 65535)
 # The kinds main/ writes, as a hint: yk_app_record("mytimer.count", ...) with the kind written out.
 RECORD_CALL = re.compile(r'\byk_app_record\(\s*"([^"\\]*)"')
 
@@ -76,7 +102,10 @@ def git(cwd, *args):
 
 
 def text_of(spec, field, maxlen, where=None):
-    value, where = spec.get(field), where or field
+    check_text(where or field, spec.get(field), maxlen)
+
+
+def check_text(where, value, maxlen):
     if not isinstance(value, dict) or set(value) - LANGS or not {"zh", "en"} <= set(value):
         bad(f"app.json 的 {where} 要有 zh 和 en（可以再加 ja、es-419），不能有别的语言")
         return
@@ -149,6 +178,8 @@ def check_schema(where, schema):
             for field in required:
                 if not isinstance(properties, dict) or field not in properties:
                     bad(f"app.json 的 {where}.required 里的 {field} 不在 properties 里")
+            if len(set(required)) != len(required):
+                bad(f"app.json 的 {where}.required 里每个字段只写一次")
     if "additionalProperties" in schema and schema["additionalProperties"] is not False:
         bad(f"app.json 的 {where}.additionalProperties 只能写 false")
     if "items" in schema:
@@ -163,6 +194,8 @@ def check_schema(where, schema):
         values = schema["enum"]
         if not isinstance(values, list) or not values or not all(v is None or isinstance(v, (str, bool)) or is_number(v) for v in values):
             bad(f"app.json 的 {where}.enum 至少一个值，每个是字符串、数、true/false 或 null")
+        elif len({json.dumps(v, sort_keys=True) for v in values}) != len(values):
+            bad(f"app.json 的 {where}.enum 里每个值只写一次")
     if "anyOf" in schema:
         options = schema["anyOf"]
         if not isinstance(options, list) or not options:
@@ -354,6 +387,119 @@ def record_hints(spec, app):
                                      "立项时跟我们定；不要就删掉这句")
 
 
+def check_voice_code(spec):
+    """`voiceCode`, as the contract has it, `own` (actions 8–15) included: open since the first version (11-02)."""
+    if "voiceCode" not in spec:
+        return
+    code = spec["voiceCode"]
+    if not strict("voiceCode", code, VOICE_CODE_KEYS, ["number"]):
+        return
+    number = code.get("number")
+    if "number" in code and not is_int(number, 1, 65535):
+        bad(f"app.json 的 voiceCode.number 要是立项时给的应用编号，1–65535 的整数：{VOICE_CODE_DOC}")
+    elif is_int(number, *TEST_NUMBERS):
+        notes.append(f"提示：voiceCode.number 是本机测试号（{TEST_NUMBERS[0]}–{TEST_NUMBERS[1]}），只能在自己的圆屏上试；"
+                     "提交前换成立项时给的编号，审核不收测试号")
+    if "ask" in code:
+        ask = code["ask"]
+        phrases_of("voiceCode.ask", ask, 16, 80)
+        if isinstance(ask, dict) and isinstance(ask.get("zh"), list):
+            if not ask["zh"]:
+                bad(f"app.json 的 voiceCode.ask.zh 至少一句：{VOICE_CODE_DOC}")
+            for lang, sentences in sorted(ask.items()):
+                if isinstance(sentences, list) and len(sentences) != len(ask["zh"]):
+                    bad(f"app.json 的 voiceCode.ask.{lang} 要和 zh 一样多句、一一对应（第几句就是码里的序号）")
+    if "own" in code:
+        own = code["own"]
+        if not isinstance(own, dict):
+            bad(f"app.json 的 voiceCode.own 要是对象：动作号（8–15）对应它的意思：{VOICE_CODE_DOC}")
+            return
+        for action, meaning in sorted(own.items()):
+            if not OWN_ACTION.fullmatch(action):
+                bad(f"app.json 的 voiceCode.own 只能用动作 8–15，没有 {action}：{VOICE_CODE_DOC}")
+            else:
+                check_text(f"voiceCode.own.{action}", meaning, 200)
+
+
+def check_first_version(spec):
+    """permissions, privacy, ageRating and miniapp, as the contract has them (app-spec.ts, 11-02)."""
+    asked = []
+    if "miniapp" in spec:
+        mini = spec["miniapp"]
+        if strict("miniapp", mini, ["entry", "capabilities", "capabilityLevel", "minFirmware"], ["entry", "capabilities", "capabilityLevel"]):
+            if "entry" in mini and not (isinstance(mini["entry"], str) and MINIAPP_PATH.fullmatch(mini["entry"])):
+                bad("app.json 的 miniapp.entry 是包里的一个路径：小写字母、数字和 . _ - /，不能有 ..")
+            caps = mini.get("capabilities")
+            if not isinstance(caps, list) or any(not isinstance(c, str) for c in caps):
+                bad("app.json 的 miniapp.capabilities 要是能力名的列表")
+                caps = []
+            for c in caps:
+                if c not in MINIAPP_LEVELS:
+                    bad(f"app.json 的 miniapp.capabilities 里的 {c} 还没开放（能开放的：" + "、".join(MINIAPP_LEVELS) + "）")
+                elif c in MINIAPP_ONLY and spec.get("slug") not in MINIAPP_ONLY[c]:
+                    bad(f"app.json 的 miniapp.capabilities 里的 {c} 只给 " + "、".join(MINIAPP_ONLY[c]))
+            if len(set(caps)) != len(caps):
+                bad("app.json 的 miniapp.capabilities 有能力写了两次")
+            level = mini.get("capabilityLevel")
+            need = max([MINIAPP_LEVELS.get(c, 1) for c in caps] + [1])
+            if not is_int(level, 1):
+                bad("app.json 的 miniapp.capabilityLevel 是至少 1 的整数")
+            elif level < need:
+                bad(f"app.json 的 miniapp.capabilityLevel 至少要 {need}：要的能力从第 {need} 级才有")
+            if "minFirmware" in mini and not (isinstance(mini["minFirmware"], str) and SPEC_VERSION.fullmatch(mini["minFirmware"])):
+                bad("app.json 的 miniapp.minFirmware 是三段式版本号，比如 0.2.0")
+            asked = [c for c in caps if c in PHONE_ABILITIES]
+            if "records" in caps and "records" not in spec:
+                bad("app.json 的 miniapp 要 records，app.json 就要有 records")
+            if "settings" in caps and not spec.get("settings"):
+                bad("app.json 的 miniapp 要 settings，app.json 就要有 settings")
+            if spec.get("ephemeral") is True and ("records" in caps or "settings" in caps):
+                bad("app.json 写了 ephemeral（什么都不留），小程序就不能要 records、settings")
+    why = []
+    if "permissions" in spec:
+        perm = spec["permissions"]
+        if strict("permissions", perm, ["device", "phone"]):
+            device = perm.get("device", [])
+            if not isinstance(device, list) or any(d not in DEVICE_HARDWARE for d in device) or len(set(device)) != len(device):
+                bad("app.json 的 permissions.device 是用到的 Tikpal Voice 硬件，每样写一次：" + "、".join(DEVICE_HARDWARE))
+            phone = perm.get("phone", {})
+            if not isinstance(phone, dict):
+                bad("app.json 的 permissions.phone 要是对象：手机能力对应为什么要用")
+                phone = {}
+            for ability, text in sorted(phone.items()):
+                if ability not in PHONE_ABILITIES:
+                    bad(f"app.json 的 permissions.phone 只写 " + "、".join(PHONE_ABILITIES) + f"，没有 {ability}")
+                else:
+                    check_text(f"permissions.phone.{ability}", text, 120)
+                    why.append(ability)
+    for ability in asked:
+        if ability not in why:
+            bad(f"app.json 的小程序要 {ability}，permissions.phone 里要写为什么用")
+    for ability in why:
+        if ability not in asked:
+            bad(f"app.json 的 permissions.phone 写了 {ability}，小程序却没要它")
+    if "privacy" in spec:
+        privacy = spec["privacy"]
+        if strict("privacy", privacy, ["collects"], ["collects"]):
+            collects = privacy.get("collects")
+            if not isinstance(collects, list):
+                bad("app.json 的 privacy.collects 是列表：收什么、为什么；什么都不收写空列表")
+            else:
+                seen = []
+                for i, item in enumerate(collects):
+                    if strict(f"privacy.collects[{i}]", item, ["data", "why"], ["data", "why"]):
+                        if item.get("data") not in PRIVACY_DATA:
+                            bad(f"app.json 的 privacy.collects[{i}].data 是 " + "、".join(PRIVACY_DATA) + " 之一")
+                        elif item["data"] in seen:
+                            bad(f"app.json 的 privacy.collects 里 {item['data']} 写了两次")
+                        else:
+                            seen.append(item["data"])
+                        if "why" in item:
+                            check_text(f"privacy.collects[{i}].why", item["why"], 200)
+    if "ageRating" in spec and spec["ageRating"] not in AGE_RATINGS:
+        bad("app.json 的 ageRating 是 " + "、".join(AGE_RATINGS) + " 之一")
+
+
 def check_manifest(spec, kit):
     for key in sorted(set(spec) - KEYS):
         bad(f"app.json 里有不认识的字段 {key}")
@@ -400,10 +546,13 @@ def check_manifest(spec, kit):
     if spec.get("pricing") != {"kind": "free"}:
         bad('app.json 的 pricing 现在只能是 {"kind": "free"}')
     check_records(spec)
+    check_voice_code(spec)
+    check_first_version(spec)
 
 
 def main():
     kit_dir, app = sys.argv[1], sys.argv[2]
+    static = sys.argv[4] if len(sys.argv) > 4 and sys.argv[3] == "--static" else None
     kit = json.load(open(os.path.join(kit_dir, "devkit.json")))
     try:
         spec = json.load(open(os.path.join(app, "app.json"), encoding="utf-8"))
@@ -423,18 +572,18 @@ def main():
         bad(f"CMakeLists.txt 的 PROJECT_VER 要和 app.json 的 version（{version}）一样")
 
     devkit = os.path.join(app, "devkit")
-    if os.path.isdir(os.path.join(devkit, "firmware")):
+    if not static and os.path.isdir(os.path.join(devkit, "firmware")):
         if git(devkit, "status", "--porcelain").stdout.strip():
             bad("devkit/ 里有改动：开发包只读，git -C devkit checkout . 还原")
         tag = git(devkit, "describe", "--tags", "--exact-match").stdout.strip()
         if tag != "v" + kit["version"]:
             bad(f"devkit/ 不是开发包的正式版本（被切到了别的提交）：./kit update {kit['version']} 换回 {kit['version']} 版")
-    dirty = git(app, "status", "--porcelain").stdout.strip()
+    dirty = "" if static else git(app, "status", "--porcelain").stdout.strip()
     if dirty:
         bad("有没提交的改动（审核按提交号重编，没提交的不算）：\n    " + dirty.replace("\n", "\n    "))
-    head = git(app, "rev-parse", "HEAD").stdout.strip()
+    head = "" if static else git(app, "rev-parse", "HEAD").stdout.strip()
 
-    build = os.path.join(app, "build-release")
+    build = static or os.path.join(app, "build-release")
     desc_path = os.path.join(build, "project_description.json")
     if not os.path.exists(desc_path):
         bad("还没编提交用的那份：./kit build --release")
@@ -454,7 +603,9 @@ def main():
         notes.append(f"镜像 {desc['app_bin']}：{len(data)} 字节，SHA-256 {hashlib.sha256(data).hexdigest()}")
 
     tests = os.path.join(app, "test", "run.sh")
-    if os.path.exists(tests):
+    if static:
+        notes.append("主机测试在审核的容器里跑过，这里不跑")
+    elif os.path.exists(tests):
         run = subprocess.run(["bash", tests], capture_output=True, text=True)
         if run.returncode:
             bad("主机测试没过：\n    " + (run.stdout + run.stderr).strip().replace("\n", "\n    "))
@@ -463,7 +614,10 @@ def main():
     else:
         notes.append("没有 test/run.sh（还没有主机测试）")
 
-    tracked = git(app, "ls-files", "-z").stdout.split("\0")
+    if static:
+        tracked = [os.path.relpath(os.path.join(root, f), app) for root, _d, fs in os.walk(app) for f in fs]
+    else:
+        tracked = git(app, "ls-files", "-z").stdout.split("\0")
     for path in filter(None, tracked):
         full = os.path.join(app, path)
         if path.startswith("devkit") or not os.path.isfile(full):

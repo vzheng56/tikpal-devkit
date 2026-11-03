@@ -1,9 +1,12 @@
 // The same notices in every app (round-screen spec 9): the page stays, only Yay's pose and one short line change.
 // No pop-ups. Offline features (timers, games, breathing) show nothing about the network at all.
 //
-//   CONNECTING    Yay waits, the rim turns ink3, no text; holding to talk still records
-//   OFFLINE       after ~45 s of not connecting: "回 Yay 设置网络 / Set up Wi-Fi in Yay"
-//   NOT_ADDED     "先在 Yay 里添加 / Add me in Yay first"
+//   CONNECTING    Yay waits, the rim turns sage; after 2 s "正在连接… / Connecting…" (a quick reconnect shows no
+//                 words; before 0.1.13 the arc was ink3 and there were no words). Yay records a hold meanwhile and
+//                 sends it once connected (connecting delivery doc B); yaykit_talk does not yet (a hold ends NO_NET)
+//   OFFLINE       after 30 s of not connecting (45 s before 0.1.13; Yay's grace): "回 Tikpal 设置网络 / Set up
+//                 Wi-Fi in Tikpal"
+//   NOT_ADDED     "先在 Tikpal App 里添加 / Add me in the Tikpal app first"
 //   NO_CREDITS    "今天的点数用完了 / Out of points today" (offline features go on)
 //   NOT_HEARD     help: "再说一次？ / Say it again?"
 //   BUSY          help: "等一下再试 / Try again soon" (the app retries once by itself)
@@ -50,9 +53,10 @@ typedef struct {
 /** The spec's row. NONE and out of range: an empty row. */
 const yk_notice_spec_t *yk_notice_spec(yk_notice_t notice);
 
-#define YK_NOTICE_OFFLINE_AFTER_MS 45000
+#define YK_NOTICE_OFFLINE_AFTER_MS 30000  // Yay's grace too (YAY_CONNECT_GRACE_MS); 45000 before 0.1.13
+#define YK_NOTICE_CONNECTING_WORDS_MS 2000  // CONNECTING's line fades in this long after it shows (yk_notice_show)
 
-/** Network notices from the connection's state: CONNECTING while it tries, OFFLINE after 45 s of trying, NONE when
+/** Network notices from the connection's state: CONNECTING while it tries, OFFLINE after 30 s of trying, NONE when
  *  connected. Pure; feed it whenever the state may have changed. */
 typedef struct {
     int64_t trying_since_ms;  // 0: connected
@@ -64,7 +68,9 @@ typedef struct yk_notice_line yk_notice_line_t;
 /** The line, centred at `y` (its middle; 0 = 360, under a 176 Yay) in `parent`, ink2 18 px, fading 150 ms. */
 yk_notice_line_t *yk_notice_create(lv_obj_t *parent, int y);
 /** Shows a notice: Yay's pose (when `yay` is given), the rim (when `rim` is given), the line (the override when
- *  not NULL, else the spec's text in the language). NONE clears the line and leaves Yay and the rim as they are. */
+ *  not NULL, else the spec's text in the language). NONE clears the line and leaves Yay and the rim as they are.
+ *  CONNECTING's line comes YK_NOTICE_CONNECTING_WORDS_MS later (the rim at once), so that a quick reconnect only
+ *  turns the rim; anything shown meanwhile takes its place. */
 void yk_notice_show(yk_notice_line_t *line, yk_notice_t notice, yk_yay_t *yay, yk_rim_t *rim, const char *override,
                     bool english);
 yk_notice_t yk_notice_current(const yk_notice_line_t *line);

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "../yk_app_logic.h"
+#include "yk_app_power.h"
 #include "yk_app_recovery.h"
 
 static int failures, checks;
@@ -123,7 +124,7 @@ static void test_guard(void) {
 
 static void test_names(void) {
     CHECK(!strcmp(yk_app_display_name("party-play"), "聚会玩"));
-    CHECK(!strcmp(yk_app_display_name("yay"), "Yay"));
+    CHECK(!strcmp(yk_app_display_name("yay"), "Tikpal"));
     CHECK(!strcmp(yk_app_display_name("language-buddy"), "口语陪练"));
     CHECK(!strcmp(yk_app_display_name("weather-pal"), "weather-pal"));  // not known here: the slug
     CHECK(!strcmp(yk_app_display_name(NULL), ""));
@@ -603,6 +604,93 @@ static void test_recovery(void) {
     CHECK(next.from == YK_RECOVERY_PENDING && !next.sha256[0]);
 }
 
+// ---------------------------------------------------------------- the battery guard and the settings (0.1.13)
+
+static void test_power_boot(void) {
+    // On USB an app always starts, whatever the reading and the reset.
+    CHECK(!yk_power_boot_sleep(false, 0, true));
+    CHECK(!yk_power_boot_sleep(true, 3, true));
+    // On battery: at YK_POWER_EMPTY (about 3.50 V) and below it sleeps before the screen; above, it starts.
+    CHECK(yk_power_boot_sleep(false, YK_POWER_EMPTY, false));
+    CHECK(yk_power_boot_sleep(false, 0, false));
+    CHECK(!yk_power_boot_sleep(false, YK_POWER_EMPTY + 1, false));
+    CHECK(!yk_power_boot_sleep(false, 80, false));
+    // Not read (-1): it starts.
+    CHECK(!yk_power_boot_sleep(false, -1, false));
+    // A brownout on battery: it sleeps whatever the reading (the cell recovers at rest, then dips again lit).
+    CHECK(yk_power_boot_sleep(true, 40, false));
+    CHECK(yk_power_boot_sleep(true, -1, false));
+}
+
+static void test_power_watch(void) {
+    yk_power_t p;
+    yk_power_init(&p);
+    CHECK(p.percent == -1 && !yk_power_low(&p) && yk_power_read_ms(&p) == YK_POWER_READ_MS);
+    CHECK(yk_power_feed(&p, 60, false) == YK_POWER_NONE);
+    CHECK(!yk_power_low(&p) && yk_power_read_ms(&p) == YK_POWER_READ_MS);
+    // 15 %: low once, read more often, caps on.
+    CHECK(yk_power_feed(&p, YK_POWER_LOW, false) == YK_POWER_LOW_NOW);
+    CHECK(yk_power_low(&p) && yk_power_read_ms(&p) == YK_POWER_READ_LOW_MS);
+    CHECK(yk_power_feed(&p, 12, false) == YK_POWER_NONE);
+    // Not read: nothing changes, nothing said.
+    CHECK(yk_power_feed(&p, -1, false) == YK_POWER_NONE && p.percent == 12 && yk_power_low(&p));
+    // One reading at 5 % (the speaker pulled it down) is not a sleep; a better one in between starts the count again.
+    CHECK(yk_power_feed(&p, YK_POWER_EMPTY, false) == YK_POWER_NONE && p.empty_reads == 1);
+    CHECK(yk_power_feed(&p, 7, false) == YK_POWER_NONE && p.empty_reads == 0);
+    CHECK(yk_power_feed(&p, 4, false) == YK_POWER_NONE);
+    // The second in a row: sleep, said once.
+    CHECK(yk_power_feed(&p, 3, false) == YK_POWER_SLEEP);
+    CHECK(yk_power_feed(&p, 3, false) == YK_POWER_NONE);
+}
+
+static void test_power_usb(void) {
+    yk_power_t p;
+    yk_power_init(&p);
+    // Started on USB: no news; a reading at 3 % on USB (charging) is never low nor a sleep.
+    CHECK(yk_power_feed(&p, 50, true) == YK_POWER_NONE);
+    CHECK(yk_power_feed(&p, 3, true) == YK_POWER_NONE && !yk_power_low(&p));
+    CHECK(yk_power_feed(&p, 3, true) == YK_POWER_NONE);
+    // Unplugged at 14 %: low; plugged in again: caps lifted, the count gone.
+    CHECK(yk_power_feed(&p, 14, false) == YK_POWER_LOW_NOW);
+    CHECK(yk_power_feed(&p, 5, false) == YK_POWER_NONE && p.empty_reads == 1);
+    CHECK(yk_power_feed(&p, 5, true) == YK_POWER_PLUGGED);
+    CHECK(!yk_power_low(&p) && p.empty_reads == 0 && yk_power_read_ms(&p) == YK_POWER_READ_MS);
+    // Out again: a new discharge, low said again.
+    CHECK(yk_power_feed(&p, 15, false) == YK_POWER_LOW_NOW);
+    CHECK(!strcmp(yk_power_ev_name(YK_POWER_SLEEP), "sleep") && !strcmp(yk_power_ev_name((yk_power_ev_t)9), "?"));
+}
+
+static void test_settings(void) {
+    yk_settings_t s;
+    // As stored, Chinese for "zh", "zh-Hans", none.
+    yk_settings_merge(4, 30, 15, "zh-Hans", false, false, &s);
+    CHECK(s.volume == 4 && s.brightness == 30 && s.screen_off_s == 15 && !s.english);
+    yk_settings_merge(6, 80, 0, "zh", false, false, &s);
+    CHECK(s.screen_off_s == 0 && !s.english);
+    yk_settings_merge(6, 80, 30, NULL, false, false, &s);
+    CHECK(!s.english);
+    yk_settings_merge(6, 80, 30, "", false, false, &s);
+    CHECK(!s.english);
+    // Any other language: English screens (as yaykit_cloud's yk_locale_english).
+    CHECK(yk_settings_english("en") && yk_settings_english("ja") && yk_settings_english("es-419"));
+    CHECK(!yk_settings_english("ZH-hant") && !yk_settings_english("zh"));
+    // Low battery: brightness at most 60, screen off after 15 s even when set to never; a dimmer setting stays.
+    yk_settings_merge(6, 100, 0, "en", true, false, &s);
+    CHECK(s.brightness == YK_POWER_BRIGHTNESS_MAX && s.screen_off_s == YK_POWER_SCREEN_OFF_LOW_S && s.english);
+    yk_settings_merge(6, 40, 300, "en", true, false, &s);
+    CHECK(s.brightness == 40 && s.screen_off_s == YK_POWER_SCREEN_OFF_LOW_S);
+    // The app keeps the screen on (a session, a round, a recording): never off, low battery or not.
+    yk_settings_merge(6, 80, 30, "zh", false, true, &s);
+    CHECK(s.screen_off_s == 0);
+    yk_settings_merge(6, 80, 30, "zh", true, true, &s);
+    CHECK(s.screen_off_s == 0 && s.brightness == YK_POWER_BRIGHTNESS_MAX);
+    // Volume stays in yaykit_speak's steps.
+    yk_settings_merge(12, 80, 30, "zh", false, false, &s);
+    CHECK(s.volume == 10);
+    yk_settings_merge(-1, 80, 30, "zh", false, false, &s);
+    CHECK(s.volume == 0);
+}
+
 int main(void) {
     test_keys();
     test_ring_tapped();
@@ -621,6 +709,10 @@ int main(void) {
     test_update_p3();
     test_update_confirm();
     test_recovery();
+    test_power_boot();
+    test_power_watch();
+    test_power_usb();
+    test_settings();
     printf("yaykit_app host tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

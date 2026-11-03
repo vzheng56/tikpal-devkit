@@ -1,0 +1,971 @@
+{
+  "calls": {
+    "valid": [
+      {
+        "name": "where it runs",
+        "request": {
+          "id": "c1",
+          "method": "env.get",
+          "params": {}
+        },
+        "response": {
+          "id": "c1",
+          "ok": true,
+          "result": {
+            "locale": "zh-Hans",
+            "theme": {
+              "scheme": "light",
+              "colors": {
+                "paper": "#faf7ef",
+                "card": "#ffffff",
+                "ink": "#282d29",
+                "ink2": "#646b62",
+                "ink3": "#979d93",
+                "line": "#e5e6dd",
+                "coral": "#d66e55",
+                "coralText": "#a8492f",
+                "sage": "#a6b49b",
+                "sageStrong": "#5e7255",
+                "danger": "#b23a35",
+                "accent": "#5e7255",
+                "accentStrong": "#4a5c43",
+                "onAccent": "#ffffff",
+                "accentText": "#4f6247"
+              }
+            },
+            "fontScale": 1.15,
+            "platform": "ios",
+            "capabilityLevel": 1,
+            "insets": {
+              "top": 44,
+              "bottom": 34
+            }
+          }
+        }
+      },
+      {
+        "name": "the first page",
+        "request": {
+          "id": "c2",
+          "method": "recordings.list",
+          "params": {}
+        },
+        "response": {
+          "id": "c2",
+          "ok": true,
+          "result": {
+            "items": [
+              {
+                "id": "rec-20261101-140211",
+                "recordedAt": "2026-11-01T14:02:11+08:00",
+                "createdAt": "2026-11-01T06:02:12.000Z",
+                "durationMs": 630000,
+                "files": 1,
+                "state": "uploading",
+                "lastChunkAt": "2026-11-01T06:12:40.000Z",
+                "failure": null,
+                "noSpeech": false,
+                "title": null,
+                "preview": null,
+                "audio": false,
+                "audioExpiresAt": null,
+                "retry": false,
+                "charged": null
+              },
+              {
+                "id": "rec-20261101-091530",
+                "recordedAt": "2026-11-01T09:15:30+08:00",
+                "createdAt": "2026-11-01T01:15:31.000Z",
+                "durationMs": 4380000,
+                "files": 2,
+                "state": "done",
+                "lastChunkAt": null,
+                "failure": null,
+                "noSpeech": false,
+                "title": "周一例会：新学期排课",
+                "preview": "我们先看一下新学期的排课。数学和语文还是放在上午……",
+                "audio": true,
+                "audioExpiresAt": "2026-12-01T02:30:12.000Z",
+                "retry": false,
+                "charged": 964
+              },
+              {
+                "id": "rec-20261031-203000",
+                "recordedAt": null,
+                "createdAt": "2026-10-31T12:31:02.000Z",
+                "durationMs": 1800000,
+                "files": 1,
+                "state": "failed",
+                "lastChunkAt": null,
+                "failure": "credits",
+                "noSpeech": false,
+                "title": null,
+                "preview": null,
+                "audio": true,
+                "audioExpiresAt": "2026-11-30T13:01:40.000Z",
+                "retry": true,
+                "charged": null
+              }
+            ],
+            "next": "eyJ0IjoiMjAyNi0xMC0zMSJ9",
+            "transcribeMinutes": 57
+          }
+        }
+      },
+      {
+        "name": "the next page",
+        "request": {
+          "id": "c3",
+          "method": "recordings.list",
+          "params": {
+            "cursor": "eyJ0IjoiMjAyNi0xMC0zMSJ9"
+          }
+        },
+        "response": {
+          "id": "c3",
+          "ok": true,
+          "result": {
+            "items": [],
+            "next": null,
+            "transcribeMinutes": 0
+          }
+        }
+      },
+      {
+        "name": "the text",
+        "request": {
+          "id": "c4",
+          "method": "recordings.get",
+          "params": {
+            "id": "rec-20261101-091530"
+          }
+        },
+        "response": {
+          "id": "c4",
+          "ok": true,
+          "result": {
+            "id": "rec-20261101-091530",
+            "title": "周一例会：新学期排课",
+            "text": "我们先看一下新学期的排课。\n\n最后说一下下周的安排。",
+            "parts": [
+              {
+                "segment": 1,
+                "durationMs": 3600000,
+                "text": "我们先看一下新学期的排课。"
+              },
+              {
+                "segment": 2,
+                "durationMs": 780000,
+                "text": "最后说一下下周的安排。"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "再转一次",
+        "request": {
+          "id": "c5",
+          "method": "recordings.transcribe",
+          "params": {
+            "id": "rec-20261031-203000"
+          }
+        },
+        "response": {
+          "id": "c5",
+          "ok": true,
+          "result": {
+            "recording": {
+              "id": "rec-20261031-203000",
+              "recordedAt": null,
+              "createdAt": "2026-10-31T12:31:02.000Z",
+              "durationMs": 1800000,
+              "files": 1,
+              "state": "transcribing",
+              "lastChunkAt": null,
+              "failure": null,
+              "noSpeech": false,
+              "title": null,
+              "preview": null,
+              "audio": true,
+              "audioExpiresAt": "2026-11-30T13:01:40.000Z",
+              "retry": false,
+              "charged": null
+            },
+            "transcribeMinutes": 18
+          }
+        }
+      },
+      {
+        "name": "再转一次 without the points",
+        "request": {
+          "id": "c6",
+          "method": "recordings.transcribe",
+          "params": {
+            "id": "rec-20261031-203000"
+          }
+        },
+        "response": {
+          "id": "c6",
+          "ok": false,
+          "error": {
+            "code": "SERVER",
+            "status": 402,
+            "serverCode": "CREDITS_EXHAUSTED"
+          }
+        }
+      },
+      {
+        "name": "no audio any more",
+        "request": {
+          "id": "c8",
+          "method": "audio.play",
+          "params": {
+            "id": "rec-20261001-080000"
+          }
+        },
+        "response": {
+          "id": "c8",
+          "ok": false,
+          "error": {
+            "code": "SERVER",
+            "status": 409,
+            "serverCode": "AUDIO_GONE"
+          }
+        }
+      },
+      {
+        "name": "deleted",
+        "request": {
+          "id": "c9",
+          "method": "recordings.delete",
+          "params": {
+            "id": "rec-20261101-140211"
+          }
+        },
+        "response": {
+          "id": "c9",
+          "ok": true,
+          "result": {
+            "deleted": true
+          }
+        }
+      },
+      {
+        "name": "copy the text",
+        "request": {
+          "id": "c10",
+          "method": "clipboard.write",
+          "params": {
+            "text": "我们先看一下新学期的排课。"
+          }
+        },
+        "response": {
+          "id": "c10",
+          "ok": true,
+          "result": {}
+        }
+      },
+      {
+        "name": "play both files from the start",
+        "request": {
+          "id": "c11",
+          "method": "audio.play",
+          "params": {
+            "id": "rec-20261101-091530"
+          }
+        },
+        "response": {
+          "id": "c11",
+          "ok": true,
+          "result": {
+            "id": "rec-20261101-091530",
+            "durationMs": 4380000,
+            "state": "loading",
+            "positionMs": 0
+          }
+        }
+      },
+      {
+        "name": "play from 0:30",
+        "request": {
+          "id": "c7",
+          "method": "audio.play",
+          "params": {
+            "id": "rec-20261101-091530",
+            "startMs": 30000
+          }
+        },
+        "response": {
+          "id": "c7",
+          "ok": true,
+          "result": {
+            "id": "rec-20261101-091530",
+            "durationMs": 4380000,
+            "state": "playing",
+            "positionMs": 30000
+          }
+        }
+      },
+      {
+        "name": "drag to 1:02:00",
+        "request": {
+          "id": "c12",
+          "method": "audio.control",
+          "params": {
+            "action": "seek",
+            "positionMs": 3720000
+          }
+        },
+        "response": {
+          "id": "c12",
+          "ok": true,
+          "result": {
+            "id": "rec-20261101-091530",
+            "durationMs": 4380000,
+            "state": "playing",
+            "positionMs": 3720000
+          }
+        }
+      },
+      {
+        "name": "pause",
+        "request": {
+          "id": "c13",
+          "method": "audio.control",
+          "params": {
+            "action": "pause"
+          }
+        },
+        "response": {
+          "id": "c13",
+          "ok": true,
+          "result": {
+            "id": "rec-20261101-091530",
+            "durationMs": 4380000,
+            "state": "paused",
+            "positionMs": 3721480
+          }
+        }
+      },
+      {
+        "name": "close",
+        "request": {
+          "id": "c14",
+          "method": "app.close",
+          "params": {}
+        },
+        "response": {
+          "id": "c14",
+          "ok": true,
+          "result": {}
+        }
+      },
+      {
+        "name": "a capability the manifest does not declare",
+        "request": {
+          "id": "c15",
+          "method": "clipboard.write",
+          "params": {
+            "text": "x"
+          }
+        },
+        "response": {
+          "id": "c15",
+          "ok": false,
+          "error": {
+            "code": "NOT_DECLARED"
+          }
+        }
+      },
+      {
+        "name": "offline",
+        "request": {
+          "id": "c16",
+          "method": "recordings.list",
+          "params": {}
+        },
+        "response": {
+          "id": "c16",
+          "ok": false,
+          "error": {
+            "code": "OFFLINE",
+            "message": "没有网络"
+          }
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "name": "a method the bridge does not have",
+        "request": {
+          "id": "x1",
+          "method": "contacts.list",
+          "params": {}
+        }
+      },
+      {
+        "name": "an id with a space",
+        "request": {
+          "id": "x 2",
+          "method": "env.get",
+          "params": {}
+        }
+      },
+      {
+        "name": "a recording id with a slash",
+        "request": {
+          "id": "x3",
+          "method": "recordings.get",
+          "params": {
+            "id": "../other"
+          }
+        }
+      },
+      {
+        "name": "recordings.get without an id",
+        "request": {
+          "id": "x4",
+          "method": "recordings.get",
+          "params": {}
+        }
+      },
+      {
+        "name": "nothing to copy",
+        "request": {
+          "id": "x5",
+          "method": "clipboard.write",
+          "params": {
+            "text": ""
+          }
+        }
+      },
+      {
+        "name": "seek without a position",
+        "request": {
+          "id": "x6",
+          "method": "audio.control",
+          "params": {
+            "action": "seek"
+          }
+        }
+      },
+      {
+        "name": "play without an id",
+        "request": {
+          "id": "x7",
+          "method": "audio.play",
+          "params": {
+            "startMs": 0
+          }
+        }
+      },
+      {
+        "name": "play from the links (they stay with the app)",
+        "request": {
+          "id": "x9",
+          "method": "audio.play",
+          "params": {
+            "files": [
+              {
+                "segment": 1,
+                "url": "https://x/1.ogg"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "where to play from (not on the bridge)",
+        "request": {
+          "id": "x10",
+          "method": "recordings.audio",
+          "params": {
+            "id": "rec-20261101-091530"
+          }
+        }
+      },
+      {
+        "name": "anything more (the sign-in, asked for)",
+        "request": {
+          "id": "x8",
+          "method": "env.get",
+          "params": {
+            "token": true
+          }
+        }
+      }
+    ],
+    "states": {
+      "invalid": [
+        {
+          "name": "failed without why",
+          "state": {
+            "id": "rec-20261101-091530",
+            "durationMs": 4380000,
+            "state": "failed",
+            "positionMs": 0
+          }
+        },
+        {
+          "name": "why without failed",
+          "state": {
+            "id": "rec-20261101-091530",
+            "durationMs": 4380000,
+            "state": "playing",
+            "positionMs": 0,
+            "error": "OFFLINE"
+          }
+        },
+        {
+          "name": "no id",
+          "state": {
+            "state": "playing",
+            "positionMs": 0,
+            "durationMs": 1
+          }
+        }
+      ]
+    },
+    "errors": {
+      "invalid": [
+        {
+          "name": "SERVER without its status",
+          "error": {
+            "code": "SERVER",
+            "serverCode": "AUDIO_GONE"
+          }
+        },
+        {
+          "name": "a status without SERVER",
+          "error": {
+            "code": "FAILED",
+            "status": 500
+          }
+        },
+        {
+          "name": "a code the bridge does not have",
+          "error": {
+            "code": "FORBIDDEN"
+          }
+        }
+      ]
+    }
+  },
+  "level2": {
+    "calls": {
+      "valid": [
+        {
+          "name": "level 2: the user's id here",
+          "request": {
+            "id": "d1",
+            "method": "user.id",
+            "params": {}
+          },
+          "response": {
+            "id": "d1",
+            "ok": true,
+            "result": {
+              "id": "J4a6bLUFmWbxQubALFcFNA"
+            }
+          }
+        },
+        {
+          "name": "level 2: its records",
+          "request": {
+            "id": "d2",
+            "method": "records.list",
+            "params": {
+              "kind": "knock.session"
+            }
+          },
+          "response": {
+            "id": "d2",
+            "ok": true,
+            "result": {
+              "items": [
+                {
+                  "id": "r-20261102-0001",
+                  "kind": "knock.session",
+                  "at": "2026-11-02T08:30:00.000Z",
+                  "data": {
+                    "knocks": 108,
+                    "seconds": 300
+                  }
+                }
+              ],
+              "next": null
+            }
+          }
+        },
+        {
+          "name": "level 2: keep a record",
+          "request": {
+            "id": "d3",
+            "method": "records.add",
+            "params": {
+              "kind": "knock.session",
+              "data": {
+                "knocks": 108,
+                "seconds": 300
+              }
+            }
+          },
+          "response": {
+            "id": "d3",
+            "ok": true,
+            "result": {
+              "id": "r-20261102-0001",
+              "at": "2026-11-02T08:30:00.000Z"
+            }
+          }
+        },
+        {
+          "name": "level 2: a record its schema refuses",
+          "request": {
+            "id": "d4",
+            "method": "records.add",
+            "params": {
+              "kind": "knock.session",
+              "data": {
+                "knocks": "many"
+              }
+            }
+          },
+          "response": {
+            "id": "d4",
+            "ok": false,
+            "error": {
+              "code": "SERVER",
+              "status": 400,
+              "serverCode": "SCHEMA_INVALID"
+            }
+          }
+        },
+        {
+          "name": "level 2: its settings",
+          "request": {
+            "id": "d5",
+            "method": "settings.get",
+            "params": {}
+          },
+          "response": {
+            "id": "d5",
+            "ok": true,
+            "result": {
+              "values": {
+                "sound": "wood",
+                "haptics": true
+              }
+            }
+          }
+        },
+        {
+          "name": "level 2: change one",
+          "request": {
+            "id": "d6",
+            "method": "settings.set",
+            "params": {
+              "values": {
+                "sound": "bell"
+              }
+            }
+          },
+          "response": {
+            "id": "d6",
+            "ok": true,
+            "result": {
+              "values": {
+                "sound": "bell",
+                "haptics": true
+              }
+            }
+          }
+        },
+        {
+          "name": "level 2: a code scanned",
+          "request": {
+            "id": "d7",
+            "method": "scan.code",
+            "params": {}
+          },
+          "response": {
+            "id": "d7",
+            "ok": true,
+            "result": {
+              "text": "https://tikpal.ai/get?from=voice"
+            }
+          }
+        },
+        {
+          "name": "level 2: the scanner closed",
+          "request": {
+            "id": "d8",
+            "method": "scan.code",
+            "params": {}
+          },
+          "response": {
+            "id": "d8",
+            "ok": true,
+            "result": {
+              "cancelled": true
+            }
+          }
+        },
+        {
+          "name": "level 2: shared",
+          "request": {
+            "id": "d9",
+            "method": "share.text",
+            "params": {
+              "text": "今天敲了 108 下"
+            }
+          },
+          "response": {
+            "id": "d9",
+            "ok": true,
+            "result": {
+              "shared": true
+            }
+          }
+        },
+        {
+          "name": "level 2: no photo picked",
+          "request": {
+            "id": "d10",
+            "method": "photos.pick",
+            "params": {
+              "max": 3
+            }
+          },
+          "response": {
+            "id": "d10",
+            "ok": true,
+            "result": {
+              "cancelled": true
+            }
+          }
+        },
+        {
+          "name": "level 2: one photo",
+          "request": {
+            "id": "d11",
+            "method": "photos.pick",
+            "params": {}
+          },
+          "response": {
+            "id": "d11",
+            "ok": true,
+            "result": {
+              "photos": [
+                {
+                  "type": "image/jpeg",
+                  "width": 1600,
+                  "height": 1200,
+                  "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/2w=="
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "level 2: saved to the photos",
+          "request": {
+            "id": "d12",
+            "method": "photos.save",
+            "params": {
+              "type": "image/png",
+              "data": "iVBORw0KGgo="
+            }
+          },
+          "response": {
+            "id": "d12",
+            "ok": true,
+            "result": {
+              "saved": true
+            }
+          }
+        },
+        {
+          "name": "level 2 in a level-1 container",
+          "request": {
+            "id": "d13",
+            "method": "user.id",
+            "params": {}
+          },
+          "response": {
+            "id": "d13",
+            "ok": false,
+            "error": {
+              "code": "UNSUPPORTED"
+            }
+          }
+        }
+      ],
+      "invalid": [
+        {
+          "name": "a record without its kind",
+          "request": {
+            "id": "y1",
+            "method": "records.add",
+            "params": {
+              "data": {}
+            }
+          }
+        },
+        {
+          "name": "no setting to change",
+          "request": {
+            "id": "y2",
+            "method": "settings.set",
+            "params": {
+              "values": {}
+            }
+          }
+        },
+        {
+          "name": "five photos",
+          "request": {
+            "id": "y3",
+            "method": "photos.pick",
+            "params": {
+              "max": 5
+            }
+          }
+        },
+        {
+          "name": "nothing to share",
+          "request": {
+            "id": "y4",
+            "method": "share.text",
+            "params": {
+              "text": ""
+            }
+          }
+        },
+        {
+          "name": "save a GIF",
+          "request": {
+            "id": "y5",
+            "method": "photos.save",
+            "params": {
+              "type": "image/gif",
+              "data": "R0lGOD"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "name": "playing",
+      "event": {
+        "event": "audio.state",
+        "data": {
+          "id": "rec-20261101-091530",
+          "state": "playing",
+          "positionMs": 61000,
+          "durationMs": 4380000
+        }
+      }
+    },
+    {
+      "name": "played to the end",
+      "event": {
+        "event": "audio.state",
+        "data": {
+          "id": "rec-20261101-091530",
+          "state": "ended",
+          "positionMs": 4380000,
+          "durationMs": 4380000
+        }
+      }
+    },
+    {
+      "name": "the network went halfway",
+      "event": {
+        "event": "audio.state",
+        "data": {
+          "id": "rec-20261101-091530",
+          "state": "failed",
+          "positionMs": 1204000,
+          "durationMs": 4380000,
+          "error": "OFFLINE"
+        }
+      }
+    },
+    {
+      "name": "the app turned dark",
+      "event": {
+        "event": "env.changed",
+        "data": {
+          "locale": "zh-Hans",
+          "theme": {
+            "scheme": "dark",
+            "colors": {
+              "paper": "#faf7ef",
+              "card": "#ffffff",
+              "ink": "#282d29",
+              "ink2": "#646b62",
+              "ink3": "#979d93",
+              "line": "#e5e6dd",
+              "coral": "#d66e55",
+              "coralText": "#a8492f",
+              "sage": "#a6b49b",
+              "sageStrong": "#5e7255",
+              "danger": "#b23a35",
+              "accent": "#5e7255",
+              "accentStrong": "#4a5c43",
+              "onAccent": "#ffffff",
+              "accentText": "#4f6247"
+            }
+          },
+          "fontScale": 1.15,
+          "platform": "ios",
+          "capabilityLevel": 1,
+          "insets": {
+            "top": 44,
+            "bottom": 34
+          }
+        }
+      }
+    },
+    {
+      "name": "the user picked honey and bigger text",
+      "event": {
+        "event": "env.changed",
+        "data": {
+          "locale": "zh-Hans",
+          "theme": {
+            "scheme": "light",
+            "colors": {
+              "paper": "#faf7ef",
+              "card": "#ffffff",
+              "ink": "#282d29",
+              "ink2": "#646b62",
+              "ink3": "#979d93",
+              "line": "#e5e6dd",
+              "coral": "#d66e55",
+              "coralText": "#a8492f",
+              "sage": "#a6b49b",
+              "sageStrong": "#5e7255",
+              "danger": "#b23a35",
+              "accent": "#c99a3c",
+              "accentStrong": "#a87d28",
+              "onAccent": "#ffffff",
+              "accentText": "#8a6520"
+            }
+          },
+          "fontScale": 1.3,
+          "platform": "ios",
+          "capabilityLevel": 1,
+          "insets": {
+            "top": 44,
+            "bottom": 34
+          }
+        }
+      }
+    }
+  ]
+}

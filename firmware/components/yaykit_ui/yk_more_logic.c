@@ -196,7 +196,7 @@ const char *yk_more_state_text(yk_more_where_t where, bool current, bool preview
         }
     }
     switch (where) {
-    case YK_MORE_SLOT: return english ? "On Yay · tap to open" : "在圆屏上 · 点一下打开";
+    case YK_MORE_SLOT: return english ? "Installed · tap to open" : "已装好 · 点一下打开";
     case YK_MORE_CACHE: return english ? "Downloaded · seconds" : "下载过 · 几秒就好";
     default: return english ? "To download · ~20 s" : "要下载 · 大约二十秒";
     }

@@ -77,7 +77,7 @@ git push -u origin main
 ```bash
 ./kit logs 60       # 60 秒的日志（MY_TIMER_TAP、YAY_APP …）
 ./kit snap          # 截图存成 snap.png
-./kit heap          # 内存：内部 RAM 不能低于 40 KB
+./kit heap          # 内存；底线读 ./kit info 的 heap.internalMinSinceReady：不低于 40,000 字节
 ./kit info          # 圆屏上现在跑的是什么、三个位置各装着什么
 ```
 

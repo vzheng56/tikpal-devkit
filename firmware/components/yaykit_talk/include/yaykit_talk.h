@@ -13,7 +13,7 @@
 // Memory: about 23 KB of internal RAM (the session's 8 KB task, the WebSocket's 6 KB and 2 × 2 KB buffers, this loop's
 // 5 KB); the rest in PSRAM. `YK_TALK mem internal=… internal_min=… largest=… why=…` at the start, at hello.ok, as each
 // turn listens and when it ends (release builds too). internal_min is the lowest since the app was ready
-// (yaykit_link's yk_mem.h: the figure the 40 KB line is read on). One TLS connection at a time: hold the session
+// (yaykit_link's yk_mem.h: the figure the 40,000 bytes line is read on). One TLS connection at a time: hold the session
 // (yk_talk_hold) around the app's own HTTPS.
 #pragma once
 

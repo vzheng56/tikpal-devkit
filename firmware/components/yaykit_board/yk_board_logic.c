@@ -51,10 +51,49 @@ int yk_board_battery_level(int mv, bool charging) {
 
 bool yk_board_battery_full(int mv) { return mv >= 4150; }
 
+int yk_board_charge_5v_ma(uint8_t reg3a) {
+    static const int ma[] = {500, 1000, 1500, 2000, 2500, 3000, 3200, 3500};
+    return ma[(reg3a & YK_BOARD_CHARGE_5V_MASK) >> 3];
+}
+
+uint8_t yk_board_charge_5v_lowest(uint8_t reg3a) { return (uint8_t)(reg3a & ~YK_BOARD_CHARGE_5V_MASK); }
+
+yk_charge_limit_t yk_board_charge_limit(int (*read)(void *ctx, uint8_t reg, uint8_t *value),
+                                        int (*write)(void *ctx, uint8_t reg, uint8_t value), void *ctx) {
+    yk_charge_limit_t c = {.before = -1, .wrote = -1, .after = -1, .result = YK_CHARGE_NO_READ};
+    uint8_t v = 0;
+    if (read(ctx, YK_BOARD_CHARGE_REG, &v) != 0) return c;
+    c.before = v;
+    const uint8_t want = yk_board_charge_5v_lowest(v);
+    if (v == want) {
+        c.result = YK_CHARGE_ALREADY;
+        return c;
+    }
+    c.wrote = want;
+    if (write(ctx, YK_BOARD_CHARGE_REG, want) != 0) {
+        c.result = YK_CHARGE_WRITE_FAILED;
+        return c;
+    }
+    if (read(ctx, YK_BOARD_CHARGE_REG, &v) == 0) c.after = v;
+    c.result = c.after == want ? YK_CHARGE_SET : YK_CHARGE_MISMATCH;
+    return c;
+}
+
+const char *yk_board_charge_result_name(yk_charge_result_t result) {
+    switch (result) {
+    case YK_CHARGE_SET: return "set";
+    case YK_CHARGE_ALREADY: return "already";
+    case YK_CHARGE_NO_READ: return "no_read";
+    case YK_CHARGE_WRITE_FAILED: return "write_failed";
+    default: return "mismatch";
+    }
+}
+
 int yk_board_pref_default(yk_pref_t which) {
     switch (which) {
     case YK_PREF_VOLUME: return 6;
     case YK_PREF_BRIGHTNESS: return 80;
+    case YK_PREF_BUDDY: return 0;  // Yay
     default: return 30;  // the screen off after 30 s (P22; 180 before)
     }
 }
@@ -63,6 +102,7 @@ int yk_board_pref_clamp(yk_pref_t which, int v) {
     switch (which) {
     case YK_PREF_VOLUME: return v < 0 ? 0 : v > 10 ? 10 : v;
     case YK_PREF_BRIGHTNESS: return v < 5 ? 5 : v > 100 ? 100 : v;
+    case YK_PREF_BUDDY: return v >= 0 && v <= 2 ? v : 0;  // not a neighbour: a buddy it does not know is Yay
     default: return v <= 0 ? 0 : v < 15 ? 15 : v > 3600 ? 3600 : v;
     }
 }

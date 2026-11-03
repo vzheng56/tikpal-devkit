@@ -1,0 +1,174 @@
+{
+  "valid": [
+    {
+      "schema": "recordingList",
+      "name": "a page: done in two files, still uploading, failed for points",
+      "value": {
+        "items": [
+          {
+            "id": "rec-20261101-140211",
+            "recordedAt": "2026-11-01T14:02:11+08:00",
+            "createdAt": "2026-11-01T06:02:12.000Z",
+            "durationMs": 630000,
+            "files": 1,
+            "state": "uploading",
+            "lastChunkAt": "2026-11-01T06:12:40.000Z",
+            "failure": null,
+            "noSpeech": false,
+            "title": null,
+            "preview": null,
+            "audio": false,
+            "audioExpiresAt": null,
+            "retry": false,
+            "charged": null
+          },
+          {
+            "id": "rec-20261101-091530",
+            "recordedAt": "2026-11-01T09:15:30+08:00",
+            "createdAt": "2026-11-01T01:15:31.000Z",
+            "durationMs": 4380000,
+            "files": 2,
+            "state": "done",
+            "lastChunkAt": null,
+            "failure": null,
+            "noSpeech": false,
+            "title": "周一例会：新学期排课",
+            "preview": "我们先看一下新学期的排课。数学和语文还是放在上午……",
+            "audio": true,
+            "audioExpiresAt": "2026-12-01T02:30:12.000Z",
+            "retry": false,
+            "charged": 964
+          },
+          {
+            "id": "rec-20261031-203000",
+            "recordedAt": null,
+            "createdAt": "2026-10-31T12:31:02.000Z",
+            "durationMs": 1800000,
+            "files": 1,
+            "state": "failed",
+            "lastChunkAt": null,
+            "failure": "credits",
+            "noSpeech": false,
+            "title": null,
+            "preview": null,
+            "audio": true,
+            "audioExpiresAt": "2026-11-30T13:01:40.000Z",
+            "retry": true,
+            "charged": null
+          }
+        ],
+        "next": "eyJ0IjoiMjAyNi0xMC0zMSJ9",
+        "transcribeMinutes": 57
+      }
+    },
+    {
+      "schema": "recordingList",
+      "name": "nothing yet, and no points left today",
+      "value": {
+        "items": [],
+        "next": null,
+        "transcribeMinutes": 0
+      }
+    },
+    {
+      "schema": "recordingList",
+      "name": "done with nobody heard, the audio gone after 30 days",
+      "value": {
+        "items": [
+          {
+            "id": "rec-20261101-091530",
+            "recordedAt": "2026-11-01T09:15:30+08:00",
+            "createdAt": "2026-11-01T01:15:31.000Z",
+            "durationMs": 42000,
+            "files": 1,
+            "state": "done",
+            "lastChunkAt": null,
+            "failure": null,
+            "noSpeech": true,
+            "title": null,
+            "preview": null,
+            "audio": false,
+            "audioExpiresAt": null,
+            "retry": false,
+            "charged": 10
+          }
+        ],
+        "next": null,
+        "transcribeMinutes": 75
+      }
+    },
+    {
+      "schema": "recordingText",
+      "name": "an hour and more: two parts joined",
+      "value": {
+        "id": "rec-20261101-091530",
+        "title": "周一例会：新学期排课",
+        "text": "我们先看一下新学期的排课。\n\n最后说一下下周的安排。",
+        "parts": [
+          {
+            "segment": 1,
+            "durationMs": 3600000,
+            "text": "我们先看一下新学期的排课。"
+          },
+          {
+            "segment": 2,
+            "durationMs": 780000,
+            "text": "最后说一下下周的安排。"
+          }
+        ]
+      }
+    },
+    {
+      "schema": "recordingText",
+      "name": "the second part not transcribed",
+      "value": {
+        "id": "rec-20261101-091530",
+        "title": null,
+        "text": "我们先看一下新学期的排课。",
+        "parts": [
+          {
+            "segment": 1,
+            "durationMs": 3600000,
+            "text": "我们先看一下新学期的排课。"
+          },
+          {
+            "segment": 2,
+            "durationMs": 780000,
+            "text": null
+          }
+        ]
+      }
+    },
+    {
+      "schema": "recordingAnswer",
+      "name": "再转一次: transcribing again",
+      "value": {
+        "recording": {
+          "id": "rec-20261031-203000",
+          "recordedAt": null,
+          "createdAt": "2026-10-31T12:31:02.000Z",
+          "durationMs": 1800000,
+          "files": 1,
+          "state": "transcribing",
+          "lastChunkAt": null,
+          "failure": null,
+          "noSpeech": false,
+          "title": null,
+          "preview": null,
+          "audio": true,
+          "audioExpiresAt": "2026-11-30T13:01:40.000Z",
+          "retry": false,
+          "charged": null
+        },
+        "transcribeMinutes": 18
+      }
+    },
+    {
+      "schema": "recordingDeleted",
+      "name": "deleted",
+      "value": {
+        "deleted": true
+      }
+    }
+  ]
+}

@@ -63,6 +63,7 @@ typedef struct {
     char first[5];
     yk_more_where_t where;
     bool current, preview;
+    bool update;           // in a slot with a newer version (0.1.12): the coral dot
     uint32_t bytes;        // to download: its size and how long it would take (yk_more_state_line)
     int eta_s;
     mask_t glyph[GLYPHS];  // its first character at each size: made when first wanted, or while nothing moves
@@ -468,6 +469,14 @@ static void draw_app(lv_layer_t *layer, int i) {
     }
     if (a->current) yk_draw_in_use(layer, cx, cy, YK_APPS_SAT_R, k, opa);
     if (size <= 50 || soon) return;  // the marks only on the bigger ones (the design's); none on one coming soon
+    if (a->update && a->where == YK_MORE_SLOT) {
+        // a newer version (0.1.12): a coral dot in a paper ring, upper right (as on the ring)
+        int dx, dy;
+        float dr, edge;
+        yk_apps_update_dot(cx, cy, k, &dx, &dy, &dr, &edge);
+        disc(layer, dx, dy, 2 * edge, YK_PAPER, opa);
+        disc(layer, dx, dy, 2 * dr, YK_CORAL, opa);
+    }
     if (a->where == YK_MORE_CACHE && !a->current) {
         // a hollow sage ring: sage, and paper inside
         const int mx = cx + (int)lroundf(YK_APPS_CACHE_D * k), my = cy + (int)lroundf(YK_APPS_CACHE_D * k);
@@ -824,6 +833,7 @@ bool yk_more_open(lv_obj_t *parent, const yk_more_item_t *items, int n, yk_more_
         a->where = items[i].where;
         a->current = items[i].current;
         a->preview = items[i].preview;
+        a->update = items[i].update;
         a->bytes = items[i].size;
         a->eta_s = items[i].eta_s;
         a->icon = items[i].icon;

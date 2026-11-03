@@ -1,0 +1,2 @@
+# 把开发包装成一份拷贝（不是链接），它要的 esbuild、zod、tsx 才装得进这个项目。
+install-links=true

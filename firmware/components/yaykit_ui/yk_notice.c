@@ -35,16 +35,23 @@ yk_notice_line_t *yk_notice_create(lv_obj_t *parent, int y) {
 
 yk_notice_t yk_notice_current(const yk_notice_line_t *line) { return line ? line->shown : YK_NOTICE_NONE; }
 
-static void fade(lv_obj_t *o, lv_opa_t to) {
+/** To `to` over FADE_MS, after `delay_ms`; whatever fade was under way stops where it is. */
+static void fade_after(lv_obj_t *o, lv_opa_t to, uint32_t delay_ms) {
     lv_anim_delete(o, opa_exec);
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, o);
+    if (delay_ms) {
+        lv_anim_set_delay(&a, delay_ms);
+        lv_anim_set_early_apply(&a, false);
+    }
     lv_anim_set_values(&a, lv_obj_get_style_opa(o, 0), to);
     lv_anim_set_duration(&a, FADE_MS);
     lv_anim_set_exec_cb(&a, opa_exec);
     lv_anim_start(&a);
 }
+
+static void fade(lv_obj_t *o, lv_opa_t to) { fade_after(o, to, 0); }
 
 void yk_notice_show(yk_notice_line_t *line, yk_notice_t notice, yk_yay_t *yay, yk_rim_t *rim, const char *override,
                     bool english) {
@@ -66,6 +73,13 @@ void yk_notice_show(yk_notice_line_t *line, yk_notice_t notice, yk_yay_t *yay, y
     const char *text = override ? override : (english ? s->en : s->zh);
     if (!text || !text[0]) {
         fade(line->label, LV_OPA_TRANSP);
+        return;
+    }
+    if (notice == YK_NOTICE_CONNECTING && was != YK_NOTICE_CONNECTING) {
+        // Words only if it takes a while: the line goes first (a turn's notice), the words come after the wait.
+        lv_obj_set_style_opa(line->label, LV_OPA_TRANSP, 0);
+        lv_label_set_text(line->label, text);
+        fade_after(line->label, LV_OPA_COVER, YK_NOTICE_CONNECTING_WORDS_MS);
         return;
     }
     lv_label_set_text(line->label, text);

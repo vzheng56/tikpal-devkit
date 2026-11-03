@@ -1,8 +1,9 @@
 // The app ring (docs/design/device-controls.md 4, plan P23): a double click in any firmware opens it. Yay sits in
-// the middle (r 56, "Yay" under it in Yay itself, "回到 Yay" in an extension); around it up to 5 places on a circle of
+// the middle (r 56, "Tikpal" under it in the main firmware, "回到 Tikpal" in an extension); around it up to 5 places on a circle of
 // r 142, clockwise from 12 o'clock every 72 degrees, each a dark disc (r 38) with its 64 x 64 icon and its name. The
 // app in use has a sage ring and a sage name; one in the package cache a small hollow sage ring on the disc's lower
-// right; one on neither (to download) is dimmed to 42 % with a small sage download mark. Since the app ecosystem's
+// right; one on neither (to download) is dimmed to 42 % with a small sage download mark; one with a newer version
+// (`update`, the main firmware's only) a coral dot on the disc's upper right. Since the app ecosystem's
 // stage 1 (docs/design/app-ecosystem.md 4.5) the fifth place is 「更多」 (three dots): yk_apps_pick_ring() gives up
 // to 4 apps and 「更多」 last; the callback then reports YK_APPS_MORE. Since 0.1.6 (docs/delivery/2026-10-25-settings-u.md
 // 5) 「设置」 (a gear) comes after it, and a ring with it has 6 places every 60 degrees on a circle of r 128 (the name
@@ -43,6 +44,11 @@ typedef struct {
     bool installed;              // in a slot; false and not `cached`: dimmed, with the download mark
     const lv_image_dsc_t *icon;  // 64 x 64 in any format LVGL draws; NULL: the catalog's icon, else the first character
     bool cached;                 // not in a slot but in the package cache: not dimmed, a hollow sage ring on the disc
+    // 0.1.12 (docs/delivery/2026-10-30-yay-0.1.12.md 5), added last so that an app built before keeps its layout
+    // (YK_API_LEVEL stays): a coral dot on the disc's upper right. The main firmware sets it on an app in a slot that
+    // has a newer version, and on 「设置」 when Tikpal or any app has one; an extension's ring never knows, and leaves it
+    // false.
+    bool update;
 } yk_apps_item_t;
 
 /** An installed app, from yaykit_app's slot table: its slug and when it was last used (Unix ms; 0 unknown). */
@@ -84,7 +90,7 @@ void yk_apps_close(bool animated);
 bool yk_apps_is_open(void);
 
 /** What the screen shows from a tap on the ring until the restart into the other firmware (design 4): 「正在打开」 and
- *  the app's name on black, or 「正在回到」 「Yay」 for YK_APPS_HOME (the prototype's), over everything (LVGL's top
+ *  the app's name on black, or 「正在回到」 「Tikpal」 for YK_APPS_HOME (the prototype's), over everything (LVGL's top
  *  layer; touches stop there). `name` NULL: the catalog's, else the slug. Drawn by the next frame: let one pass before
  *  restarting. Under board_lock(). */
 void yk_apps_leaving(const char *slug, const char *name);
@@ -92,7 +98,8 @@ void yk_apps_leaving(const char *slug, const char *name);
 void yk_apps_leaving_clear(void);
 
 /** 「回到 Yay 说？」 (device-controls.md 1.3): a hold in an app that has no conversation of its own and did not use
- *  it. A card on paper over the app (the prototype's): 「点屏幕回去 · 短按留下」. A tap anywhere calls back
+ *  it. The name is the buddy's (yk_ui_buddy_name(), the shared YK_PREF_BUDDY: 「回到 Wow 说？」), Yay until the main
+ *  firmware sets another. A card on paper over the app (the prototype's): 「点屏幕回去 · 短按留下」. A tap anywhere calls back
  *  YK_APPS_HOME; 8 s untouched, NULL; either way it is gone by then. yk_apps_ask_close() (the key: stay) does not call
  *  back. Under board_lock(). */
 bool yk_apps_ask(lv_obj_t *parent, yk_apps_cb_t cb, void *ctx);

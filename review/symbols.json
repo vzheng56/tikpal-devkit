@@ -1,0 +1,410 @@
+{
+  "version": 1,
+  "about": "系统函数名单（交付文档 2026-11-02-submission-pipeline.md 第 5.5 节，BOSS-2 11-02 改定）。审核机按它查应用自己的代码调了什么、取了什么地址；开发者本地也能照它查。先看 block，再看 watch，再看 allow 和 components；开发包头文件里声明的函数、工具链和 ROM 里的 C 库自动允许；剩下的算 watch。match 里 * 匹配任意一串字符。",
+  "block": [
+    {
+      "match": [
+        "esp_partition_write",
+        "esp_partition_write_raw",
+        "esp_partition_erase_range",
+        "esp_partition_register_external"
+      ],
+      "why": {
+        "zh": "扩展固件不能直接写分区，会写坏 Yay 或者别的应用。",
+        "en": "An app may not write partitions: it would break Yay or other apps."
+      },
+      "fix": {
+        "zh": "设置放进自己的 NVS 命名空间，大的数据放 TF 卡你自己的目录。",
+        "en": "Keep settings in your own NVS namespace and large data in your own folder on the TF card."
+      }
+    },
+    {
+      "match": [
+        "esp_flash_write",
+        "esp_flash_write_encrypted",
+        "esp_flash_erase_region",
+        "esp_flash_erase_chip",
+        "spi_flash_write",
+        "spi_flash_write_encrypted",
+        "spi_flash_erase_range",
+        "spi_flash_erase_sector",
+        "esp_rom_spiflash_*"
+      ],
+      "why": {
+        "zh": "扩展固件不能直接写或擦 Flash，会写坏整台 Tikpal Voice。",
+        "en": "An app may not write or erase the flash directly: it would break the whole Tikpal Voice."
+      },
+      "fix": {
+        "zh": "设置放进自己的 NVS 命名空间，大的数据放 TF 卡你自己的目录。",
+        "en": "Keep settings in your own NVS namespace and large data in your own folder on the TF card."
+      }
+    },
+    {
+      "match": [
+        "SPIEraseArea",
+        "_SPIEraseArea",
+        "SPI_block_erase",
+        "SPI_chip_erase",
+        "SPI_sector_erase",
+        "SPI_page_program",
+        "SPI_write_enable",
+        "_SPI_write_enable",
+        "SPI_Common_Command",
+        "SPIUnlock",
+        "SPIWrite",
+        "_esp_rom_spiflash_*",
+        "esp_rom_opiflash_*",
+        "esp_rom_spi_cmd_*",
+        "esp_rom_spi_flash_*",
+        "rom_esp_flash_*",
+        "memspi_host_*",
+        "spi_flash_chip_*",
+        "spi_flash_hal_*",
+        "spi_flash_common_write_status_*",
+        "spi_flash_unlock",
+        "esp_flash_set_chip_write_protect",
+        "esp_flash_set_protected_region",
+        "efuse_hal_program",
+        "efuse_hal_*write*",
+        "esp_efuse_utility_burn_*",
+        "esp_efuse_utility_write_*"
+      ],
+      "why": {
+        "zh": "这是 ROM 或底层驱动里直接擦写 Flash、改熔丝的函数（同一件事换了个名字）：会写坏整台 Tikpal Voice，熔丝写了改不回来。",
+        "en": "This erases or writes the flash, or burns eFuses, through the ROM or a low-level driver (the same thing under another name): it would break the whole Tikpal Voice, and burnt eFuses cannot be undone."
+      },
+      "fix": {
+        "zh": "设置放进自己的 NVS 命名空间，大的数据放 TF 卡你自己的目录。",
+        "en": "Keep settings in your own NVS namespace and large data in your own folder on the TF card."
+      }
+    },
+    {
+      "match": [
+        "esp_ota_begin",
+        "esp_ota_write",
+        "esp_ota_write_with_offset",
+        "esp_ota_end",
+        "esp_ota_abort",
+        "esp_ota_set_boot_partition",
+        "esp_ota_mark_app_*",
+        "esp_ota_erase_last_boot_app_partition"
+      ],
+      "why": {
+        "zh": "扩展固件不能改启动分区、不能自己升级。",
+        "en": "An app may not change the boot partition or update itself."
+      },
+      "fix": {
+        "zh": "回 Yay 用 `yk_return_home()`；升级由商城做。",
+        "en": "Go back to Yay with `yk_return_home()`; updates come from the store."
+      }
+    },
+    {
+      "match": [
+        "nvs_flash_erase",
+        "nvs_flash_erase_partition",
+        "nvs_flash_erase_partition_ptr"
+      ],
+      "why": {
+        "zh": "擦 NVS 会把 Wi-Fi、账号和别的应用的设置一起擦掉。",
+        "en": "Erasing NVS wipes the Wi-Fi, the account and every other app's settings with it."
+      },
+      "fix": {
+        "zh": "NVS 出错时记日志、照常跑，绝不擦。",
+        "en": "When NVS fails, log it and carry on; never erase it."
+      }
+    },
+    {
+      "match": [
+        "nvs_open_from_partition",
+        "nvs_flash_init_partition_ptr",
+        "nvs_flash_secure_init_partition"
+      ],
+      "why": {
+        "zh": "这样打开 NVS 能绕开命名空间检查，读到别人的设置。",
+        "en": "Opening NVS this way gets around the namespace check and reaches others' settings."
+      },
+      "fix": {
+        "zh": "用 `nvs_open` 打开你自己的命名空间。",
+        "en": "Open your own namespace with `nvs_open`."
+      }
+    },
+    {
+      "match": [
+        "esp_efuse_write_*",
+        "esp_efuse_burn_*",
+        "esp_efuse_set_*",
+        "esp_efuse_batch_write_*"
+      ],
+      "why": {
+        "zh": "熔丝写了改不回来，会把 Tikpal Voice 变成砖。",
+        "en": "eFuses cannot be unwritten: it can brick the Tikpal Voice."
+      },
+      "fix": {
+        "zh": "不要碰熔丝。",
+        "en": "Leave the eFuses alone."
+      }
+    },
+    {
+      "match": [
+        "esp_wifi_get_config",
+        "esp_wifi_set_config",
+        "esp_wifi_restore",
+        "esp_wifi_set_storage"
+      ],
+      "why": {
+        "zh": "这能读出或者改掉用户的 Wi-Fi 密码。",
+        "en": "This reads or changes the user's Wi-Fi password."
+      },
+      "fix": {
+        "zh": "联网用开发包的 `yk_wifi_start()`，用已有的网络。",
+        "en": "Go online with the kit's `yk_wifi_start()`, on the network already set up."
+      }
+    },
+    {
+      "match": [
+        "esp_secure_boot_*",
+        "esp_flash_encryption_*",
+        "esp_flash_encrypt_*",
+        "esp_image_*",
+        "bootloader_*"
+      ],
+      "why": {
+        "zh": "安全启动、Flash 加密和启动程序归系统管。",
+        "en": "Secure boot, flash encryption and the bootloader belong to the system."
+      },
+      "fix": {
+        "zh": "不要碰这些。",
+        "en": "Leave them alone."
+      }
+    }
+  ],
+  "watch": [
+    {
+      "match": [
+        "esp_http_client_*",
+        "esp_tls_*",
+        "socket",
+        "lwip_socket",
+        "connect",
+        "lwip_connect",
+        "getaddrinfo",
+        "lwip_getaddrinfo",
+        "esp_websocket_client_*",
+        "mqtt_*",
+        "esp_mqtt_*"
+      ],
+      "why": "自己联网（不经 yk_cloud）"
+    },
+    {
+      "match": [
+        "esp_vfs_fat_*",
+        "sdmmc_*",
+        "sdspi_*"
+      ],
+      "why": "TF 卡"
+    },
+    {
+      "match": [
+        "esp_partition_find",
+        "esp_partition_find_first",
+        "esp_partition_read",
+        "esp_partition_read_raw",
+        "esp_partition_mmap",
+        "esp_partition_get"
+      ],
+      "why": "读分区（分区标签另查）"
+    },
+    {
+      "match": [
+        "esp_read_mac",
+        "esp_efuse_mac_get_*",
+        "esp_efuse_read_*",
+        "esp_base_mac_addr_get"
+      ],
+      "why": "读设备身份"
+    },
+    {
+      "match": [
+        "esp_wifi_start",
+        "esp_wifi_stop",
+        "esp_wifi_connect",
+        "esp_wifi_disconnect",
+        "esp_wifi_scan_*",
+        "esp_wifi_init",
+        "esp_wifi_set_mode",
+        "esp_netif_*",
+        "esp_event_loop_create_default"
+      ],
+      "why": "自己管 Wi-Fi（开发包有 yaykit_wifi）"
+    },
+    {
+      "match": [
+        "esp_wifi_sta_get_ap_info"
+      ],
+      "why": "读 Wi-Fi 状态"
+    },
+    {
+      "match": [
+        "esp_ota_get_running_partition",
+        "esp_ota_get_next_update_partition",
+        "esp_ota_get_boot_partition"
+      ],
+      "why": "看启动分区（只读，扩展用不着）"
+    },
+    {
+      "match": [
+        "gpio_*",
+        "i2s_*",
+        "rtc_gpio_*",
+        "esp_sleep_*",
+        "esp_deep_sleep*",
+        "esp_light_sleep*",
+        "esp_restart",
+        "esp_bt_*",
+        "esp_ble_*",
+        "esp_bluedroid_*",
+        "nimble_*",
+        "ble_*"
+      ],
+      "why": "碰硬件或者系统（GPIO、I2S、睡眠、重启、蓝牙）"
+    }
+  ],
+  "allow": {
+    "match": [
+      "lv_*",
+      "_lv_*",
+      "heap_caps_malloc*",
+      "heap_caps_calloc*",
+      "heap_caps_realloc*",
+      "heap_caps_free",
+      "heap_caps_aligned_*",
+      "heap_caps_get_free_size",
+      "heap_caps_get_minimum_free_size",
+      "heap_caps_get_largest_free_block",
+      "uxTaskGetStackHighWaterMark",
+      "uxTaskGetStackHighWaterMark2",
+      "esp_log",
+      "esp_log_*",
+      "esp_log_write",
+      "esp_log_writev",
+      "esp_log_timestamp",
+      "esp_log_buffer_*",
+      "esp_timer_*",
+      "esp_random",
+      "esp_fill_random",
+      "esp_err_to_name",
+      "esp_err_to_name_r",
+      "_esp_error_check_failed",
+      "_esp_error_check_failed_without_abort",
+      "esp_get_free_heap_size",
+      "esp_get_minimum_free_heap_size",
+      "nvs_flash_init",
+      "nvs_open",
+      "nvs_close",
+      "nvs_commit",
+      "nvs_get_*",
+      "nvs_set_*",
+      "nvs_erase_key",
+      "nvs_erase_all",
+      "nvs_find_key",
+      "nvs_entry_find",
+      "nvs_entry_next",
+      "nvs_entry_info",
+      "nvs_release_iterator",
+      "nvs_flash_init_partition"
+    ]
+  },
+  "components": {
+    "about": "这些 ESP-IDF 组件里定义的函数，应用调了不出声（上面 block、watch 里点了名的照样查）。",
+    "allow": [
+      "freertos",
+      "log",
+      "esp_timer",
+      "heap",
+      "newlib",
+      "pthread",
+      "esp_ringbuf",
+      "cxx",
+      "esp_common"
+    ]
+  },
+  "kit": {
+    "about": "开发包自己的东西：组件头文件（firmware/components/*/include）里声明的函数自动允许；模板的 dependencies.lock 里锁定的组件库组件（名字、版本、哈希都对得上）算开发包的，不按应用自己的代码查。",
+    "headers": "firmware/components/*/include",
+    "lock": "firmware/_template/dependencies.lock"
+  },
+  "namespaces": {
+    "about": "nvs_open、nvs_entry_find 的命名空间要是应用自己的 yk_<简称>（开发包应用指南第 3 节）。",
+    "why": {
+      "yk_sys": {
+        "zh": "那是系统的，里面有账号令牌。",
+        "en": "it is the system's, and holds the account's token."
+      },
+      "nvs.net80211": {
+        "zh": "那里面是 Wi-Fi 密码。",
+        "en": "it holds the Wi-Fi password."
+      },
+      "yk_pref": {
+        "zh": "那是整台设备共用的设置，用 `yk_app_*()` 或 `board_pref_*()` 读写。",
+        "en": "it holds the whole device's settings: use `yk_app_*()` or `board_pref_*()`."
+      },
+      "*": {
+        "zh": "那不是你的命名空间。",
+        "en": "it is not your namespace."
+      }
+    }
+  },
+  "partitions": {
+    "about": "esp_partition_find、esp_partition_find_first 的分区标签是常量、而且是这些的，拦下（原样读 nvs 能绕开命名空间检查）。nvs_flash_init_partition 只许 nvs。esp_partition_find、esp_partition_find_first 的标签传 NULL：NVS 子类型（nvs、nvs_keys、任意）拦下（拿到的就是系统 nvs），别的子类型要看。",
+    "block": [
+      "nvs",
+      "nvs_keys",
+      "otadata",
+      "phy_init",
+      "factory",
+      "coredump",
+      "ota_*",
+      "fonts",
+      "mapspare",
+      "pkgcache",
+      "models",
+      "userfs"
+    ]
+  },
+  "addresses": {
+    "about": "ESP-IDF 5.5.5 soc/esp32s3/include/soc/soc.h、register/soc/reg_base.h 的宏（BOSS-2 本机核过）。ROM 函数先用 esp_rom/esp32s3/ld/*.ld 对回名字再套名单。",
+    "rom": {
+      "from": "0x40000000",
+      "to": "0x40060000",
+      "macros": "SOC_IROM_MASK_LOW–SOC_IROM_MASK_HIGH"
+    },
+    "registers": {
+      "from": "0x60000000",
+      "to": "0x600D1000",
+      "macros": "DR_REG_UART_BASE–DR_REG_WCL_BASE 加一个块"
+    },
+    "rtc": [
+      {
+        "from": "0x600FE000",
+        "to": "0x60100000",
+        "macros": "SOC_RTC_DRAM_LOW–SOC_RTC_DRAM_HIGH"
+      },
+      {
+        "from": "0x50000000",
+        "to": "0x50002000",
+        "macros": "SOC_RTC_DATA_LOW–SOC_RTC_DATA_HIGH"
+      }
+    ]
+  },
+  "hosts": {
+    "about": "源码里写死的网址：这些是 Tikpal 自己的，不出声；局域网地址拦下；别的外部主机要看。",
+    "ours": [
+      "yaykit.io",
+      "*.yaykit.io",
+      "tikpal.ai",
+      "*.tikpal.ai",
+      "yay.lettersfromteachers.com",
+      "tikpal-desktop.fly.storage.tigris.dev"
+    ]
+  }
+}

@@ -8,7 +8,7 @@
 
 原名 Yaykit 开发包（`vzheng56/yaykit-devkit`），旧地址会自动跳到这里，已经建好的应用不用改。
 
-每次 Yay 发版，这里就出一版开发包；文档和工具有改动时也会单独出一版（`devkit.json` 写着版本、对应的 Yay 和接口级别）。你的应用钉住一个版本，我们这边后来怎么改，都不会突然把它弄坏。
+每次 Yay 发版，这里就出一版开发包；文档和工具有改动时也会单独出一版（`devkit.json` 写着版本、对应的 Yay 和接口级别）。你的应用钉住一个版本，我们这边后来怎么改，都不会突然把它弄坏。每一版的组件改了什么，见[应用开发指南的更新记录](docs/app-guide.md#更新记录)（1.6 对应 Yay 0.1.12，换过来要把 `minYay` 改成 0.1.12）。
 
 许可：保留所有权利，只许查看，只许用来给 Tikpal 开发应用，见 [LICENSE](LICENSE)。开发者协议还是草稿，见 [DEVELOPER-TERMS.md](DEVELOPER-TERMS.md)。
 
@@ -43,6 +43,8 @@ cd my-timer
 | [app.json](docs/app-json.md) | 应用清单的每个字段 |
 | [设备公共 API](docs/device-api.md) | 云能力怎么用、权限、规矩 |
 | [兼容检查清单](docs/checklist.md) | 自测和审核都照它 |
+| [审核规则](docs/review-rules.md)（[English](docs/review-rules.en.md)） | 我们的 AI 审核照它读你的代码和商店素材；你也可以先让自己的 AI 照它审一遍 |
+| [小程序](docs/miniapp.md)（[English](docs/miniapp.en.md)） | 手机 App 里的网页：起项目、浏览器预览、桥的接口、打包和检查（`./kit miniapp`，要 Node.js 20+；第一版只开给受邀的开发者） |
 
 用 Claude Code 开发的，`kit new` 已经把 skill（`skills/tikpal-app`）放进应用仓库的 `.claude/skills/`，打开就会用上。
 
@@ -60,11 +62,13 @@ cd my-timer
 | `firmware/_template/` | 应用模板：一个能跑的计数器，带 `app.json` 和主机测试；`kit new` 从它起步 |
 | `firmware/partitions/` | 圆屏的分区表（yaykit-v1） |
 | `firmware/tools/yay_dev.py` | 写进圆屏、看日志、截图、看内存（`kit` 用它） |
-| `tools/` | `./kit check` 的检查（`check_app.py`）；比两份镜像是不是同一份代码（`compare_images.py`：Mac 和 Linux 编的只差 ELF 哈希和两处校验） |
+| `tools/` | `./kit check` 的检查（`check_app.py`）；`./kit submit` 打提交包（`submit_app.py`）；比两份镜像是不是同一份代码（`compare_images.py`：Mac 和 Linux 编的只差 ELF 哈希和两处校验）；审核重编时把产物封给 Tikpal 的审核机（`seal_artifact.py`，`Rebuild` 工作流用） |
+| `review/` | 审核用的系统函数名单（`symbols.json`）：平台的机器审照它查你的固件调了什么，你本地也能照它看；审核机的公钥（`rebuild-seal.pub`）：这个仓库是公开的，重编你的应用留下的产物（源码清单、ELF、编译输出）只封给审核机看 |
 | `config/` | 编译设置：应用仓库用的（`app.defaults`），提交用的那份（`release.defaults`） |
 | `app/` | `kit new` 放进新应用仓库的几个文件 |
 | `docs/` | 上面那些文档 |
 | `skills/tikpal-app/` | 给 Claude Code 的「Tikpal 应用开发」skill（`skills/yaykit-app/` 是它的旧名字，内容一样，留一版） |
+| `miniapp/` | 小程序开发包（`@tikpal/miniapp`）：桥的接口和类型、组件、浏览器预览、打包和检查、模板；`./kit miniapp` 用它 |
 | `devkit.json` | 这一版开发包的版本、对应的 Yay、接口级别、ESP-IDF 版本 |
 
 ## 名字里的 yaykit、yk、yay

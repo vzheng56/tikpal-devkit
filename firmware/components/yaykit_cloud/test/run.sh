@@ -20,6 +20,13 @@ if [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/components/json/cJSON/cJSON.c" ]; t
     ../yk_api.c ../yk_sse.c ../yk_locale.c ../yk_codec.c "$CJSON/cJSON.c"
   "$OUT/test_me"
   rm -rf "$OUT"
+  # Activation and its fallback (a token by the device key after no answer or a 5xx): yaykit_account.c itself,
+  # against test/stub, as a development build (`account drop`)
+  OUT=$(mktemp -d)
+  cc -std=c11 -Wall -Wextra -Werror -O1 -DCONFIG_YAY_DEV=1 -I stub -I ../include -I .. -I "$CJSON" \
+    -o "$OUT/test_account" test_account.c ../yaykit_account.c ../yk_codec.c ../yk_locale.c "$CJSON/cJSON.c"
+  "$OUT/test_account"
+  rm -rf "$OUT"
 else
   echo "device API check skipped: set IDF_PATH for ESP-IDF's cJSON"
 fi

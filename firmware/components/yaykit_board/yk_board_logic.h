@@ -38,8 +38,40 @@ int yk_board_battery_level(int mv, bool charging);
 // Full while on USB: the cell at the charger's end voltage (4.15 V and up).
 bool yk_board_battery_full(int mv);
 
+// The 5 V charge current (docs/delivery/2026-10-31-battery-charge-limit.md): SW6106 register 0x3A, bits 5-3 pick
+// 0.5/1.0/1.5/2.0/2.5/3.0/3.2/3.5 A (SW6106 I2C Register List RG006 v1.2, 2.32); the other bits are the high-voltage
+// input's current and the temperature loop, left as they are. The cell (BPR 663030, 800 mAh) takes 400 mA at most, the
+// chip's default read 2.5 A on the second test device (2026-10-26): 0.5 A is the lowest the chip offers.
+#define YK_BOARD_CHARGE_REG 0x3A
+#define YK_BOARD_CHARGE_5V_MASK 0x38
+int yk_board_charge_5v_ma(uint8_t reg3a);
+// The same register with only bits 5-3 changed, to 0.5 A.
+uint8_t yk_board_charge_5v_lowest(uint8_t reg3a);
+typedef enum {
+    YK_CHARGE_SET,           // written and read back at 0.5 A
+    YK_CHARGE_ALREADY,       // read at 0.5 A already: nothing written
+    YK_CHARGE_NO_READ,       // 0x3A did not answer: nothing written
+    YK_CHARGE_WRITE_FAILED,  // the write was not acknowledged
+    YK_CHARGE_MISMATCH,      // read back as something else, or not at all
+} yk_charge_result_t;
+typedef struct {
+    int before;  // 0x3A as read first, -1 not read
+    int wrote;   // what was written, -1 nothing
+    int after;   // read back after the write, -1 not read (or nothing written)
+    yk_charge_result_t result;
+} yk_charge_limit_t;
+// The steps, with the bus passed in so the host can test them: read 0x3A; at 0.5 A already, leave it; else write it
+// once with only bits 5-3 changed (no retry: a failure is logged, never in the way of starting) and read it back.
+// read and write return 0 on success.
+yk_charge_limit_t yk_board_charge_limit(int (*read)(void *ctx, uint8_t reg, uint8_t *value),
+                                        int (*write)(void *ctx, uint8_t reg, uint8_t value), void *ctx);
+// "set", "already", "no_read", "write_failed", "mismatch": the log line's result.
+const char *yk_board_charge_result_name(yk_charge_result_t result);
+
 // The shared preferences (P10): the valid range of each, a bad stored value reading as the default.
-typedef enum { YK_PREF_VOLUME, YK_PREF_BRIGHTNESS, YK_PREF_SCREEN_OFF } yk_pref_t;
+// YK_PREF_BUDDY (0.1.12, docs/delivery/2026-10-30-yay-0.1.12.md 2): who talks with you, 0 Yay, 1 Wow, 2 Aha
+// (BOARD_BUDDY_*); any other value reads, and is set, as Yay. Added at the end: the others keep their numbers.
+typedef enum { YK_PREF_VOLUME, YK_PREF_BRIGHTNESS, YK_PREF_SCREEN_OFF, YK_PREF_BUDDY } yk_pref_t;
 int yk_board_pref_clamp(yk_pref_t which, int value);
 int yk_board_pref_default(yk_pref_t which);
 // A value read back from NVS (or -1 when missing): in range it stands, out of range it is the default.

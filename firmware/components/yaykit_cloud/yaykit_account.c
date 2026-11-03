@@ -35,6 +35,9 @@ static uint8_t private_key[YK_KEY_PRIVATE_BYTES], public_key[YK_KEY_PUBLIC_BYTES
 static char token[512];
 static int64_t token_expires_us;
 static char claim[128];
+#if CONFIG_YAY_DEV
+static bool drop_reply;  // `account drop`: the next activation's reply is dropped, as if the connection broke
+#endif
 
 static int rng(void *ctx, unsigned char *buf, size_t len) {
     (void)ctx;
@@ -188,6 +191,60 @@ static bool sign_b64(const char *message, char *out, size_t size) {
     return len && yk_b64url_encode(sig, len, out, size);
 }
 
+/** A token for the device key: the challenge, then its nonce signed. NULL once one came back and is kept; else the
+ *  code, `unknown` set when the cloud answered DEVICE_NOT_ACTIVATED (it does not know this key as bound). */
+static const char *fetch_token(bool *unknown) {
+    *unknown = false;
+    const char *device_id = yk_link_device_id();
+    char json[400];
+    snprintf(json, sizeof(json), "{\"deviceId\":\"%s\"}", device_id);
+    yk_http_response_t res;
+    if (yk_http_json(HTTP_METHOD_POST, "/device/v1/token/challenge", NULL, json, &res) != ESP_OK) return "NETWORK";
+    cJSON *reply = res.status == 200 ? cJSON_Parse(res.body ? res.body : "") : NULL;
+    const cJSON *nonce = cJSON_GetObjectItemCaseSensitive(reply, "nonce");
+    char nonce_text[96] = "";
+    if (cJSON_IsString(nonce)) snprintf(nonce_text, sizeof(nonce_text), "%s", nonce->valuestring);
+    cJSON_Delete(reply);
+    yk_http_free(&res);
+    char message[220], signature[128];
+    if (!*nonce_text || !yk_token_message(device_id, cfg.app_slug, nonce_text, message, sizeof(message)) ||
+        !sign_b64(message, signature, sizeof(signature)))
+        return "SERVER";
+    snprintf(json, sizeof(json), "{\"deviceId\":\"%s\",\"app\":\"%s\",\"nonce\":\"%s\",\"signature\":\"%s\"}",
+             device_id, cfg.app_slug, nonce_text, signature);
+    if (yk_http_json(HTTP_METHOD_POST, "/device/v1/token", NULL, json, &res) != ESP_OK) return "NETWORK";
+    const char *code = NULL;
+    if (res.status == 200) {
+        reply = cJSON_Parse(res.body ? res.body : "");
+        keep_token(reply);
+        cJSON_Delete(reply);
+        xSemaphoreTake(lock, portMAX_DELAY);
+        if (!token[0]) code = "SERVER";
+        xSemaphoreGive(lock);
+    } else {
+        code = yk_http_error_code(&res);
+        *unknown = !strcmp(code, "DEVICE_NOT_ACTIVATED");
+    }
+    yk_http_free(&res);
+    return code;
+}
+
+/** After an activation that got no answer or a 5xx: whether the cloud bound the device all the same (it could fail
+ *  after the binding was written: #611, fixed on the cloud's side in #737; this is the device's side). The device key
+ *  gets a token only once it is bound to someone. Twice, a moment apart: the binding may still be on its way. */
+static bool bound_anyway(void) {
+    for (int i = 0; i < 2; i++) {
+        vTaskDelay(pdMS_TO_TICKS(i ? 3000 : 1000));
+        bool unknown;
+        const char *why = fetch_token(&unknown);
+        ESP_LOGW(TAG, "activation unanswered: the device key %s%s", why ? "got no token: " : "got a token: bound",
+                 why ? why : "");
+        if (!why) return true;
+        if (unknown) return false;
+    }
+    return false;
+}
+
 /** Activates with `claim`. Returns NULL or the failure code. */
 static const char *activate_now(const char *claim_text) {
     if (!ensure_key()) return "NETWORK";
@@ -210,7 +267,22 @@ static const char *activate_now(const char *claim_text) {
     yk_http_response_t res;
     esp_err_t err = json ? yk_http_json(HTTP_METHOD_POST, "/device/v1/activate", NULL, json, &res) : ESP_ERR_NO_MEM;
     cJSON_free(json);
-    if (err != ESP_OK) return "NETWORK";
+#if CONFIG_YAY_DEV
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const bool drop = drop_reply;
+    drop_reply = false;
+    xSemaphoreGive(lock);
+    if (drop && err == ESP_OK) {  // the cloud has answered (and bound, if it could); the device never hears it
+        ESP_LOGW(TAG, "development: the activation's reply (HTTP %d) dropped, as if the connection broke", res.status);
+        yk_http_free(&res);
+        err = ESP_FAIL;
+    }
+#endif
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NO_MEM || !bound_anyway()) return "NETWORK";
+        save_binding(true);  // the owner's name and language come with the next hello or /me
+        return NULL;
+    }
     const char *code = NULL;
     if (res.status == 200) {
         cJSON *reply = cJSON_Parse(res.body ? res.body : "");
@@ -220,9 +292,14 @@ static const char *activate_now(const char *claim_text) {
         save_binding(true);
     } else {
         code = yk_http_error_code(&res);
-        if (strcmp(code, "DEVICE_OWNED_BY_OTHER") && strcmp(code, "SERVER")) code = "CLAIM_INVALID";
-        if (!strcmp(code, "SERVER")) code = "NETWORK";
+        // A 5xx is the cloud's trouble whatever it names (503 SERVICE_BUSY too), never the claim's: try again.
+        if (res.status >= 500 || !strcmp(code, "SERVER")) code = "NETWORK";
+        else if (strcmp(code, "DEVICE_OWNED_BY_OTHER")) code = "CLAIM_INVALID";
         ESP_LOGW(TAG, "activation refused: HTTP %d %s", res.status, code);
+        if (res.status >= 500 && bound_anyway()) {
+            code = NULL;
+            save_binding(true);  // the owner's name and language come with the next hello or /me
+        }
     }
     yk_http_free(&res);
     return code;
@@ -408,51 +485,27 @@ esp_err_t yk_account_token(char *out, size_t size, const char **code) {
     }
     if (fresh) return ESP_OK;
     if (yk_http_prepare(code) != ESP_OK) return ESP_FAIL;
-
-    const char *device_id = yk_link_device_id();
-    char json[400];
-    snprintf(json, sizeof(json), "{\"deviceId\":\"%s\"}", device_id);
-    yk_http_response_t res;
-    if (yk_http_json(HTTP_METHOD_POST, "/device/v1/token/challenge", NULL, json, &res) != ESP_OK) {
-        *code = "NETWORK";
-        return ESP_FAIL;
-    }
-    cJSON *reply = res.status == 200 ? cJSON_Parse(res.body ? res.body : "") : NULL;
-    const cJSON *nonce = cJSON_GetObjectItemCaseSensitive(reply, "nonce");
-    char nonce_text[96] = "";
-    if (cJSON_IsString(nonce)) snprintf(nonce_text, sizeof(nonce_text), "%s", nonce->valuestring);
-    cJSON_Delete(reply);
-    yk_http_free(&res);
-    char message[220], signature[128];
-    if (!*nonce_text || !yk_token_message(device_id, cfg.app_slug, nonce_text, message, sizeof(message)) ||
-        !sign_b64(message, signature, sizeof(signature))) {
-        *code = "SERVER";
-        return ESP_FAIL;
-    }
-    snprintf(json, sizeof(json), "{\"deviceId\":\"%s\",\"app\":\"%s\",\"nonce\":\"%s\",\"signature\":\"%s\"}",
-             device_id, cfg.app_slug, nonce_text, signature);
-    if (yk_http_json(HTTP_METHOD_POST, "/device/v1/token", NULL, json, &res) != ESP_OK) {
-        *code = "NETWORK";
+    bool unknown;
+    const char *why = fetch_token(&unknown);
+    if (why) {
+        *code = why;
+        if (unknown) yk_account_unbound_by_server();
         return ESP_FAIL;
     }
     esp_err_t err = ESP_OK;
-    if (res.status == 200) {
-        reply = cJSON_Parse(res.body ? res.body : "");
-        keep_token(reply);
-        cJSON_Delete(reply);
-        xSemaphoreTake(lock, portMAX_DELAY);
-        if (token[0] && strlen(token) < size) strcpy(out, token);
-        else err = ESP_FAIL;
-        xSemaphoreGive(lock);
-        if (err != ESP_OK) *code = "SERVER";
-    } else {
-        *code = yk_http_error_code(&res);
-        if (!strcmp(*code, "DEVICE_NOT_ACTIVATED")) yk_account_unbound_by_server();
-        err = ESP_FAIL;
-    }
-    yk_http_free(&res);
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (token[0] && strlen(token) < size) strcpy(out, token);
+    else err = ESP_FAIL;
+    xSemaphoreGive(lock);
+    if (err != ESP_OK) *code = "SERVER";
     return err;
 }
+
+#if CONFIG_YAY_DEV
+#define ACCOUNT_ACTIONS "status | claim <ykc_...> | forget | drop"
+#else
+#define ACCOUNT_ACTIONS "status | claim <ykc_...> | forget"
+#endif
 
 static struct {
     struct arg_str *action;
@@ -474,8 +527,15 @@ static int account_cmd(int argc, char **argv) {
         }
     } else if (!strcmp(action, "forget")) {
         forget();
+#if CONFIG_YAY_DEV
+    } else if (!strcmp(action, "drop")) {  // development builds: try the activation fallback without the cloud's help
+        xSemaphoreTake(lock, portMAX_DELAY);
+        drop_reply = true;
+        xSemaphoreGive(lock);
+        printf("YK_ACCOUNT drop=next (the next activation's reply is dropped once it has come)\n");
+#endif
     } else if (strcmp(action, "status")) {
-        printf("usage: account status | claim <ykc_...> | forget\n");
+        printf("usage: account %s\n", ACCOUNT_ACTIONS);
         return 1;
     }
     char nick[64];
@@ -491,7 +551,7 @@ esp_err_t yk_account_register_console(void) {
     account_args.end = arg_end(2);
     const esp_console_cmd_t cmd = {
         .command = "account",
-        .help = "Yaykit account: status | claim <ykc_...> | forget",
+        .help = "Yaykit account: " ACCOUNT_ACTIONS,
         .func = account_cmd,
         .argtable = &account_args,
     };

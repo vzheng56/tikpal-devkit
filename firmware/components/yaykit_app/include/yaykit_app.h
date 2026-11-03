@@ -16,6 +16,9 @@
 //   yk_return_home_with() the same with a launch record for Yay ({"then":"install","slug":…} from the ring)
 //   yk_app_recovery_read() the recovery's version from its description (yk_app_recovery.h); _hash() its image's sha256;
 //                       _verify() whether it is whole, before Yay hands it an update
+//   yk_app_settings()   (0.1.13) Yay's volume, brightness, screen-off time and language as the app should use them
+//                       now, with the battery's caps (yk_app_power.h); and the battery guard of an extension, which
+//                       yk_app_start() and yk_app_ready() run by themselves
 // Records live in NVS namespace yk_sys (launch, result, update, update_auto, update_bad, update_err, recovery,
 // used_<slot>, boot_fail, crashed), shared by all firmware.
 #pragma once
@@ -26,6 +29,7 @@
 
 #include "cJSON.h"
 #include "esp_err.h"
+#include "yk_app_power.h"
 #include "yk_app_recovery.h"
 #include "yk_app_summary.h"
 #include "yk_key_types.h"
@@ -38,7 +42,13 @@ extern "C" {
 /** Interface level of the shared components towards apps: only goes up, by one for each incompatible change.
  *  1: yaykit_key, yaykit_app (F1-a). 2: yaykit_cloud v2, the device API v1 (YK_CLOUD_API_LEVEL 2).
  *  3: the double click opens the app ring instead of going straight back to Yay (P23; built against level 2, an app
- *  still goes home on a double click); yk_app_on_key() and 「回到 Yay 说？」; yk_return_home_with(). */
+ *  still goes home on a double click); yk_app_on_key() and 「回到 Yay 说？」; yk_return_home_with().
+ *  0.1.13 adds at level 3 (additions only, nothing changed for an app not rebuilt, and nothing Yay must tell apart): the
+ *  device's settings through yaykit_app (yk_app_settings(), yk_app_brightness(), yk_app_screen_off_s(), yk_app_volume()
+ *  / yk_app_set_volume(), yk_app_english(), yk_app_keep_screen_on()), and the battery guard of an extension (battery
+ *  over-discharge step 2): rebuilt, an extension sleeps at once in yk_app_start() on a battery too low, and from
+ *  yk_app_ready() shows 「电量用完了，请充电」 at the threshold and sleeps with the boot partition back on Yay. That is in
+ *  the extension's own image: one not rebuilt reads the shared NVS itself and runs on until the brownout, as before. */
 #define YK_API_LEVEL 3
 
 #define YK_APP_HOME_SLUG "yay"
@@ -188,6 +198,43 @@ bool yk_app_update_rejected(const char *version);
 /** Forgets the version the recovery went back from (F, docs/delivery/2026-10-26-yay-update-nf.md 3.3): after a first
  *  failure Yay tries it again the next night; after the second it stays. */
 void yk_app_update_unreject(void);
+
+// ---------------------------------------------------------------- the device's settings and battery (0.1.13, level 3)
+// docs/delivery/2026-10-27-connecting-and-fast-reconnect.md 4 (共享设置) and 2026-10-27-battery-overdischarge.md 5 (第 2
+// 步); the rules are pure and host tested (yk_app_power.h). An app follows Yay with these instead of reading the shared
+// NVS itself (board_pref_*, yk_account_locale): they stay, and still work, but miss the battery's caps.
+//
+// Read from NVS in yk_app_start() and again at every look at the battery (every 10–30 s in an extension): calling the
+// getters costs nothing, so an app's tick may ask each time. After yk_app_start().
+
+/** All of them at once (yk_settings_merge): volume, the brightness the screen comes on at, the screen-off time
+ *  (0 never) and whether screens are in English. */
+void yk_app_settings(yk_settings_t *out);
+/** The shared brightness (board_pref_brightness), at most YK_POWER_BRIGHTNESS_MAX while the battery is low. For
+ *  board_brightness_set() at the start and board_display_wake() (instead of -1). */
+int yk_app_brightness(void);
+/** The shared screen-off time in seconds, 0 never (board_pref_screen_off_s); YK_POWER_SCREEN_OFF_LOW_S while the
+ *  battery is low; 0 while the app keeps the screen on (yk_app_keep_screen_on). Ask it each time the idle is compared. */
+int yk_app_screen_off_s(void);
+/** The shared volume, 0..10 (board_pref_volume; yaykit_speak starts with it). */
+int yk_app_volume(void);
+/** The app changed the volume (its own dial): kept for every firmware, Yay too (board_pref_set_volume). NVS: from a task
+ *  whose stack is in internal RAM. Sets the store only: the app sets its speaker (yk_speak_volume) itself. */
+esp_err_t yk_app_set_volume(int level);
+/** Screens in English: the owner's language (yaykit_cloud's, kept in NVS) is not Chinese. Also for firmware without
+ *  yaykit_cloud. */
+bool yk_app_english(void);
+/** The owner's language as kept ("zh-Hans", "en", "ja", "es-419"; "zh" when none). */
+void yk_app_locale(char *out, size_t size);
+/** Something changed them while the app runs (yaykit_talk's SETTING from the phone): read again now instead of at the
+ *  next look at the battery. NVS: from a task whose stack is in internal RAM. */
+void yk_app_settings_reload(void);
+/** The app is doing something the screen must stay on for (a breathing session, a round, a recording): while on,
+ *  yk_app_screen_off_s() says 0. Off again when it is done. */
+void yk_app_keep_screen_on(bool on);
+/** An extension's battery is low this discharge (YK_POWER_LOW reached on battery; caps on). Always false in Yay, which
+ *  has its own battery service (yay_power.h). */
+bool yk_app_battery_low(void);
 
 /** Chinese name of a built-in firmware ("聚会玩" for "party-play"); the slug itself otherwise. */
 const char *yk_app_display_name(const char *slug);

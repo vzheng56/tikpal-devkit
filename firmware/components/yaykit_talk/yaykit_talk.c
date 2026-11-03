@@ -106,7 +106,7 @@ static void emit(yk_talk_event_t *ev) {
     if (T.cfg.on_event) T.cfg.on_event(ev, T.cfg.ctx);
 }
 
-/** internal_min: the lowest since the app was ready (yk_mem.h, the 40 KB line); largest: the biggest block one
+/** internal_min: the lowest since the app was ready (yk_mem.h, the 40,000 bytes line); largest: the biggest block one
  *  allocation can still get. */
 static void mem_line(const char *why) {
     printf("YK_TALK mem internal=%u internal_min=%u largest=%u psram=%u why=%s\n",

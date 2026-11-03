@@ -21,8 +21,8 @@ typedef enum {
     YK_LAN_NOT_JSON,
 } yk_lan_hello_t;
 
-/** Reads `text` (JSON) as hello against `token`; the phone's name (cut to fit, control characters as spaces) into
- *  `name` when it is one (`size` > 0). */
+/** Reads `text` (JSON) as hello against `token` (NULL: any hello, with a token or without); the phone's name (cut to
+ *  fit, control characters as spaces) into `name` when it is one (`size` > 0). */
 yk_lan_hello_t yk_lan_hello(const char *text, const char *token, char *name, size_t size);
 
 #ifdef __cplusplus
