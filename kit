@@ -180,10 +180,12 @@ EOF
   cp "$KIT/app/gitignore" "$app/.gitignore"
   [ -f "$KIT/app/README.md" ] && sed "s/{{slug}}/$slug/g" "$KIT/app/README.md" >"$app/README.md"
   [ -f "$KIT/app/CLAUDE.md" ] && cp "$KIT/app/CLAUDE.md" "$app/CLAUDE.md"
-  if [ -d "$KIT/skills/tikpal-app" ]; then
-    mkdir -p "$app/.claude/skills"
-    cp -R "$KIT/skills/tikpal-app" "$app/.claude/skills/"
-  fi
+  for skill in tikpal-app tikpal-review; do
+    if [ -d "$KIT/skills/$skill" ]; then
+      mkdir -p "$app/.claude/skills"
+      cp -R "$KIT/skills/$skill" "$app/.claude/skills/"
+    fi
+  done
   if [ -d "$KIT/app/github" ]; then
     mkdir -p "$app/.github"
     cp -R "$KIT/app/github/." "$app/.github/"

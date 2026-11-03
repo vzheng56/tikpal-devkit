@@ -82,6 +82,7 @@
   - `devkit/docs/round-screen-design.md`：界面；
   - `devkit/docs/app-json.md`：应用清单；
   - 应用里的 skill `.claude/skills/tikpal-app`：写代码的硬规则。
+  - 应用里的 skill `.claude/skills/tikpal-review`：交审之前照 `docs/review-rules.md` 自审，写出 `ai-selfreview.json`。
 - **拿到应用编号以后写进 `app.json`**（字段名以 `devkit/docs/app-json.md` 为准；编号和亮码接口都随应用码开放，在那之前不用管）。
 - **建自己的 GitHub 仓库并推上去**：
 

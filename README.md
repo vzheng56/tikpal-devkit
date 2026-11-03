@@ -46,7 +46,7 @@ cd my-timer
 | [审核规则](docs/review-rules.md)（[English](docs/review-rules.en.md)） | 我们的 AI 审核照它读你的代码和商店素材；你也可以先让自己的 AI 照它审一遍 |
 | [小程序](docs/miniapp.md)（[English](docs/miniapp.en.md)） | 手机 App 里的网页：起项目、浏览器预览、桥的接口、打包和检查（`./kit miniapp`，要 Node.js 20+；第一版只开给受邀的开发者） |
 
-用 Claude Code 开发的，`kit new` 已经把 skill（`skills/tikpal-app`）放进应用仓库的 `.claude/skills/`，打开就会用上。
+用 Claude Code 开发的，`kit new` 已经把 skill（`skills/tikpal-app`，交审前自审用的 `skills/tikpal-review`）放进应用仓库的 `.claude/skills/`，打开就会用上。
 
 ## 里面有什么
 
@@ -68,6 +68,7 @@ cd my-timer
 | `app/` | `kit new` 放进新应用仓库的几个文件 |
 | `docs/` | 上面那些文档 |
 | `skills/tikpal-app/` | 给 Claude Code 的「Tikpal 应用开发」skill（`skills/yaykit-app/` 是它的旧名字，内容一样，留一版） |
+| `skills/tikpal-review/` | 交审之前照 `docs/review-rules.md` 自审、写出 `ai-selfreview.json` 的 skill（`kit new` 一起放进应用仓库） |
 | `miniapp/` | 小程序开发包（`@tikpal/miniapp`）：桥的接口和类型、组件、浏览器预览、打包和检查、模板；`./kit miniapp` 用它 |
 | `devkit.json` | 这一版开发包的版本、对应的 Yay、接口级别、ESP-IDF 版本 |
 
