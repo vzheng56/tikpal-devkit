@@ -310,8 +310,11 @@ export const bridgeEvent = z.union([
   z.object({ event: z.literal("env.changed"), data: miniappEnv }).strict(),
 ]);
 
-/** A package at most: zipped, unpacked, and one file unpacked (5, 20 and 10 MiB; the doc's §2.1, §3.3). */
-export const MINIAPP_LIMITS = { zipBytes: 5 * 1024 * 1024, unpackedBytes: 20 * 1024 * 1024, fileBytes: 10 * 1024 * 1024 } as const;
+/**
+ * A package at most: zipped, unpacked, and one file unpacked (5, 20 and 10 MiB; the doc's §2.1, §3.3); and the app.json
+ * a developer's upload comes with (64 KiB; the biggest first-party one is about 8 KB).
+ */
+export const MINIAPP_LIMITS = { zipBytes: 5 * 1024 * 1024, unpackedBytes: 20 * 1024 * 1024, fileBytes: 10 * 1024 * 1024, specBytes: 64 * 1024 } as const;
 
 /**
  * The page's Content-Security-Policy (the container doc §3.1): sent as a header and written into index.html too. Only
@@ -350,26 +353,56 @@ const sha256Hex = z.string().regex(/^[0-9a-f]{64}$/);
 
 // ——— The developer's side (C4, C5; the doc's §2.5): uploading a package and seeing its releases. ———
 
-/** POST /v1/developer/apps/:slug/miniapp with the zip as the body (application/zip, at most MINIAPP_LIMITS.zipBytes). */
+/**
+ * POST /v1/developer/apps/:slug/miniapp as multipart/form-data with exactly the two MINIAPP_UPLOAD_PARTS, each once (用户
+ * 11-04, BOSS-1): `app`, the app's app.json (at most MINIAPP_LIMITS.specBytes), and `package`, the zip (at most
+ * MINIAPP_LIMITS.zipBytes). The package is held to that app.json's 小程序 part, as a submission is held to its own
+ * (the doc's §2.4), and what it may ask for is still what C8 approved: app.json adds nothing to that. Any other part, one
+ * missing or one twice, or the zip alone as the body, is MINIAPP_BAD_UPLOAD. A refusal's `error.message` says what to
+ * do in Chinese, for the kit to show as it is.
+ */
 export const MINIAPP_UPLOAD_PATH = "/v1/developer/apps/:slug/miniapp";
+/** The parts of an upload, by name. */
+export const MINIAPP_UPLOAD_PARTS = ["app", "package"] as const;
 /** Why an upload is refused (400 unless said), each with what was wrong in `problems`. */
 export const miniappUploadErrors = [
   /** Not a package as the doc's §2.1 has it: a bad path, an extra or missing file, a file's hash, a size. */
   "MINIAPP_BAD_PACKAGE",
-  /** manifest.json does not match the same version's app.json 小程序 part. */
+  /** manifest.json does not match the app.json's 小程序 part (`where`: the field). */
   "MINIAPP_SPEC_MISMATCH",
   /** It asks for a capability the app has not been granted (C8). 403. */
   "MINIAPP_NOT_GRANTED",
   /** That version is out already on preview or stable with other bytes. 409. */
   "MINIAPP_VERSION_TAKEN",
-  /** Over MINIAPP_LIMITS.zipBytes. 413. */
+  /** Over MINIAPP_LIMITS.zipBytes (`where`: package) or specBytes (`where`: app). 413. */
   "MINIAPP_TOO_LARGE",
+  /** Not the two parts, each once (`missing_part`, `extra_part`; `where`: the part's name). */
+  "MINIAPP_BAD_UPLOAD",
+  /**
+   * The app.json is not one as the contract has it (app-spec.ts), or not this app's, or has no 小程序 part (`app_json`;
+   * `where`: its field, `app.json` when it cannot be read at all).
+   */
+  "MINIAPP_BAD_SPEC",
 ] as const;
 /** What was wrong, for the page to show next to the upload: where (a path or field), and a code. */
 export const miniappUploadProblem = z
   .object({
     where: z.string().max(200),
-    code: z.enum(["path", "extra_file", "missing_file", "file_hash", "too_many_files", "too_large", "manifest", "spec_mismatch", "not_granted", "version_taken"]),
+    code: z.enum([
+      "path",
+      "extra_file",
+      "missing_file",
+      "file_hash",
+      "too_many_files",
+      "too_large",
+      "manifest",
+      "spec_mismatch",
+      "not_granted",
+      "version_taken",
+      "missing_part",
+      "extra_part",
+      "app_json",
+    ]),
   })
   .strict();
 /** An upload taken: stored as a draft, and on dev once the machine checks pass (`dev` then). */

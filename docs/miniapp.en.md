@@ -336,11 +336,13 @@ In the app's folder:
 ./kit miniapp preview
 ```
 
-(In the mini app's folder, `npx tikpal-miniapp preview` does the same.) It builds, checks, and puts the package up on the developer platform as your **development version**: only your own account gets it, and the Tikpal App on your phone opens this version of the mini app. No review, no points, and nobody else sees it.
+(In the mini app's folder, `npx tikpal-miniapp preview` does the same.) It builds, checks, and puts the package up on the developer platform together with your app's `app.json` as your **development version**: only your own account gets it, and the Tikpal App on your phone opens this version of the mini app. No review, no points, and nobody else sees it.
+
+`app.json` needs a `miniapp` part whose `entry`, `capabilities` and `capabilityLevel` are the same as the mini app's `manifest.json`, and the same `slug` (see `docs/app-json.md`). The platform checks the package against it; what the mini app may use is still what the developer site's Capabilities approved, and listing more in `app.json` changes nothing. The reasons you give in `permissions.phone` for the phone abilities are what the phone shows when it asks the user. If `app.json` is not in the app's folder, point to it with `--app <path>`.
 
 The first time, it signs you in: the terminal shows a code and an address (developer.tikpal.ai/cli). Open it in the browser, sign in with your developer account, check the code and press Allow; the terminal carries on by itself. You can also sign in on its own with `./kit miniapp login`. Signing in lasts 30 days; then do it again. `./kit miniapp logout` signs out. That page of the developer site lists the computers signed in: sign out any you don't know.
 
-- When the platform refuses the package, it lists what is wrong; fix it and put it up again.
+- When the platform refuses the package, it says what to change (in Chinese for now) and lists what is wrong; fix it and put it up again.
 - While a version is on development, you can put the same version up again and the new one replaces it; a version already out on preview or stable can't be used again: raise the version.
 
 ### 6.2 For others

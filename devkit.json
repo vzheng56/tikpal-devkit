@@ -1,15 +1,15 @@
 {
   "name": "tikpal-devkit",
-  "version": "1.7",
+  "version": "1.8",
   "yay": "0.1.13",
   "apiLevel": 3,
   "idf": {
     "version": "v5.5.5",
     "commit": "b774170ff46c393eeb5e495ea37936038d3f4f4f"
   },
-  "source": "50506585b1e2eb4a46853f2fa1f0c696e188be59",
+  "source": "49a3b0f61350e91fb559c34f41b1a0a12f7569d1",
   "firmware": {
     "source": "e1d0df61f4b0371214caca4da10becfdec7645ea"
   },
-  "date": "2026-11-03T16:40:37+08:00"
+  "date": "2026-11-04T10:30:16+08:00"
 }

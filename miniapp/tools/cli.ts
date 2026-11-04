@@ -9,7 +9,7 @@ import path from "node:path";
 import { build, readFolder, verify } from "./build.js";
 import { checkPackage, type CheckResult } from "./check.js";
 import { dev } from "./dev.js";
-import { DEFAULT_URL, ERROR_WORDS, login, logout, PlatformError, PROBLEM_WORDS, putDev, signedIn, siteUrl, type Signed } from "./platform.js";
+import { DEFAULT_URL, login, logout, PlatformError, PROBLEM_WORDS, putDev, readAppJson, signedIn, siteUrl, type Signed } from "./platform.js";
 import { unzip } from "./zip.js";
 
 const USAGE = `tikpal-miniapp：Tikpal 小程序开发包
@@ -21,8 +21,9 @@ const USAGE = `tikpal-miniapp：Tikpal 小程序开发包
                                               打包：dist/ 和 <slug>-<版本>.zip，打完照合同检查
   tikpal-miniapp check [dist | <文件>.zip]   照合同检查一个打好的包
   tikpal-miniapp verify [--out dist]          在别处再打一遍，跟 dist/ 逐字节比
-  tikpal-miniapp preview [--no-open]          打包、检查，传到开发者平台当你的开发版：只有你的账号拿得到，
-                                              手机上的 Tikpal App 打开它就是这一版。不审核、不花点数
+  tikpal-miniapp preview [--no-open] [--app <app.json>]
+                                              打包、检查，连同应用目录里的 app.json 传到开发者平台当你的开发版：
+                                              只有你的账号拿得到，手机上的 Tikpal App 打开它就是这一版。不审核、不花点数
   tikpal-miniapp login [--no-open]            用你的开发者账号登录（浏览器里点「允许」），preview 第一次会自己来
   tikpal-miniapp logout                       退出登录
 
@@ -103,21 +104,25 @@ async function main(command: string | undefined) {
     case "preview": {
       // run in an app's folder (./kit miniapp preview), the 小程序 is its miniapp/
       const here = existsSync(path.join(project, "manifest.json")) || !existsSync(path.join(project, "miniapp", "manifest.json")) ? project : path.join(project, "miniapp");
+      // the app's app.json goes with it (the app's folder holds it and miniapp/): none here, and nothing is built or sent
+      const appFile = path.resolve(flag("app") ?? path.join(here, "..", "app.json"));
+      await readAppJson(appFile);
       const built = await build(here, { out: flag("out"), entry: flag("entry") });
       if (!report(built.result) || !built.zip) {
         console.error(`${built.manifest.slug}@${built.manifest.version}：包不合规矩，改好再传`);
         process.exit(1);
       }
       const zip = await readFile(built.zip);
+      const app = await readAppJson(appFile, built.manifest.slug);
       let signed: Signed = (await signedIn(site())) ?? (await login(site(), { open }));
       let up;
       try {
-        up = await putDev(signed, built.manifest.slug, zip);
+        up = await putDev(signed, built.manifest.slug, zip, app);
       } catch (error) {
         // signed out from the site, or run out: sign in again, once
         if (!(error instanceof PlatformError && error.code === "CLI_TOKEN_INVALID")) throw error;
         signed = await login(site(), { open });
-        up = await putDev(signed, built.manifest.slug, zip);
+        up = await putDev(signed, built.manifest.slug, zip, app);
       }
       console.log(
         up.state === "dev"
@@ -135,7 +140,7 @@ async function main(command: string | undefined) {
 
 await main(process.argv[2]).catch((error: Error) => {
   if (error instanceof PlatformError) {
-    console.error(`tikpal-miniapp: ${ERROR_WORDS[error.code] ?? `开发者平台回了 ${error.code}`}`);
+    console.error(`tikpal-miniapp: ${error.words}`);
     for (const p of error.problems) console.error(`  ✗ ${p.where}：${PROBLEM_WORDS[p.code] ?? p.code}`);
   } else console.error(`tikpal-miniapp: ${error.message}`);
   process.exit(1);

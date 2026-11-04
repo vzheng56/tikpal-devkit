@@ -9,7 +9,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { cliIssued, cliMe, cliStart } from "../src/contract/developer.js";
-import { MINIAPP_UPLOAD_PATH, miniappUploaded, miniappUploadProblem } from "../src/contract/miniapps.js";
+import { MINIAPP_LIMITS, MINIAPP_UPLOAD_PATH, miniappUploaded, miniappUploadErrors, miniappUploadProblem } from "../src/contract/miniapps.js";
 
 export const DEFAULT_URL = "https://developer.tikpal.ai";
 const LOCAL = ["localhost", "127.0.0.1", "[::1]", "::1"];
@@ -28,14 +28,23 @@ export function siteUrl(raw: string) {
 export const tokenFile = () => path.join(process.env.YAYKIT_DEVKIT_HOME ?? path.join(homedir(), ".yaykit-devkit"), "developer.json");
 export type Signed = { url: string; token: string; expiresAt: string; name: string };
 
-/** The platform said no: its code, and what was wrong with a package when it says. */
+/** The platform said no: its code, what was wrong with a package when it says, and what it said (`said`). */
 export class PlatformError extends Error {
   constructor(
     public code: string,
     public status: number,
     public problems: { where: string; code: string }[] = [],
+    public said: string | null = null,
   ) {
     super(code);
+  }
+  /**
+   * What to show the developer: an upload's refusal says what to do in Chinese (the contract's MINIAPP_UPLOAD_PATH), shown
+   * as it is; else the kit's own words for the code, else what the platform said.
+   */
+  get words() {
+    const upload = (miniappUploadErrors as readonly string[]).includes(this.code);
+    return (upload && this.said) || ERROR_WORDS[this.code] || this.said || `开发者平台回了 ${this.code}`;
   }
 }
 
@@ -56,12 +65,12 @@ async function call(url: string, init: RequestInit & { token?: string } = {}) {
     if (response.ok) throw new PlatformError(`HTTP_${response.status}`, response.status);
   }
   if (!response.ok) {
-    const error = (body.error ?? {}) as { code?: string; details?: { problems?: unknown[] } };
+    const error = (body.error ?? {}) as { code?: string; message?: unknown; details?: { problems?: unknown[] } };
     const problems = (error.details?.problems ?? []).flatMap((p) => {
       const parsed = miniappUploadProblem.safeParse(p);
       return parsed.success ? [parsed.data] : [];
     });
-    throw new PlatformError(error.code ?? `HTTP_${response.status}`, response.status, problems);
+    throw new PlatformError(error.code ?? `HTTP_${response.status}`, response.status, problems, typeof error.message === "string" ? error.message.slice(0, 500) : null);
   }
   return body;
 }
@@ -139,13 +148,35 @@ export async function whoami(signed: Signed) {
   return cliMe.parse(await call(`${signed.url}/v1/developer/cli/me`, { token: signed.token }));
 }
 
-/** Puts a built package up as the developer's own dev version. */
-export async function putDev(signed: Signed, slug: string, zip: Buffer) {
+/**
+ * The app's app.json (`file`), sent with the package: read here first, so one missing, not JSON, over the limit, another
+ * app's (`slug`, the 小程序's) or without a 小程序 part is said on this computer and nothing is sent. The platform
+ * checks the rest, as a submission's is checked.
+ */
+export async function readAppJson(file: string, slug?: string) {
+  const text = await readFile(file, "utf8").catch(() => null);
+  if (text === null) throw new Error(`没找到 app.json（${file}）：在应用目录里运行，或者用 --app 指给我`);
+  if (Buffer.byteLength(text) > MINIAPP_LIMITS.specBytes) throw new Error("app.json 超过 64 KB");
+  let json: { slug?: unknown; miniapp?: unknown };
+  try {
+    json = JSON.parse(text) as typeof json;
+  } catch {
+    throw new Error(`app.json 不是合法的 JSON（${file}）`);
+  }
+  if (slug !== undefined && json.slug !== slug) throw new Error(`app.json 写的是应用 ${String(json.slug)}，小程序的 manifest.json 是 ${slug}：两边的 slug 要一样`);
+  if (!json.miniapp || typeof json.miniapp !== "object") throw new Error("app.json 里没有 miniapp 一段：照 docs/miniapp.md 加上，跟 manifest.json 写成一样");
+  return text;
+}
+
+/** Puts a built package up as the developer's own dev version, with the app's app.json (multipart: app, package). */
+export async function putDev(signed: Signed, slug: string, zip: Buffer, app: string) {
+  const form = new FormData();
+  form.append("app", new Blob([app], { type: "application/json" }), "app.json");
+  form.append("package", new Blob([new Uint8Array(zip)], { type: "application/zip" }), `${slug}.zip`);
   const answer = await call(`${signed.url}${MINIAPP_UPLOAD_PATH.replace(":slug", encodeURIComponent(slug))}`, {
     method: "POST",
     token: signed.token,
-    headers: { "Content-Type": "application/zip" },
-    body: new Uint8Array(zip),
+    body: form,
   });
   return miniappUploaded.parse(answer);
 }
@@ -159,15 +190,19 @@ export const PROBLEM_WORDS: Record<string, string> = {
   too_many_files: "文件太多",
   too_large: "太大了",
   manifest: "manifest.json 不对",
-  spec_mismatch: "跟这个版本的 app.json 对不上（app.json 要先登记上平台）",
+  spec_mismatch: "跟 app.json 的 miniapp 一段对不上",
   not_granted: "要了没批的能力，先到开发者网站的「能力和权限」申请",
   version_taken: "这个版本号已经发到预览版或正式版了，改版本号",
+  missing_part: "少了这一段",
+  extra_part: "多了这一段",
+  app_json: "app.json 这里不对",
 };
 export const ERROR_WORDS: Record<string, string> = {
   APP_NOT_FOUND: "开发者网站上没有这个应用，或者不是你的",
   NOT_DEVELOPER: "这个账号还不是开发者：先在开发者网站用邀请码申请",
   TERMS_OUTDATED: "开发者协议更新了：先到开发者网站读完签了",
   DEVELOPER_UNAVAILABLE: "开发者平台暂时连不上，过一会儿再试",
+  CLI_TOKEN_INVALID: "登录过期了，或者在网站上退出了：./kit miniapp login 重新登录",
   MINIAPP_STORAGE_UNAVAILABLE: "平台暂时存不了小程序，过一会儿再试",
   MINIAPP_TOO_LARGE: "包压缩后超过 5 MB",
   OFFLINE: "连不上开发者网站：看看网络",
