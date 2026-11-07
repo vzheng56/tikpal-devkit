@@ -5,6 +5,7 @@
 #include "../rtc_regs.h"
 #include "../yk_board_logic.h"
 #include "../yk_font_pack.h"
+#include "board_speaker.h"
 
 static int failures, checks;
 #define CHECK(cond)                                                        \
@@ -145,16 +146,32 @@ static void test_battery_adc_and_prefs(void) {
     CHECK(yk_board_pref_read(YK_PREF_VOLUME, -1) == 6 && yk_board_pref_read(YK_PREF_VOLUME, 3) == 3 &&
           yk_board_pref_read(YK_PREF_VOLUME, 200) == 6);
     CHECK(yk_board_pref_read(YK_PREF_BRIGHTNESS, 2) == 80 && yk_board_pref_read(YK_PREF_SCREEN_OFF, 0) == 0);
+    // The time zone (0.1.14): the POSIX strings Yay's table gives; nothing else is one.
+    CHECK(yk_board_tz_ok("CST-8") && yk_board_tz_ok("EST5EDT,M3.2.0,M11.1.0") && yk_board_tz_ok("<+0530>-5:30"));
+    CHECK(!yk_board_tz_ok(NULL) && !yk_board_tz_ok("") && !yk_board_tz_ok("8CST") && !yk_board_tz_ok("CST -8") &&
+          !yk_board_tz_ok("CST-8\n") && !yk_board_tz_ok("CST-8\xe2\x80\x8b"));
+    char tz_long[YK_PREF_TZ_MAX + 1];
+    memset(tz_long, 'A', sizeof(tz_long) - 1);
+    tz_long[YK_PREF_TZ_MAX] = 0;
+    CHECK(!yk_board_tz_ok(tz_long));
+    tz_long[YK_PREF_TZ_MAX - 1] = 0;
+    CHECK(yk_board_tz_ok(tz_long));  // 63 characters: the most
+    CHECK(yk_board_tz_offset_ok(480) && yk_board_tz_offset_ok(-720) && yk_board_tz_offset_ok(840) &&
+          yk_board_tz_offset_ok(345) && yk_board_tz_offset_ok(0));  // Shanghai, the ends, Kathmandu, UTC
+    CHECK(!yk_board_tz_offset_ok(-721) && !yk_board_tz_offset_ok(841) && !yk_board_tz_offset_ok(-2147483647));
     // The buddy (0.1.12): added after the others, which keep their numbers (NVS keys are looked up by them).
     CHECK(YK_PREF_VOLUME == 0 && YK_PREF_BRIGHTNESS == 1 && YK_PREF_SCREEN_OFF == 2 && YK_PREF_BUDDY == 3);
-    // Never written (0.1.12's main firmware does not): Yay. 0 Yay, 1 Wow, 2 Aha stand.
+    // Never written (no main firmware does yet): Pip. 0 Pip, 3 Mote, 4 Dial, 5 Bloom stand.
     CHECK(yk_board_pref_default(YK_PREF_BUDDY) == 0 && yk_board_pref_read(YK_PREF_BUDDY, -1) == 0);
-    CHECK(yk_board_pref_read(YK_PREF_BUDDY, 0) == 0 && yk_board_pref_read(YK_PREF_BUDDY, 1) == 1 &&
-          yk_board_pref_read(YK_PREF_BUDDY, 2) == 2);
-    // A buddy this build does not know (a later main firmware's, or a bad byte) is Yay, not its neighbour.
-    CHECK(yk_board_pref_read(YK_PREF_BUDDY, 3) == 0 && yk_board_pref_read(YK_PREF_BUDDY, 254) == 0 &&
+    CHECK(yk_board_pref_read(YK_PREF_BUDDY, 0) == 0 && yk_board_pref_read(YK_PREF_BUDDY, 3) == 3 &&
+          yk_board_pref_read(YK_PREF_BUDDY, 4) == 4 && yk_board_pref_read(YK_PREF_BUDDY, 5) == 5);
+    // 1 and 2 (Wow and Aha, retired) and a buddy this build does not know (a later main firmware's, or a bad byte) are
+    // Pip, not a neighbour.
+    CHECK(yk_board_pref_read(YK_PREF_BUDDY, 1) == 0 && yk_board_pref_read(YK_PREF_BUDDY, 2) == 0 &&
+          yk_board_pref_read(YK_PREF_BUDDY, 6) == 0 && yk_board_pref_read(YK_PREF_BUDDY, 254) == 0 &&
           yk_board_pref_read(YK_PREF_BUDDY, 255) == 0);
-    CHECK(yk_board_pref_clamp(YK_PREF_BUDDY, 1) == 1 && yk_board_pref_clamp(YK_PREF_BUDDY, 7) == 0 &&
+    CHECK(yk_board_pref_clamp(YK_PREF_BUDDY, 3) == 3 && yk_board_pref_clamp(YK_PREF_BUDDY, 5) == 5 &&
+          yk_board_pref_clamp(YK_PREF_BUDDY, 1) == 0 && yk_board_pref_clamp(YK_PREF_BUDDY, 7) == 0 &&
           yk_board_pref_clamp(YK_PREF_BUDDY, -1) == 0);
 }
 
@@ -203,6 +220,189 @@ static void test_font_pack(void) {
     make_index(tail, 1, langs, offs, sizes);
     CHECK(yk_font_pack_parse(tail, part, &p) && p.count == 1);
     CHECK(yk_font_pack_order(&p, "ja", order) == 1 && order[0] == 0);
+}
+
+// `n` readings `gap_ms` apart, the first `gap_ms` after `t`, the same voltage, USB and 0x11 each time; returns the
+// time of the last.
+static int64_t feed_n(yk_board_batt_t *b, int64_t t, int gap_ms, int n, int mv, bool usb, int sys) {
+    for (int i = 0; i < n; i++) yk_board_batt_feed(b, t += gap_ms, mv, usb, sys);
+    return t;
+}
+
+static void test_battery_display(void) {
+    // H1: the registers, from the two snapshots (docs/delivery/2026-10-31-battery-display.md 3). Old Tikpal, on USB:
+    // 0x11 = 0x12 (port B, charging), 0x14/0x15 = DE 5C (3952 mV), 0x17/0x18 = A0 00 (571 mA).
+    CHECK((0x12 & YK_SW6106_SYS_CHARGING) && !(0x00 & YK_SW6106_SYS_CHARGING));
+    CHECK(yk_board_battery_mv(0xDE, 0x5C) == 3952);
+    CHECK(yk_board_charge_ma(0xA0, 0x00) == 571 && yk_board_charge_ma(0x00, 0x00) == 0);
+    CHECK(yk_board_charge_ma(0x00, 0xF1) == 914);  // the top nibble is the discharge current's
+    CHECK(yk_board_full_mv(0x7C) == 4400 && yk_board_end_ma(0x7C) == 300);  // the second test device
+    CHECK(yk_board_full_mv(0xFC) == 4400 && yk_board_end_ma(0xFC) == 200);  // old Tikpal
+    CHECK(yk_board_full_mv(0x00) == 4200 && yk_board_full_mv(0x04) == 4300 && yk_board_full_mv(0x08) == 4350);
+    CHECK(strcmp(yk_board_batt_state_name(YK_BOARD_BATT_DISCHARGING), "discharging") == 0 &&
+          strcmp(yk_board_batt_state_name(YK_BOARD_BATT_CHARGING), "charging") == 0 &&
+          strcmp(yk_board_batt_state_name(YK_BOARD_BATT_FULL), "full") == 0 &&
+          strcmp(yk_board_batt_state_name(YK_BOARD_BATT_STOPPED), "stopped") == 0 &&
+          strcmp(yk_board_batt_state_name(YK_BOARD_BATT_UNKNOWN), "unknown") == 0);
+    CHECK(yk_board_batt_fault_name(YK_BOARD_BATT_FAULT_NONE) == NULL &&
+          strcmp(yk_board_batt_fault_name(YK_BOARD_BATT_FAULT_NO_RISE), "no_rise") == 0);
+
+    // H2: states. Plugged in, the chip charging.
+    yk_board_batt_t b = {0};
+    int64_t t = feed_n(&b, 0, 30000, 1, 3800, true, 0x12);
+    CHECK(b.state == YK_BOARD_BATT_CHARGING && b.charging && !b.low && b.fault == YK_BOARD_BATT_FAULT_NONE);
+    // The charger off right after plugging in: still charging for the first minute, then stopped after a minute off.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 10000, 6, 3800, true, 0x02);  // 0..50 s
+    CHECK(b.state == YK_BOARD_BATT_CHARGING && b.charging);
+    t = feed_n(&b, t, 10000, 1, 3800, true, 0x02);  // 60 s: a minute plugged in, the charger off a minute
+    CHECK(b.state == YK_BOARD_BATT_STOPPED && !b.charging);
+    // Charging, then the charger off below the top: stopped only once it has been off a minute.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 4, 3900, true, 0x12);  // 0..90 s charging
+    t = feed_n(&b, t, 30000, 2, 3900, true, 0x02);  // off at 120 s, 150 s
+    CHECK(b.state == YK_BOARD_BATT_CHARGING);
+    t = feed_n(&b, t, 30000, 1, 3900, true, 0x02);  // 180 s: off a minute
+    CHECK(b.state == YK_BOARD_BATT_STOPPED);
+    t = feed_n(&b, t, 30000, 1, 3900, true, 0x12);  // charging again
+    CHECK(b.state == YK_BOARD_BATT_CHARGING);
+    // Full: the charger off at the top after the first minute; kept while the chip tops up, until unplugged.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 3, 4380, true, 0x12);
+    CHECK(b.state == YK_BOARD_BATT_CHARGING && b.percent == 99);
+    t = feed_n(&b, t, 30000, 1, 4150, true, 0x02);
+    CHECK(b.state == YK_BOARD_BATT_FULL && !b.charging);
+    t = feed_n(&b, t, 30000, 4, 4120, true, 0x12);  // topping up from the recharge point
+    CHECK(b.state == YK_BOARD_BATT_FULL);
+    t = feed_n(&b, t, 30000, 1, 4150, false, -1);
+    CHECK(b.state == YK_BOARD_BATT_DISCHARGING);
+    t = feed_n(&b, t, 30000, 1, 4150, true, 0x02);  // plugged in again at the top: the first minute is charging
+    CHECK(b.state == YK_BOARD_BATT_CHARGING);
+    // The chip did not answer: unknown, charging guessed from the voltage, never full.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 1, 3900, true, -1);
+    CHECK(b.state == YK_BOARD_BATT_UNKNOWN && b.charging);
+    t = feed_n(&b, t, 30000, 200, 4300, true, -1);
+    CHECK(b.state == YK_BOARD_BATT_UNKNOWN && !b.charging && b.percent == 99);
+    // On the battery the chip does not matter.
+    b = (yk_board_batt_t){0};
+    feed_n(&b, 0, 30000, 1, 3800, false, -1);
+    CHECK(b.state == YK_BOARD_BATT_DISCHARGING && !b.charging && b.percent == 50);
+
+    // H3: smoothing. 38 % on the battery, plugged in: no jump, then 1 at most a reading.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 4, 3720, false, 0x00);
+    const int before = b.percent;
+    CHECK(before == 31);
+    t = feed_n(&b, t, 30000, 1, 4020, true, 0x12);  // reads 78 % under charge (4020 - 120 = 3900: 70 %)
+    CHECK(b.percent == before + 1);
+    for (int i = 0; i < 10; i++) {
+        const int was = b.percent;
+        t = feed_n(&b, t, 30000, 1, 4020, true, 0x12);
+        CHECK(b.percent - was <= 1 && b.percent >= was);
+    }
+    CHECK(b.percent == before + 11);
+    // Read often: no faster (readings under 10 s apart do not move it).
+    int was = b.percent;
+    t = feed_n(&b, t, 2000, 4, 4020, true, 0x12);
+    CHECK(b.percent == was);
+    t = feed_n(&b, t, 2000, 1, 4020, true, 0x12);  // 10 s after the last move
+    CHECK(b.percent == was + 1);
+    // Lower readings while plugged in do not take it down.
+    was = b.percent;
+    t = feed_n(&b, t, 30000, 4, 3700, true, 0x12);  // the average falls to 3700 (9 %)
+    CHECK(b.percent >= was);
+    was = b.percent;
+    t = feed_n(&b, t, 30000, 4, 3700, true, 0x12);
+    CHECK(b.percent == was);
+    // Unplugged: no jump; down 1 at most a reading towards the resting value; never up on the battery.
+    t = feed_n(&b, t, 30000, 1, 3760, false, -1);  // 3760: 42 %
+    CHECK(b.percent == was - 1);
+    for (int i = 0; i < 40; i++) t = feed_n(&b, t, 30000, 1, 3760, false, -1);
+    CHECK(b.percent == 42);
+    t = feed_n(&b, t, 30000, 4, 3900, false, -1);  // a higher reading on the battery: stays
+    CHECK(b.percent == 42);
+    // The average starts again on plugging: the reading just after unplugging is not mixed with the charging ones.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 4, 4300, true, 0x12);
+    t = feed_n(&b, t, 30000, 1, 3800, false, -1);
+    CHECK(b.avg_mv == 3800 && b.count == 1);
+    t = feed_n(&b, t, 30000, 1, 3780, false, -1);
+    CHECK(b.avg_mv == 3790);
+    // The first reading after start is taken as it is (no number before it).
+    b = (yk_board_batt_t){0};
+    feed_n(&b, 0, 30000, 1, 4020, true, 0x12);
+    CHECK(b.percent == 70);
+
+    // H4: 100 only once full; then 1 a reading up to 100; a top-up does not take it back; unknown never 100.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 20, 4420, true, 0x12);
+    CHECK(b.percent == 99);
+    t = feed_n(&b, t, 30000, 1, 4180, true, 0x02);
+    CHECK(b.state == YK_BOARD_BATT_FULL && b.percent == 100);
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 3, 4000, true, 0x12);  // 66 % (4000 - 120)
+    CHECK(b.percent == 66);
+    t = feed_n(&b, t, 30000, 1, 4110, true, 0x02);  // the chip stops early (300 mA end current): full at once,
+    CHECK(b.state == YK_BOARD_BATT_FULL && b.percent == 67);  // not stopped for a reading while the average catches up
+    for (int i = 0; i < 40; i++) t = feed_n(&b, t, 30000, 1, i % 5 ? 4110 : 4130, true, i % 7 ? 0x02 : 0x12);
+    CHECK(b.state == YK_BOARD_BATT_FULL && b.percent == 100);
+    b = (yk_board_batt_t){0};
+    feed_n(&b, 0, 30000, 300, 4450, true, -1);
+    CHECK(b.percent == 99);
+    // Already 100 on the battery and plugged in: it does not go down to 99 for it.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 1, 4250, false, -1);
+    CHECK(b.percent == 100);
+    feed_n(&b, t, 30000, 3, 4380, true, 0x12);
+    CHECK(b.percent == 100);
+
+    // H5: low. Charging under 3.3 V: low, no number to show; not 0 % for an hour.
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 1, 3150, true, 0x12);
+    CHECK(b.low && b.state == YK_BOARD_BATT_CHARGING && b.fault == YK_BOARD_BATT_FAULT_NONE);
+    t = feed_n(&b, t, 30000, 59, 3200, true, 0x12);  // 30 min - 30 s
+    CHECK(b.low && b.fault == YK_BOARD_BATT_FAULT_NONE);
+    t = feed_n(&b, t, 30000, 1, 3200, true, 0x12);  // 30 min plugged in, still under 3.3 V
+    CHECK(b.fault == YK_BOARD_BATT_FAULT_NO_RISE);
+    t = feed_n(&b, t, 30000, 4, 3350, true, 0x12);  // rising after all: told once, kept until unplugged
+    CHECK(!b.low && b.fault == YK_BOARD_BATT_FAULT_NO_RISE);
+    t = feed_n(&b, t, 30000, 1, 3150, false, -1);  // unplugged: cleared
+    CHECK(b.fault == YK_BOARD_BATT_FAULT_NONE && !b.low);
+    t = feed_n(&b, t, 30000, 1, 3150, true, 0x02);  // plugged in again: the 30 min start again (the chip stopped)
+    CHECK(b.fault == YK_BOARD_BATT_FAULT_NONE);
+    t = feed_n(&b, t, 30000, 60, 3150, true, 0x02);
+    CHECK(b.fault == YK_BOARD_BATT_FAULT_NO_RISE && b.state == YK_BOARD_BATT_STOPPED && !b.low);
+    // The chip not answering: low and the fault all the same.
+    b = (yk_board_batt_t){0};
+    feed_n(&b, 0, 30000, 61, 3100, true, -1);
+    CHECK(b.low && b.fault == YK_BOARD_BATT_FAULT_NO_RISE && b.state == YK_BOARD_BATT_UNKNOWN);
+
+    // H6: the guards' level is this reading straight from the voltage. On the battery it is the old percent for
+    // every voltage, so a guard at 5 % (3.52 V) fires on the same reading as before, smoothing or not.
+    for (int mv = 3000; mv <= 4400; mv += 7) {
+        b = (yk_board_batt_t){0};
+        feed_n(&b, 0, 30000, 1, 4000, false, -1);  // the screen at 80 %: the smoothed number lags
+        feed_n(&b, 30000, 30000, 1, mv, false, -1);
+        CHECK(b.level == yk_board_battery_level(mv, false));
+    }
+    b = (yk_board_batt_t){0};
+    t = feed_n(&b, 0, 30000, 1, 4000, false, -1);  // 80 % on the screen, then the voltage falls fast
+    int fired_level = -1, fired_shown = -1, empty_reads = 0;
+    for (int i = 0; i < 40 && fired_level < 0; i++) {
+        t = feed_n(&b, t, 10000, 1, 3600 - i * 5, false, -1);
+        empty_reads = b.level <= 5 ? empty_reads + 1 : 0;  // yay_power: 5 % twice in a row
+        if (empty_reads == 2) fired_level = i, fired_shown = b.percent;
+    }
+    CHECK(fired_level == 18);  // 3515 mV then 3510 mV: the same reading the old percent fired on
+    CHECK(fired_shown > 5);    // the screen's smoothed number had not got there yet: the guard does not wait for it
+    // Plugged in, the level takes the rise off as the old percent did, but is not capped at 99.
+    b = (yk_board_batt_t){0};
+    feed_n(&b, 0, 30000, 1, 3920, true, 0x12);
+    CHECK(b.level == yk_board_battery_level(3920, true) && b.level == 50);
+    b = (yk_board_batt_t){0};
+    feed_n(&b, 0, 30000, 1, 4400, true, 0x12);
+    CHECK(b.level == 100);
 }
 
 // A pretend SW6106 for the 0x3A steps: one register, reads that may fail, a write that may fail or not stick.
@@ -269,7 +469,25 @@ static void test_charge_limit(void) {
           strcmp(yk_board_charge_result_name(YK_CHARGE_MISMATCH), "mismatch") == 0);
 }
 
+static void test_speaker(void) {
+    const board_speaker_t *s = board_speaker();
+    CHECK(s->ceiling_dbfs == -2.0f && s->voice_hp_hz == 800.0f);  // the top the owner chose by ear
+    CHECK(board_speaker_codec_vol(0) == 0 && board_speaker_voice_boost_db(0) == 0);  // muted: nothing raised
+    CHECK(board_speaker_codec_vol(10) == 100 && board_speaker_voice_boost_db(10) == 20.0f);
+    CHECK(board_speaker_codec_vol(1) == 68 && board_speaker_voice_boost_db(1) == 10.0f);
+    for (int v = 1; v < 10; v++) {
+        CHECK(board_speaker_codec_vol(v + 1) > board_speaker_codec_vol(v));
+        CHECK(board_speaker_voice_boost_db(v + 1) > board_speaker_voice_boost_db(v));
+    }
+    // Out of range: taken to the ends.
+    CHECK(board_speaker_codec_vol(-3) == 0 && board_speaker_codec_vol(14) == 100);
+    CHECK(board_speaker_voice_boost_db(-3) == board_speaker_voice_boost_db(0));
+    CHECK(board_speaker_voice_boost_db(14) == 20.0f);
+}
+
 int main(void) {
+    test_speaker();
+    test_battery_display();
     test_charge_limit();
     test_font_pack();
     test_battery();

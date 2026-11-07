@@ -52,20 +52,26 @@ esp_err_t yk_slot_read(int index, yk_slot_t *out) {
     return ESP_OK;
 }
 
+cJSON *yk_slot_json(int index) {
+    yk_slot_t slot;
+    if (yk_slot_read(index, &slot) != ESP_OK) return NULL;
+    cJSON *item = cJSON_CreateObject();
+    if (!item) return NULL;
+    cJSON_AddNumberToObject(item, "index", index);
+    cJSON_AddStringToObject(item, "state", slot.state);
+    if (slot.present) {
+        cJSON_AddStringToObject(item, "slug", slot.slug);
+        cJSON_AddStringToObject(item, "version", slot.version);
+    }
+    cJSON_AddBoolToObject(item, "running", slot.running);
+    cJSON_AddBoolToObject(item, "boot", slot.boot);
+    return item;
+}
+
 void yk_slots_to_json(cJSON *array) {
     for (int i = 0; i < YK_SLOT_COUNT; i++) {
-        yk_slot_t slot;
-        if (yk_slot_read(i, &slot) != ESP_OK) continue;
-        cJSON *item = cJSON_CreateObject();
-        cJSON_AddNumberToObject(item, "index", i);
-        cJSON_AddStringToObject(item, "state", slot.state);
-        if (slot.present) {
-            cJSON_AddStringToObject(item, "slug", slot.slug);
-            cJSON_AddStringToObject(item, "version", slot.version);
-        }
-        cJSON_AddBoolToObject(item, "running", slot.running);
-        cJSON_AddBoolToObject(item, "boot", slot.boot);
-        cJSON_AddItemToArray(array, item);
+        cJSON *item = yk_slot_json(i);
+        if (item) cJSON_AddItemToArray(array, item);
     }
 }
 

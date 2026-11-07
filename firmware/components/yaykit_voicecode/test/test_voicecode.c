@@ -8,6 +8,9 @@
 //     exposure, glare, a dark sector and clutter; yk_vc_scan must read them, and say YK_VC_LATER for a code of a later
 //     version. Negative frames (the bars' animation, clutter alone, half a code) must never read as a code. Frames
 //     are rendered and read on all cores (yk_vc_scan is thread-safe); the time per frame is measured on one thread.
+//  4. How far a frame got (yk_vc_status_stage): a frame that finds the centre but not the levels says bad_levels, one
+//     that reads the levels but has no dot says no_dot, and a frame with both says the furthest, no_dot (the status
+//     numbers have no_dot first). Runs with --quick too.
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE
 #define _DEFAULT_SOURCE
@@ -275,6 +278,7 @@ typedef struct {
     double glare_frac, glare_amp, glare_at;
     double occl, occl_at;
     int clutter;
+    int no_dot;             // the coral dot left out
     float len[YK_VC_BARS];  // cap centre to cap centre; 0: no bar
     int coral[YK_VC_BARS];
     int pad;  // stride - width
@@ -415,7 +419,8 @@ static float device_value(const scene_t *s, double X, double Y, double px, float
             if (cv > 0) v = mixf(v, s->coral[k] ? CORAL : WHITE, cv);
         }
     }
-    if (r > 0.78 && r < 0.98 && Y < 0) v = mixf(v, CORAL, cover(hypot(X, Y + YK_VC_DOT_R) - YK_VC_DOT_SIZE, px));
+    if (!s->no_dot && r > 0.78 && r < 0.98 && Y < 0)
+        v = mixf(v, CORAL, cover(hypot(X, Y + YK_VC_DOT_R) - YK_VC_DOT_SIZE, px));
     if (fabs(r - 1) < 0.06) v = mixf(v, WHITE, cover(fabs(r - 1) - 0.5 * YK_VC_RING_W, px));
     if (s->occl > 0 && r > 0.30 && r < 1.40) {
         // a dark sector (a finger, a shadow): angular distance from its middle, in model units
@@ -943,10 +948,88 @@ static void test_same_on_threads(void) {
     free(luma);
 }
 
+// ---- 4. how far a frame got ----
+
+/** A plain code at (cx, cy): straight, sharp, a mid-grey room, no noise. Bars: `bars` 0 the code of a random payload,
+ *  1 lengths anywhere from below level 0 to level 3 (the bars' animation), 2 random levels; `dot`: the coral dot. */
+static void status_scene(scene_t *s, double cx, double cy, int bars, int dot, uint64_t *rng) {
+    memset(s, 0, sizeof *s);
+    s->kind = KIND_CODE;
+    s->radius = 150;
+    s->cx = cx;
+    s->cy = cy;
+    s->blur = 0.6;
+    s->gain = 1;
+    s->bg = 0.3;
+    s->bezel = 0.1;
+    s->no_dot = !dot;
+    scene_geometry(s);
+    const yk_vc_payload_t p = random_payload(rng);
+    uint8_t lv[YK_VC_BARS];
+    yk_vc_encode(&p, lv);
+    for (int k = 0; k < YK_VC_BARS; k++) {
+        const int level = bars == 2 ? irange(rng, 0, 3) : lv[k];
+        s->len[k] = (float)(bars == 1 ? range(rng, 0.6 * YK_VC_LEN0, yk_vc_bar_length(3)) : yk_vc_bar_length(level));
+        s->coral[k] = s->len[k] > yk_vc_bar_length(3) - 0.02;
+    }
+}
+
+static void test_status_stage(void) {
+    current = "status";
+    // The numbers stay as they are; the stages are the reader's order.
+    CHECK(YK_VC_OK == 0 && YK_VC_NO_BARS == 1 && YK_VC_NO_CENTRE == 2 && YK_VC_NO_DOT == 3 && YK_VC_BAD_LEVELS == 4 &&
+          YK_VC_NOT_DECODED == 5 && YK_VC_LATER == 6);
+    const yk_vc_status_t order[] = {YK_VC_NO_BARS, YK_VC_NO_CENTRE, YK_VC_BAD_LEVELS, YK_VC_NO_DOT,
+                                    YK_VC_NOT_DECODED, YK_VC_LATER, YK_VC_OK};
+    for (int i = 0; i < 7; i++) CHECK(yk_vc_status_stage(order[i]) == i);
+    CHECK(yk_vc_status_stage((yk_vc_status_t)7) == -1 && yk_vc_status_stage((yk_vc_status_t)-1) == -1);
+
+    float *buf = malloc(sizeof(float) * W * H), *tmp = malloc(sizeof(float) * W * H);
+    uint8_t *a = malloc((size_t)W * H), *b = malloc((size_t)W * H), *both = malloc((size_t)W * H);
+    if (!buf || !tmp || !a || !b || !both) abort();
+    scene_t s;
+    yk_vc_result_t r;
+    int frames = 0;
+    // 'a': the centre found, the levels not (bars between levels); 'b': the levels read, no dot to turn them by.
+    // Both codes sit apart in one frame: the reader tries each centre and must say how far the furthest got.
+    for (uint64_t seed = 1; seed <= 6; seed++) {
+        uint64_t rng = seed * 0x9e3779b97f4a7c15ULL;
+        status_scene(&s, 330, 360, 1, 1, &rng);
+        render(&s, &rng, buf, tmp, a);
+        const yk_vc_status_t sa = yk_vc_scan(a, W, H, W, &r);
+        status_scene(&s, 950, 360, 2, 0, &rng);
+        render(&s, &rng, buf, tmp, b);
+        const yk_vc_status_t sb = yk_vc_scan(b, W, H, W, &r);
+        if (sa != YK_VC_BAD_LEVELS || sb != YK_VC_NO_DOT) continue;  // a seed whose bars land elsewhere
+        for (int y = 0; y < H; y++) {
+            memcpy(both + (size_t)y * W, a + (size_t)y * W, W / 2);
+            memcpy(both + (size_t)y * W + W / 2, b + (size_t)y * W + W / 2, W / 2);
+        }
+        const yk_vc_status_t st = yk_vc_scan(both, W, H, W, &r);
+        CHECK(st == YK_VC_NO_DOT);
+        if (st != YK_VC_NO_DOT) printf("  seed %llu: both codes in one frame said %s\n", (unsigned long long)seed,
+                                       yk_vc_status_name(st));
+        frames++;
+    }
+    CHECK(frames >= 3);
+    // A plain code still reads, dot or no dot (with no dot every turn is tried).
+    uint64_t rng = 77;
+    status_scene(&s, 640, 360, 0, 1, &rng);
+    render(&s, &rng, buf, tmp, a);
+    CHECK(yk_vc_scan(a, W, H, W, &r) == YK_VC_OK);
+    printf("status stages: bad_levels alone, no_dot alone, and both in one frame -> no_dot (%d frames)\n", frames);
+    free(buf);
+    free(tmp);
+    free(a);
+    free(b);
+    free(both);
+}
+
 int main(int argc, char **argv) {
     const int quick = argc > 1 && strcmp(argv[1], "--quick") == 0;
     test_bits();
     test_rs();
+    test_status_stage();
     if (!quick) {
         test_same_on_threads();
         test_frames();

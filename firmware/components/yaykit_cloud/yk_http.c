@@ -8,6 +8,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
+#include "yaykit_cloud.h"
 #include "yaykit_link.h"
 #include "yaykit_wifi.h"
 
@@ -16,6 +17,20 @@
 
 static const char *TAG = "yk_http";
 static const char *app_slug = "", *app_version = "";
+static volatile int s_reach;           // yk_cloud_reach_t
+static void *volatile s_opened;        // the client whose connection opened last
+
+esp_err_t yk_http_on_event(esp_http_client_event_t *e) {
+    if (e->event_id == HTTP_EVENT_ON_CONNECTED) {
+        s_opened = e->client;
+        s_reach = YK_CLOUD_REACH_OK;
+    } else if (e->event_id == HTTP_EVENT_ERROR && e->client != s_opened) {
+        s_reach = YK_CLOUD_REACH_FAILED;  // it never opened (an error after it had is not the network's)
+    }
+    return ESP_OK;
+}
+
+int yk_cloud_reach(void) { return s_reach; }
 
 void yk_http_set_app(const char *app, const char *version) {
     app_slug = app ? app : "";
@@ -44,9 +59,11 @@ esp_http_client_handle_t yk_http_client(const char *path, esp_http_client_method
         .buffer_size = 2048,
         .buffer_size_tx = 1536,
         .keep_alive_enable = false,
+        .event_handler = yk_http_on_event,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return NULL;
+    if (s_opened == client) s_opened = NULL;  // a new client where an old one was
     esp_http_client_set_header(client, "X-Yaykit-App", app_slug);
     esp_http_client_set_header(client, "X-Yaykit-Firmware", app_version);
     esp_http_client_set_header(client, "Accept", "application/json, text/event-stream");

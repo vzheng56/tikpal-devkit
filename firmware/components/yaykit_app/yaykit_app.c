@@ -7,6 +7,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "driver/usb_serial_jtag.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -21,9 +22,11 @@
 #include "nvs.h"
 #include "sdkconfig.h"
 #include "soc/rtc.h"
+#include "board.h"
 #include "yaykit_key.h"
 #include "yaykit_link.h"
 #include "yaykit_slots.h"
+#include "yaykit_ui.h"
 #include "yk_mem.h"
 #include "yk_app_logic.h"
 #include "yk_app_ring.h"
@@ -195,20 +198,34 @@ int64_t yk_app_last_used(int slot) {
 // firmware without yaykit_ui still links.
 bool yk_ui_capturing(void) __attribute__((weak));
 
-static void banner_task(void *arg) {
-    (void)arg;
-    while (!s_quiet) {
-        if (!(yk_ui_capturing && yk_ui_capturing())) printf("%s version=%s\n", s_banner, s_cfg.version);
-        vTaskDelay(pdMS_TO_TICKS(3000));
-    }
-    vTaskDelete(NULL);
+#define BANNER_MS 3000
+static esp_timer_handle_t s_banner_timer;  // from yk_app_ready() on (not with .quiet)
+
+static void banner_print(void) {
+    // No computer on the USB (no SOF from a host): nobody to print to. A computer whose console is not open still
+    // counts as one: the driver then waits once, 50 ms, and drops what does not fit (below).
+    if (!usb_serial_jtag_is_connected()) return;
+    if (!(yk_ui_capturing && yk_ui_capturing())) printf("%s version=%s\n", s_banner, s_cfg.version);
 }
 
-void yk_app_input(void) { s_quiet = true; }
+/** Every BANNER_MS until the first input. An esp_timer rather than a task of its own: that task's 3 KB stack stayed in
+ *  internal RAM for as long as nobody typed, on a device away from a computer always (#1239: Yay's start came 3.6 KB
+ *  nearer the 40,000 bytes line). On a USB console nobody reads, a print waits at most once, 50 ms (the driver then
+ *  drops what does not fit until the host reads again), so the esp_timer task is not held up. */
+static void banner_tick(void *arg) {
+    (void)arg;
+    if (s_quiet) esp_timer_stop(s_banner_timer);
+    else banner_print();
+}
+
+void yk_app_input(void) {
+    s_quiet = true;
+    if (s_banner_timer) esp_timer_stop(s_banner_timer);  // ESP_ERR_INVALID_STATE when stopped already: nothing to do
+}
 
 static void on_key(const yk_key_event_t *ev, void *ctx) {
     (void)ctx;
-    s_quiet = true;
+    yk_app_input();
     yk_app_ring_key(ev);  // the app ring (P23), the app's own key (yk_app_on_key) and 「回到 Yay 说？」
 }
 
@@ -291,6 +308,8 @@ esp_err_t yk_app_start(const yk_app_config_t *cfg) {
     if (s_started) return ESP_OK;
     if (!cfg || !cfg->slug || !cfg->version) return ESP_ERR_INVALID_ARG;
     s_cfg = *cfg;
+    s_cfg.is_home = yk_app_is_home(cfg->slug, cfg->is_home);  // here only: everything below reads s_cfg
+    if (cfg->is_home && !s_cfg.is_home) ESP_LOGW(TAG, "%s is not the main firmware: is_home ignored", cfg->slug);
     if (cfg->banner) snprintf(s_banner, sizeof(s_banner), "%s", cfg->banner);
     else yk_banner_name(s_banner, sizeof(s_banner), cfg->slug);
     s_started = true;
@@ -340,8 +359,13 @@ esp_err_t yk_app_ready(void) {
         if (esp_timer_create(&args, &timer) == ESP_OK) esp_timer_start_once(timer, confirm_ms * 1000LL);
         printf("YAY_APP update trial version=%s confirm_in=%ds\n", u.version, (int)(confirm_ms / 1000));
     }
-    if (s_started && !s_cfg.quiet) xTaskCreate(banner_task, "yk_banner", 3072, NULL, 1, NULL);
+    if (s_started && !s_cfg.quiet && !s_quiet) {
+        banner_print();
+        const esp_timer_create_args_t args = {.callback = banner_tick, .name = "yk_banner"};
+        if (esp_timer_create(&args, &s_banner_timer) == ESP_OK) esp_timer_start_periodic(s_banner_timer, BANNER_MS * 1000LL);
+    }
     yk_app_power_ready();  // an extension: the battery watched from now on (yk_app_power.h)
+    yk_app_ring_ready();   // ... and the system pull-down's top edge made (yk_app_sheet.c)
     return err;
 }
 
@@ -869,6 +893,18 @@ static int yay_cmd(int argc, char **argv) {
         const int r = yk_app_ring_dev_tap(argv[2]);  // an extension's ring; in Yay its own `yay ring` (below)
         if (r >= 0) return r;
     }
+    // A finger through LVGL's input, as the touch screen's (yk_ui_finger): a tap at x0 y0, or from there to x1 y1 in
+    // ms (150: a swipe to LVGL from 40 px on).
+    if (!strcmp(sub, "finger") && argc > 3) {
+        const int x0 = atoi(argv[2]), y0 = atoi(argv[3]);
+        const bool along = argc > 5;
+        const int x1 = along ? atoi(argv[4]) : x0, y1 = along ? atoi(argv[5]) : y0;
+        const int ms = argc > 6 ? atoi(argv[6]) : along ? 150 : 0;
+        if (board_lock(500) != ESP_OK) return 1;
+        const bool ok = yk_ui_finger(x0, y0, x1, y1, ms);
+        board_unlock();
+        return ok ? 0 : 1;
+    }
     if (!strcmp(sub, "crash")) {
         const int boots = argc > 2 ? atoi(argv[2]) : 0;
         if (boots > 0) {
@@ -891,11 +927,19 @@ static int yay_cmd(int argc, char **argv) {
     if (!strcmp(sub, "record") && argc > 2) return yk_app_record(argv[2], argc > 3 ? argv[3] : NULL) == ESP_OK ? 0 : 1;
     // An extension's battery guard (yk_app_power.h); Yay registers its own `yay power` (below).
     if (!strcmp(sub, "power") && yk_app_is_extension()) return yk_app_power_dev(argc - 1, argv + 1);
+    // An extension's system pull-down (yk_app_sheet.c): its state, open / close it, the edge's numbers.
+    if (!strcmp(sub, "sheet") && yk_app_is_extension()) {
+        if (board_lock(500) != ESP_OK) return 1;
+        const int r = yk_app_sheet_dev(argc - 1, argv + 1);
+        board_unlock();
+        return r;
+    }
     for (int i = 0; i < DEV_MAX; i++)
         if (s_dev[i].name && !strcmp(s_dev[i].name, sub)) return s_dev[i].fn(argc - 1, argv + 1);
     printf("yay tap | double | hold <ms> | say <s> [text] | records [drop <seq>] | ring <slug>|yay|paper"
-           " | launch <slug> [json] | crash [boots] | record <kind> [json]");
-    if (yk_app_is_extension()) printf(" | power [<pct> [usb]|off|next <pct> [usb]|sleep]");
+           " | finger <x0> <y0> [<x1> <y1> [ms]] | launch <slug> [json] | crash [boots] | record <kind> [json]");
+    if (yk_app_is_extension())
+        printf(" | power [<pct> [usb]|off|next <pct> [usb]|look <s>|sleep] | sheet [open|close|edge <px>|pull <px>]");
     for (int i = 0; i < DEV_MAX; i++)
         if (s_dev[i].name) printf(" | %s", s_dev[i].help ? s_dev[i].help : s_dev[i].name);
 #else

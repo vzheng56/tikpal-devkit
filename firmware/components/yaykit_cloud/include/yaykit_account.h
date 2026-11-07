@@ -41,6 +41,10 @@ const char *yk_account_state_name(void);
 const char *yk_account_error(void);
 /** The owner's nickname as the cloud last reported it; "" when unknown. Never the email. */
 void yk_account_nickname(char *out, size_t size);
+/** For a status line (the system pull-down, docs/delivery/2026-11-02-system-pulldown.md): yk_account_state() as an int
+ *  and the nickname into `nickname` (may be NULL). Plain types, so that yaykit_app can link it weakly (an app without
+ *  an account has none). */
+int yk_account_status(char *nickname, size_t size);
 /** The owner's language as the platform said it ("zh-Hans", "en", "ja", "es-419"; "zh" from before), kept with the
  *  binding; "zh" when unbound. Read it with yk_locale.h (by its prefix), never by comparing whole strings. */
 void yk_account_locale(char *out, size_t size);
@@ -63,6 +67,9 @@ void yk_account_describe(cJSON *account);
 /** A valid access token for this app, fetched with a signed challenge when the cached one is about to expire.
  *  Blocking network call: run it from a task with at least 8 KB of internal stack. */
 esp_err_t yk_account_token(char *out, size_t size, const char **code);
+/** Whether yk_account_token() would answer from the cache now, without a network call (a caller holding a
+ *  connection of its own closes it first otherwise, so that two TLS sessions are never open at once). */
+bool yk_account_token_cached(void);
 /** The API rejected the token (TOKEN_EXPIRED): drop it so the next call fetches a new one. */
 void yk_account_token_expired(void);
 /** The API says the device is no longer bound (unbound from the account page): forget the binding. */

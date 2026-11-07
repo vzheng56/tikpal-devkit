@@ -10,8 +10,10 @@ rebuilt in its container, and nothing of the app runs (no host tests). Everythin
 The app's manifest (the main rules of Tikpal's contract, and its `records` rule for rule; the review checks it against
 the contract itself), its version and project name, the kit untouched at a version, everything committed, the release
 build there and of this version, without development commands and at most 3.5 MB, the host tests, and nothing in the
-repository that looks like a key, a token or a round screen's id. Standard library only: it runs before ESP-IDF is
-installed too.
+repository that looks like a key, a token or a round screen's id. From the kit whose review/symbols.json has `require`
+on (1.9), that the system pull-down cannot be left out: the components and the link table have it, app.json has its
+voiceCode, the app's own code starts it and says nothing that takes it away. Standard library only: it runs before
+ESP-IDF is installed too.
 """
 import hashlib
 import json
@@ -42,6 +44,23 @@ SECRETS = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\."), "令牌（JWT）"),
     (re.compile(r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:])"), "圆屏的 USB 序列号"),
 ]
+
+# The system pull-down (审核规则 F-05): the source of an app, read as text. A build's half is `require` in the kit's
+# review/symbols.json; the review reads the rebuilt image for the rest (scripts/review/firmware.py in Tikpal's repository).
+C_FILE = re.compile(r"\.(c|h|cc|cpp|cxx|hpp|hh|inc|inl|S|s)$")
+CMAKE_FILE = re.compile(r"((^|/)CMakeLists\.txt|\.cmake)$")
+STRING = r'"(?:[^"\\\n]|\\.)*"'
+STRINGS = rf"(?:{STRING}\s*)+"
+C_TOKEN = re.compile(rf"""{STRING}|'(?:[^'\\\n]|\\.)*'|/\*.*?\*/|//[^\n]*""", re.S)
+HOME_WORD = re.compile(r"\b(?:is_home|YK_APP_HOME_SLUG)\b")
+HOME_SLUG = "yay"  # YK_APP_HOME_SLUG: with .is_home it is the main firmware, which has no pull-down of this kind
+SLUG_FIELD = re.compile(rf"(?:\.|->)\s*slug\s*=\s*({STRINGS}|[A-Za-z_]\w*)")
+C_DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]+(\S.*?)[ \t]*$", re.M)
+C_CONST = re.compile(rf"\b([A-Za-z_]\w*)\s*(?:\[\s*\])?\s*=\s*({STRINGS})")
+# The linker letting the app's definition stand beside the kit's: --allow-multiple-definition (--allow-m on), -z muldefs.
+MULTIPLE_DEFINITIONS = re.compile(r"(?<![\w-])--?allow-m[a-z-]*|muldefs\b")
+# {"x", "1.0", NULL, true}: by position, is_home goes unnamed. {0} is the one to fill in afterwards.
+CONFIG_BY_POSITION = re.compile(r"\byk_app_config_t\b(?:\s*\)|[^;{}()=]*=)\s*\{\s*(?!0\s*\})[^.\s}]")
 
 # `records` (what 动态 keeps) as Tikpal's contract has it, rule for rule: the review packs an app only if the contract
 # parses its app.json, so records that pass here pass there. The contract is packages/contracts/src/app-spec.ts in
@@ -85,6 +104,8 @@ VOICE_CODE_DOC = "写法见 devkit/docs/app-json.md 的「应用码 voiceCode」
 TEST_NUMBERS = (65280, 65535)
 # The kinds main/ writes, as a hint: yk_app_record("mytimer.count", ...) with the kind written out.
 RECORD_CALL = re.compile(r'\byk_app_record\(\s*"([^"\\]*)"')
+# The NVS namespaces main/ opens with the name written out: nvs_open("yk_mytimer", ...).
+NVS_CALL = re.compile(r'\bnvs_open\(\s*"([^"\\]*)"')
 
 problems, notes = [], []
 
@@ -333,7 +354,7 @@ def check_records(spec):
                 if not isinstance(k["schema"], dict) or k["schema"].get("type") != "object":
                     bad(f'app.json 的 {where}.schema 要写 "type": "object"：一条记录是一个对象')
             if "noMemory" in k and k["noMemory"] is not True:
-                bad(f"app.json 的 {where}.noMemory 只能写 true（不想让 Yay 的记忆读这种记录时写），不要就别写")
+                bad(f"app.json 的 {where}.noMemory 只能写 true（不想让伙伴的记忆读这种记录时写），不要就别写")
             if "collect" in k:
                 rules = k["collect"]
                 if not isinstance(rules, list) or not 1 <= len(rules) <= 8:
@@ -359,7 +380,7 @@ def check_records(spec):
         if "pages" in records and strict("records.pages", records["pages"], ["template"], ["template"]):
             template = records["pages"].get("template")
             if "template" in records["pages"] and (not isinstance(template, str) or not TEMPLATE.fullmatch(template)):
-                bad("app.json 的 records.pages.template 写成 名字@版本（比如 mytimer@1），用我们立项时给的")
+                bad("app.json 的 records.pages.template 写成 名字@版本（比如 mytimer@1），模板名跟我们一起定")
 
     # appSpec's superRefine: the kinds the round screen may write (capabilities.records) are the kinds 动态 knows
     # (records.kinds), compared as the contract does: as many, and each allowed one among them.
@@ -384,7 +405,27 @@ def record_hints(spec, app):
                         seen.add(kind)
                         notes.append(f"提示：{os.path.relpath(path, app)}:{n} 用 yk_app_record 写 {kind}，app.json 的 records 里没有这种，服务端不收。"
                                      "要留进「动态」，照 devkit/docs/app-json.md 的「记录 records」补上 records 和 capabilities.records，"
-                                     "立项时跟我们定；不要就删掉这句")
+                                     "先在开发者平台的「能力和权限」页申请「记录」能力；不要就删掉这句")
+
+
+def own_namespace(slug):
+    """The app's own NVS namespace, yk_<简称>: 简称 is the slug without its hyphens (as in its record kinds,
+    <简称>.count), and NVS takes at most 15 characters. The review holds every nvs_open in the image to it."""
+    return ("yk_" + slug.replace("-", ""))[:15]
+
+
+def check_namespaces(slug, app):
+    """A namespace main/ opens by name that is not the app's own: the review returns it (symbols.namespace)."""
+    own = own_namespace(slug)
+    for root, dirs, files in os.walk(os.path.join(app, "main")):
+        dirs.sort()
+        for name in sorted(f for f in files if f.endswith(".c")):
+            path = os.path.join(root, name)
+            for n, line in enumerate(open(path, encoding="utf-8", errors="replace"), 1):
+                for ns in NVS_CALL.findall(line):
+                    if ns != own:
+                        bad(f"{os.path.relpath(path, app)}:{n} nvs_open 打开的是 {ns}：设置只能放自己的命名空间 {own}"
+                            "（yk_ 加 slug 去掉连字符，最长 15 个字符；devkit/docs/app-guide.md 的 NVS）")
 
 
 def check_voice_code(spec):
@@ -396,10 +437,10 @@ def check_voice_code(spec):
         return
     number = code.get("number")
     if "number" in code and not is_int(number, 1, 65535):
-        bad(f"app.json 的 voiceCode.number 要是立项时给的应用编号，1–65535 的整数：{VOICE_CODE_DOC}")
+        bad(f"app.json 的 voiceCode.number 要是建应用时给的应用编号，1–65535 的整数：{VOICE_CODE_DOC}")
     elif is_int(number, *TEST_NUMBERS):
         notes.append(f"提示：voiceCode.number 是本机测试号（{TEST_NUMBERS[0]}–{TEST_NUMBERS[1]}），只能在自己的圆屏上试；"
-                     "提交前换成立项时给的编号，审核不收测试号")
+                     "提交前换成建应用时给的编号，审核不收测试号")
     if "ask" in code:
         ask = code["ask"]
         phrases_of("voiceCode.ask", ask, 16, 80)
@@ -500,6 +541,100 @@ def check_first_version(spec):
         bad("app.json 的 ageRating 是 " + "、".join(AGE_RATINGS) + " 之一")
 
 
+def kit_require(kit_dir):
+    """`require` in the kit's review/symbols.json, None for a kit without it (before 1.9): the review runs this file on
+    every kit, so an app on an older one is held to what that kit had. SUBMISSION_MIN_KIT on the platform moves them on."""
+    try:
+        return json.load(open(os.path.join(kit_dir, "review", "symbols.json"), encoding="utf-8")).get("require")
+    except (OSError, ValueError):
+        return None
+
+
+def linked_symbols(text):
+    """The names a map file places: its memory map only, not the sections thrown away before it nor the cross
+    reference table after it, which name what never made it into the image."""
+    start = text.find("Linker script and memory map")
+    end = text.find("Cross Reference Table", max(start, 0))
+    placed = text[start:end if end >= 0 else None] if start >= 0 else ""
+    return set(re.findall(r"^\s+0x[0-9a-f]+\s+([A-Za-z_][\w$.]*)\s*$", placed, re.M))
+
+
+def check_pulldown_build(require, desc, build):
+    """The system pull-down is in the build: its components, and in the link table what makes it (what is not reached
+    is gone from there: a component in the build proves nothing by itself)."""
+    for component in require["components"]:
+        if component not in desc.get("build_components", []):
+            bad(f"构建里没有 {component}：系统下拉靠它。组件别删，CMakeLists.txt 照模板写，重新 ./kit build --release")
+    try:
+        linked = linked_symbols(open(os.path.join(build, desc.get("project_name", "") + ".map"), encoding="utf-8", errors="replace").read())
+    except OSError:
+        bad("构建里没有链接表（.map）：重新 ./kit build --release")
+        return
+    for symbol in require["symbols"]:
+        if symbol not in linked:
+            bad(f"链接表里没有 {symbol}：系统下拉没接上。yk_app_start()、yk_app_ready() 照模板调，别换掉开发包的组件")
+
+
+def c_code(text):
+    """C with its comments blanked: the strings stay, and every line where it was."""
+    return C_TOKEN.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+def app_sources(app, tracked):
+    """The app's own C and CMake, comments out: path → text. Everything of it, not main/ only: a component in the
+    project is its code too."""
+    out = {}
+    for path in filter(None, tracked):
+        full = os.path.join(app, path)
+        if path == "devkit" or path.startswith("devkit/") or not os.path.isfile(full):
+            continue
+        if C_FILE.search(path):
+            out[path] = c_code(open(full, encoding="utf-8", errors="replace").read())
+        elif CMAKE_FILE.search(path):
+            out[path] = re.sub(r"#[^\n]*", " ", open(full, encoding="utf-8", errors="replace").read())
+    return out
+
+
+def line_of(text, match):
+    return text.count("\n", 0, match.start()) + 1
+
+
+def string_value(value, constants):
+    """What a slug's value says when it can be told: a string (or several in a row), or a name for one."""
+    for _ in range(8):
+        if re.fullmatch(STRINGS, value):
+            return "".join(s[1:-1] for s in re.findall(STRING, value))
+        if value not in constants:
+            return None
+        value = constants[value]
+    return None
+
+
+def check_pulldown_source(require, sources):
+    """The app's own code starts the pull-down and does not say it is the main firmware (.is_home, with the slug yay,
+    is the one way yk_app_is_home() lets through)."""
+    constants = {}
+    for path, text in sources.items():
+        if C_FILE.search(path):
+            constants.update(C_DEFINE.findall(text))
+            constants.update((name, value.strip()) for name, value in C_CONST.findall(text))
+    for path, text in sorted(sources.items()):
+        for m in HOME_WORD.finditer(text):
+            bad(f"{path}:{line_of(text, m)} 写了 {m.group(0)}：那是主固件的，第三方应用不能写。删掉它，系统下拉和应用环才在（审核规则 F-05）")
+        if not C_FILE.search(path):
+            for m in MULTIPLE_DEFINITIONS.finditer(text):
+                bad(f"{path}:{line_of(text, m)} 有链接参数 {m.group(0)}：它让应用的函数盖住开发包的。删掉它（审核规则 F-05）")
+            continue
+        for m in SLUG_FIELD.finditer(text):
+            if string_value(m.group(1).strip(), constants) == HOME_SLUG:
+                bad(f"{path}:{line_of(text, m)} 的 .slug 是 {HOME_SLUG}：那是主固件的名字，第三方应用不能用。写 app.json 的 slug（审核规则 F-05）")
+        for m in CONFIG_BY_POSITION.finditer(text):
+            bad(f"{path}:{line_of(text, m)} 的 yk_app_config_t 按位置写的：照模板按字段写（.slug = …, .version = …）")
+    for call in require["calls"]:
+        if not any(re.search(rf"\b{call}\s*\(", text) for path, text in sources.items() if C_FILE.search(path)):
+            bad(f"应用代码里没调 {call}()：系统下拉接不上。启动顺序见 devkit/docs/app-guide.md 第 4 节")
+
+
 def check_manifest(spec, kit):
     for key in sorted(set(spec) - KEYS):
         bad(f"app.json 里有不认识的字段 {key}")
@@ -522,7 +657,7 @@ def check_manifest(spec, kit):
     if not min_yay or not re.match(r"^\d+\.\d+\.\d+$", str(min_yay)):
         bad(f'app.json 要写 minYay（至少 "{kit["yay"]}"）')
     elif version_tuple(min_yay) < version_tuple(kit["yay"]):
-        bad(f'app.json 的 minYay 是 {min_yay}，比开发包对应的 Yay {kit["yay"]} 还旧')
+        bad(f'app.json 的 minYay 是 {min_yay}，比开发包对应的 Tikpal 主固件 {kit["yay"]} 还旧')
     if spec.get("apiLevel") != kit["apiLevel"]:
         bad(f'app.json 的 apiLevel 要写开发包的 {kit["apiLevel"]}')
     if not isinstance(spec.get("capabilities"), dict):
@@ -560,8 +695,13 @@ def main():
         print(f"✗ app.json 读不了：{e}")
         return 1
     check_manifest(spec, kit)
+    require = kit_require(kit_dir)
+    if require and "voiceCode" not in spec:
+        bad(f"app.json 少了 voiceCode：建应用时给的应用编号写进去，下拉里的「在手机上打开」靠它。{VOICE_CODE_DOC}")
     record_hints(spec, app)
     slug, version = spec.get("slug", ""), spec.get("version", "")
+    if isinstance(slug, str) and slug:
+        check_namespaces(slug, app)
 
     cmake = open(os.path.join(app, "CMakeLists.txt"), encoding="utf-8").read()
     project = re.search(r"project\((\w+)\)", cmake)
@@ -601,6 +741,8 @@ def main():
         if len(data) > SLOT_MAX:
             bad(f"镜像 {len(data)} 字节，超过 {SLOT_MAX}（3.5 MB）")
         notes.append(f"镜像 {desc['app_bin']}：{len(data)} 字节，SHA-256 {hashlib.sha256(data).hexdigest()}")
+        if require:
+            check_pulldown_build(require, desc, build)
 
     tests = os.path.join(app, "test", "run.sh")
     if static:
@@ -618,6 +760,8 @@ def main():
         tracked = [os.path.relpath(os.path.join(root, f), app) for root, _d, fs in os.walk(app) for f in fs]
     else:
         tracked = git(app, "ls-files", "-z").stdout.split("\0")
+    if require:
+        check_pulldown_source(require, app_sources(app, tracked))
     for path in filter(None, tracked):
         full = os.path.join(app, path)
         if path.startswith("devkit") or not os.path.isfile(full):
@@ -643,9 +787,9 @@ def main():
         print(f"有 {len(problems)} 处要改，改完再 ./kit check。")
         return 1
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        print("✓ 都过了：提交单里填上面的提交号和 SHA-256（这是应用仓库 CI 编的，跟审核重编的环境一样）。")
+        print("✓ 都过了：./kit submit --ci-sha 带上面的 SHA-256（这是应用仓库 CI 编的，跟审核重编的环境一样）。")
     else:
-        print("✓ 都过了。提交单里的 SHA-256 填应用仓库 CI（GitHub 上）里 ./kit check 打的那一串：Mac 上编的和")
+        print("✓ 都过了。./kit submit --ci-sha 带应用仓库 CI（GitHub 上）里 ./kit check 打的那一串 SHA-256：Mac 上编的和")
         print("  Linux 上编的差 60 几个字节（ELF 哈希和两处校验，乐鑫两个平台的工具链不一样），代码一样。")
     return 0
 

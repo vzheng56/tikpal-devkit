@@ -86,6 +86,49 @@ void yk_ui_register_snapshot(void) {
 
 bool yk_ui_capturing(void) { return capturing; }
 
+// ---------------------------------------------------------------- a finger for development (yk_ui_finger)
+
+static struct {
+    lv_indev_t *indev;
+    int x0, y0, x1, y1, ms;
+    uint32_t t0;
+    bool started, at_end, released;
+} s_finger;
+
+static void finger_gone(lv_timer_t *t) {
+    lv_indev_delete(s_finger.indev);
+    memset(&s_finger, 0, sizeof(s_finger));
+    lv_timer_delete(t);
+}
+
+static void finger_read(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
+    if (!s_finger.started) s_finger.started = true, s_finger.t0 = lv_tick_get();
+    const int t = (int)lv_tick_elaps(s_finger.t0);
+    const float k = t < s_finger.ms ? (float)t / s_finger.ms : 1;
+    data->point.x = s_finger.x0 + (int32_t)lroundf((s_finger.x1 - s_finger.x0) * k);
+    data->point.y = s_finger.y0 + (int32_t)lroundf((s_finger.y1 - s_finger.y0) * k);
+    // Down along the way and once more at its end (as a finger is where it lets go); then up.
+    data->state = s_finger.at_end ? LV_INDEV_STATE_RELEASED : LV_INDEV_STATE_PRESSED;
+    if (k >= 1) s_finger.at_end = true;
+    if (data->state == LV_INDEV_STATE_RELEASED && !s_finger.released) {
+        s_finger.released = true;
+        lv_timer_set_repeat_count(lv_timer_create(finger_gone, 100, NULL), 1);  // not from inside its own read
+    }
+}
+
+bool yk_ui_finger(int x0, int y0, int x1, int y1, int ms) {
+    if (s_finger.indev) return false;
+    memset(&s_finger, 0, sizeof(s_finger));
+    s_finger.x0 = x0, s_finger.y0 = y0, s_finger.x1 = x1, s_finger.y1 = y1, s_finger.ms = ms < 0 ? 0 : ms;
+    s_finger.indev = lv_indev_create();
+    if (!s_finger.indev) return false;
+    lv_indev_set_type(s_finger.indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(s_finger.indev, finger_read);
+    printf("YK_FINGER %d,%d -> %d,%d in %d ms\n", x0, y0, x1, y1, s_finger.ms);
+    return true;
+}
+
 // ---------------------------------------------------------------- v2 helpers (P11)
 
 lv_obj_t *yk_ui_arc_label(lv_obj_t *parent, const char *text, int size, uint32_t color, float angle_deg, int radius,
@@ -190,6 +233,26 @@ static void sheet_hidden(lv_anim_t *a) {
     if (lv_obj_get_y(a->var) <= -SHEET_H) lv_obj_set_hidden(a->var, true);
 }
 
+/** The battery's line, worded from the power chip's state (docs/delivery/2026-10-31-battery-display.md 5): the app
+ *  passes the number, the words come from board_battery() here, so every app says the same without changing. */
+static void battery_line(char *line, size_t size, const yk_status_t *st, bool english) {
+    board_battery_t b;
+    const bool read = board_battery(&b) == ESP_OK;
+    if (read && b.fault == BOARD_BATTERY_FAULT_NO_RISE) {
+        snprintf(line, size, "%s", english ? "Battery may be faulty" : "电池可能有问题");
+    } else if (read && b.low) {
+        snprintf(line, size, "%s", english ? "Very low, charging" : "电量很低，正在充电");
+    } else if (read && b.state == BOARD_BATTERY_FULL) {
+        snprintf(line, size, english ? "Battery %d%%, fully charged" : "电量 %d%%，充满了", st->battery);
+    } else if (read && b.state == BOARD_BATTERY_STOPPED) {
+        snprintf(line, size, english ? "Battery %d%%, plugged in, not charging" : "电量 %d%%，插着电，但没在充电",
+                 st->battery);
+    } else {
+        snprintf(line, size, english ? "Battery %d%%%s" : "电量 %d%%%s", st->battery,
+                 st->charging ? (english ? ", charging" : "，在充电") : "");
+    }
+}
+
 void yk_ui_status_show(lv_obj_t *sheet, const yk_status_t *st, bool show) {
     if (!sheet) return;
     if (st) {
@@ -203,9 +266,7 @@ void yk_ui_status_show(lv_obj_t *sheet, const yk_status_t *st, bool show) {
         }
         if ((l = lv_obj_get_child(sheet, k++))) {
             line[0] = 0;
-            if (st->battery >= 0)
-                snprintf(line, sizeof(line), english ? "Battery %d%%%s" : "电量 %d%%%s", st->battery,
-                         st->charging ? (english ? ", charging" : "，在充电") : "");
+            if (st->battery >= 0) battery_line(line, sizeof(line), st, english);
             if (st->volume >= 0)
                 snprintf(line + strlen(line), sizeof(line) - strlen(line), english ? "%sVolume %d" : "%s音量 %d",
                          line[0] ? "  ·  " : "", st->volume);

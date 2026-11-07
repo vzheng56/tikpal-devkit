@@ -11,4 +11,4 @@
 
 - `devkit/` 是开发包（git 子模块），钉在一个版本上，别改它。`git clone` 这个仓库以后，`./kit` 会自己把它拉下来。
 - 应用清单是 `app.json`；逻辑写在 `main/`，能不依赖 ESP-IDF 的部分写成纯 C，`test/run.sh` 在电脑上测。
-- 做完、自测过，照 `devkit/AGENTS.md` 开提交单。
+- 做完、自测过，照 `devkit/AGENTS.md` 第 4 步 `./kit submit` 打提交包，到开发者平台 developer.tikpal.ai 这个应用的「版本」页上传。

@@ -24,3 +24,6 @@ void yk_draw_download_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t 
 void yk_draw_cached_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa);
 /** A newer version (0.1.12): a coral dot in a paper ring on the disc's upper right (yk_apps_update_dot). */
 void yk_draw_update_dot(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa);
+/** Its 应用码 (voice-code handoff 2.1②): a sage dot in a paper ring with a paper phone, on the disc's upper right
+ *  (yk_apps_phone_mark). */
+void yk_draw_phone_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa);

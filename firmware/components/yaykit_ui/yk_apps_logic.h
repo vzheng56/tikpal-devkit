@@ -40,6 +40,10 @@
 #define YK_APPS_UPDATE_D   27   // the update dot's centre (`update`, 0.1.12), right and up from the app's: on the disc's
 #define YK_APPS_UPDATE_R   6    // ... edge at 45 degrees, coral, 12 across (the settings tile's dot) ...
 #define YK_APPS_UPDATE_EDGE 2   // ... in a paper ring this wide, apart from the disc
+#define YK_APPS_HOME_DOT_D 40   // the middle's update dot (0.1.14): on its disc's edge (r 56) at 45 degrees, upper right
+#define YK_APPS_PHONE_D    27   // the phone mark's centre (`phone`, voice-code handoff 2.1②), right and up from the
+#define YK_APPS_PHONE_R    14   // ... app's, where the update dot would be (an extension's ring has none); sage, 28
+#define YK_APPS_PHONE_EDGE 2    // ... across, in a paper ring this wide (apart from the in-use ring under it)
 #define YK_APPS_MORE_PLACE 4    // 「更多」 stands at the fifth place, upper left (288 degrees)
 #define YK_APPS_DOT_R      5    // 「更多」's three dots ...
 #define YK_APPS_DOT_GAP    14   // ... this far apart
@@ -62,6 +66,7 @@ typedef struct {
     int16_t cx, cy;     // the disc's centre, screen coordinates
     yk_box_t name;      // the name's line box, under the disc
     int16_t name_shift; // px the name moved towards the middle to keep its glyphs in the content circle
+    bool phone;         // it carries the phone mark (the item's `phone`; set after the layout): a touch on it is its
 } yk_apps_sat_t;
 
 typedef struct {
@@ -94,6 +99,12 @@ int yk_apps_label_max(int n, const int slots[]);
 /** The update dot (`update`, 0.1.12) of an app's disc centred at (cx, cy) drawn at scale k (1: full size, as on the
  *  ring at rest; 「我的应用」 scales it with the disc): its centre, its coral radius and its paper ring's outer one. */
 void yk_apps_update_dot(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r);
+/** The middle's update dot (yk_apps_home_update, 0.1.14) when the middle is centred at (cx, cy) at scale k: the apps'
+ *  dot (the same size) on the middle disc's edge, upper right. */
+void yk_apps_home_dot(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r);
+/** The phone mark (`phone`, voice-code handoff 2.1②) of an app's disc centred at (cx, cy) at scale k: its centre, its
+ *  sage radius and its paper ring's outer one. */
+void yk_apps_phone_mark(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r);
 
 // ---------------------------------------------------------------- motion
 
@@ -115,10 +126,49 @@ typedef struct {
  *  all back towards the centre (the middle to 0.8), eased in. Returns true once the motion is over. */
 bool yk_apps_frame(const yk_apps_layout_t *L, int t_ms, bool closing, yk_apps_pose_t pose[YK_APPS_MAX + 1]);
 
-/** What a touch at (x, y) hits: 0 the middle, 1..n an app (its disc or its name), -1 the paper. */
+// A swipe closes the ring towards the finger (round-screen-gestures.md 5.2, 7): everything slides that way and fades.
+#define YK_APPS_AWAY_MS 200
+#define YK_APPS_AWAY_PX 160
+
+/** The ring t_ms after a swipe (dx, dy: the finger's way, one of them +-1, the other 0) began closing it: every element
+ *  from its place YK_APPS_AWAY_PX that way, full size, clear by the end, eased in. Returns true once it is over. */
+bool yk_apps_frame_away(const yk_apps_layout_t *L, int t_ms, int dx, int dy, yk_apps_pose_t pose[YK_APPS_MAX + 1]);
+
+/** What a touch at (x, y) hits: 0 the middle, 1..n an app (its disc, its name or its phone mark), -1 the paper. */
 int yk_apps_hit(const yk_apps_layout_t *L, int x, int y);
 
-/** The ask card's line with the buddy's name (yk_buddy_name(); NULL: Yay): 「回到 Yay 说？」 / "Talk in Yay?". Returns
+// ---------------------------------------------------------------- touches (round-screen-gestures.md 7)
+
+/** One press on the ring, from LVGL's events. A swipe closes it towards the finger and is never a tap: LVGL still
+ *  sends CLICKED when a swipe lets go (the ring's paper does not scroll), and wherever the finger lands then, on an
+ *  app or on the app in use, nothing is opened, installed or shown. */
+typedef struct {
+    bool swiped;  // this press has swiped
+    bool closing; // the ring is going: nothing more counts
+} yk_apps_touch_t;
+
+typedef enum {
+    YK_APPS_GO_NONE,   // nothing
+    YK_APPS_GO_TAP,    // close folding back, reporting `hit`
+    YK_APPS_GO_AWAY,   // close towards (dx, dy), reporting nothing
+} yk_apps_go_kind_t;
+
+typedef struct {
+    yk_apps_go_kind_t kind;
+    int hit;         // GO_TAP: yk_apps_hit()'s
+    int8_t dx, dy;   // GO_AWAY: the finger's way
+} yk_apps_go_t;
+
+/** LV_EVENT_PRESSED: a new press. */
+void yk_apps_touch_press(yk_apps_touch_t *t);
+/** LV_EVENT_GESTURE, the finger's way (dx, dy; one of them +-1): the ring goes that way. */
+yk_apps_go_t yk_apps_touch_swipe(yk_apps_touch_t *t, int dx, int dy);
+/** LV_EVENT_CLICKED at (x, y): a tap on what it hits, unless this press swiped. */
+yk_apps_go_t yk_apps_touch_click(yk_apps_touch_t *t, const yk_apps_layout_t *L, int x, int y);
+/** The ring began closing some other way (8 s, yk_apps_tap(), yk_apps_close()): touches no longer count. */
+void yk_apps_touch_closing(yk_apps_touch_t *t);
+
+/** The ask card's line with the buddy's name (yk_buddy_name(); NULL: Pip): 「回到 Pip 说？」 / "Talk in Pip?". Returns
  *  `out`. */
 const char *yk_apps_ask_text(const char *buddy, bool english, char *out, size_t size);
 

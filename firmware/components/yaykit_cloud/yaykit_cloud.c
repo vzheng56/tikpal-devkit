@@ -9,8 +9,10 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "esp_crt_bundle.h"
+#include "lwip/sockets.h"
 #include "yaykit_account.h"
 #include "yk_api.h"
+#include "yk_codec.h"
 #include "yk_http.h"
 #include "yk_locale.h"
 #include "yk_sse.h"
@@ -31,6 +33,22 @@ static bool handle_refusal(int status, const char *code) {
     return false;
 }
 
+/** A /me answer: into *out, the capabilities and settings, and, with `keep_owner`, the owner. */
+static void take_me(const char *body, yk_cloud_me_t *out, bool keep_owner) {
+    cJSON *capabilities = NULL, *settings = NULL;
+    if (yk_api_me(body, out, &capabilities, &settings)) {
+        cJSON_Delete(s_capabilities);
+        cJSON_Delete(s_settings);
+        s_capabilities = capabilities;
+        s_settings = settings;
+    }
+    if (keep_owner) {
+        cJSON *json = cJSON_Parse(body ? body : "");
+        yk_account_owner_seen(cJSON_GetObjectItemCaseSensitive(json, "owner"));
+        cJSON_Delete(json);
+    }
+}
+
 esp_err_t yk_cloud_me(yk_cloud_me_t *out, const char **code) { return yk_cloud_me_ex(out, true, code); }
 
 esp_err_t yk_cloud_me_ex(yk_cloud_me_t *out, bool keep_owner, const char **code) {
@@ -44,18 +62,7 @@ esp_err_t yk_cloud_me_ex(yk_cloud_me_t *out, bool keep_owner, const char **code)
             return ESP_FAIL;
         }
         if (res.status == 200) {
-            cJSON *capabilities = NULL, *settings = NULL;
-            if (yk_api_me(res.body, out, &capabilities, &settings)) {
-                cJSON_Delete(s_capabilities);
-                cJSON_Delete(s_settings);
-                s_capabilities = capabilities;
-                s_settings = settings;
-            }
-            if (keep_owner) {
-                cJSON *json = cJSON_Parse(res.body ? res.body : "");
-                yk_account_owner_seen(cJSON_GetObjectItemCaseSensitive(json, "owner"));
-                cJSON_Delete(json);
-            }
+            take_me(res.body, out, keep_owner);
             yk_http_free(&res);
             return ESP_OK;
         }
@@ -90,23 +97,32 @@ static int read_some(char *buf, int size, void *ctx) {
     return n == -ESP_ERR_HTTP_EAGAIN ? YK_SSE_AGAIN : n;
 }
 
-/** One streaming POST. Returns the HTTP status (0 when no response arrived). */
-static int stream_post(const char *path, const char *token, const char *content_type, const uint8_t *body, size_t len,
-                       stream_t *stream, const char **code) {
+/** When a streaming POST got where (ms, esp_timer), and how far its body got. */
+typedef struct {
+    int64_t start, open, sent, head;
+    yk_sent_t how_far;
+} post_t;
+
+/** One streaming POST on `client` (new, or kept open: then the request goes on the same connection), which stays
+ *  open for the caller to close. Returns the HTTP status (0 when no response arrived). */
+static int stream_on(esp_http_client_handle_t client, const char *path, const uint8_t *body, size_t len,
+                     stream_t *stream, const char **code, post_t *p) {
     // A lookup is speech recognition plus a model call; a slow cross-border hop can take ~12 s.
-    esp_http_client_handle_t client = yk_http_client(path, HTTP_METHOD_POST, token, content_type, 30000);
-    if (!client) {
-        *code = "NETWORK";
-        return 0;
-    }
+    esp_http_client_set_timeout_ms(client, 30000);
     int status = 0;
+    p->start = now_ms();
     esp_err_t err = esp_http_client_open(client, (int)len);
+    p->open = now_ms();
+    p->how_far = YK_SENT_NONE;
     for (size_t sent = 0; err == ESP_OK && sent < len;) {
         int n = esp_http_client_write(client, (const char *)body + sent, (int)(len - sent > 4096 ? 4096 : len - sent));
         if (n <= 0) err = ESP_FAIL;
-        else sent += (size_t)n;
+        else sent += (size_t)n, p->how_far = sent < len ? YK_SENT_PART : YK_SENT_ALL;
     }
+    if (err == ESP_OK && !len) p->how_far = YK_SENT_ALL;
+    p->sent = now_ms();
     if (err == ESP_OK && esp_http_client_fetch_headers(client) >= 0) status = esp_http_client_get_status_code(client);
+    p->head = now_ms();
     if (status == 200) {
         yk_sse_t *parser = heap_caps_malloc(sizeof(yk_sse_t), MALLOC_CAP_SPIRAM);
         char *buf = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
@@ -131,23 +147,163 @@ static int stream_post(const char *path, const char *token, const char *content_
     } else {
         *code = "NETWORK";
     }
+    return status;
+}
+
+/** One streaming POST on a connection of its own. Returns the HTTP status (0 when no response arrived). */
+static int stream_post(const char *path, const char *token, const char *content_type, const uint8_t *body, size_t len,
+                       stream_t *stream, const char **code) {
+    esp_http_client_handle_t client = yk_http_client(path, HTTP_METHOD_POST, token, content_type, 30000);
+    if (!client) {
+        *code = "NETWORK";
+        return 0;
+    }
+    post_t p;
+    const int status = stream_on(client, path, body, len, stream, code, &p);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return status;
 }
 
-esp_err_t yk_cloud_hanzi_lookup(const uint8_t *wav, size_t len, yk_cloud_event_fn on_event, void *ctx,
-                                const char **code) {
+// ---- 问字's kept connection (yk_cloud_hanzi_warm): one, for the app's lookup task ----
+
+#define WARM_KEEP_MS 30000
+static esp_http_client_handle_t s_warm;
+static int64_t s_warm_ms;
+
+static void drop_client(esp_http_client_handle_t client) {
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+}
+
+void yk_cloud_hanzi_cool(void) {
+    if (!s_warm) return;
+    drop_client(s_warm);
+    s_warm = NULL;
+}
+
+esp_err_t yk_cloud_hanzi_warm(yk_cloud_me_t *out, const char **code) {
+    yk_cloud_hanzi_cool();
+    memset(out, 0, sizeof(*out));
+    char token[512];
+    if (yk_account_token(token, sizeof(token), code) != ESP_OK) return ESP_FAIL;
+    if (yk_http_prepare(code) != ESP_OK) return ESP_FAIL;
+    const int64_t start = now_ms();
+    esp_http_client_handle_t client = yk_http_client("/device/v1/me", HTTP_METHOD_GET, token, NULL, 15000);
+    if (!client) {
+        *code = "NETWORK";
+        return ESP_FAIL;
+    }
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err == ESP_OK && esp_http_client_fetch_headers(client) < 0) err = ESP_FAIL;
+    yk_http_response_t res = {0};
+    if (err == ESP_OK) {
+        res.status = esp_http_client_get_status_code(client);
+        yk_http_read_body(client, &res);  // all of it: only then can the next request go on this connection
+    }
+    // Kept only when the answer was read to its end and the server did not ask to close (Connection: close).
+    const bool keep = err == ESP_OK && esp_http_client_is_complete_data_received(client) &&
+                      esp_http_client_is_persistent_connection(client);
+    if (res.status == 200) take_me(res.body, out, true);
+    else *code = res.status ? yk_http_error_code(&res) : "NETWORK";
+    if (res.status) handle_refusal(res.status, *code);
+    yk_http_free(&res);
+    printf("YK_CLOUD hanzi warm ms=%lld status=%d kept=%d\n", (long long)(now_ms() - start), res.status, keep);
+    if (keep) {
+        s_warm = client;
+        s_warm_ms = now_ms();
+    } else {
+        drop_client(client);
+    }
+    return res.status == 200 ? ESP_OK : ESP_FAIL;
+}
+
+/** The kept connection for a lookup, or NULL: none, older than WARM_KEEP_MS, or closed meanwhile (readable while
+ *  idle means a close or an alert: never sent on). The caller owns it then. */
+static esp_http_client_handle_t take_warm(void) {
+    esp_http_client_handle_t client = s_warm;
+    s_warm = NULL;
+    if (!client) return NULL;
+    bool alive = now_ms() - s_warm_ms < WARM_KEEP_MS;
+    const int fd = esp_http_client_get_socket(client);
+    if (alive && fd >= 0) {
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(fd, &readable);
+        struct timeval now = {0};
+        alive = select(fd + 1, &readable, NULL, NULL, &now) == 0;
+    }
+    if (!alive || fd < 0) {
+        drop_client(client);
+        return NULL;
+    }
+    return client;
+}
+
+/** POST /device/v1/hanzi/lookup with `body` as `type` (a WAV, or the text lookup's JSON), on the kept connection
+ *  when there is one. */
+static esp_err_t hanzi_post(const char *type, const uint8_t *body, size_t len, yk_cloud_event_fn on_event, void *ctx,
+                            const char **code) {
+    static const char path[] = "/device/v1/hanzi/lookup";
+    const uint8_t *wav = body;
     stream_t stream = {.on_event = on_event, .ctx = ctx};
     for (int attempt = 0; attempt < 2; attempt++) {
         char token[512];
-        if (yk_account_token(token, sizeof(token), code) != ESP_OK) return ESP_FAIL;
-        if (yk_http_prepare(code) != ESP_OK) return ESP_FAIL;
-        int status = stream_post("/device/v1/hanzi/lookup", token, "audio/wav", wav, len, &stream, code);
+        if (yk_account_token(token, sizeof(token), code) != ESP_OK || yk_http_prepare(code) != ESP_OK) {
+            yk_cloud_hanzi_cool();
+            return ESP_FAIL;
+        }
+        esp_http_client_handle_t client = take_warm();
+        bool reused = client != NULL;
+        if (reused) {  // the same connection: this request's line and headers, the token as it is now
+            char url[160], auth[640];
+            snprintf(url, sizeof(url), "%s%s", CONFIG_YK_CLOUD_ORIGIN, path);
+            snprintf(auth, sizeof(auth), "Bearer %s", token);
+            esp_http_client_set_url(client, url);
+            esp_http_client_set_method(client, HTTP_METHOD_POST);
+            esp_http_client_set_header(client, "Authorization", auth);
+            esp_http_client_set_header(client, "Content-Type", type);
+        } else {
+            client = yk_http_client(path, HTTP_METHOD_POST, token, type, 30000);
+        }
+        post_t p = {0};
+        int status = client ? stream_on(client, path, wav, len, &stream, code, &p) : 0;
+        if (!status && client && yk_send_again(reused, p.how_far)) {
+            // The kept connection was gone before the recording was out: all of it again, on a new one.
+            ESP_LOGW(TAG, "kept connection closed (sent %d): again on a new one", (int)p.how_far);
+            drop_client(client);
+            client = yk_http_client(path, HTTP_METHOD_POST, token, type, 30000);
+            reused = false;
+            status = client ? stream_on(client, path, wav, len, &stream, code, &p) : 0;
+        }
+        printf("YK_CLOUD hanzi conn=%s bytes=%u connect_ms=%lld upload_ms=%lld headers_ms=%lld status=%d\n",
+               reused ? "reused" : "new", (unsigned)len, (long long)(p.open - p.start), (long long)(p.sent - p.open),
+               (long long)(p.head - p.sent), status);
+        if (client) drop_client(client);
+        else *code = "NETWORK";
         if (status == 200) return stream.events ? ESP_OK : (*code = "NETWORK", ESP_FAIL);
         if (!handle_refusal(status, *code)) return ESP_FAIL;
     }
     return ESP_FAIL;
+}
+
+esp_err_t yk_cloud_hanzi_lookup(const uint8_t *wav, size_t len, yk_cloud_event_fn on_event, void *ctx,
+                                const char **code) {
+    return hanzi_post("audio/wav", wav, len, on_event, ctx, code);
+}
+
+esp_err_t yk_cloud_hanzi_text(const char *text, yk_cloud_event_fn on_event, void *ctx, const char **code) {
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "text", text ? text : "");
+    char *json = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!json) {
+        *code = "NO_MEMORY";
+        return ESP_ERR_NO_MEM;
+    }
+    const esp_err_t err = hanzi_post("application/json", (const uint8_t *)json, strlen(json), on_event, ctx, code);
+    cJSON_free(json);
+    return err;
 }
 
 // ---- Level 2: the device API v1 (docs/design/yay-device.md §13.4) ----
@@ -341,6 +497,7 @@ esp_err_t yk_cloud_file_upload(const yk_cloud_part_t *part, yk_cloud_read_fn rea
         .buffer_size = 2048,
         .buffer_size_tx = 2048,
         .keep_alive_enable = false,
+        .event_handler = yk_http_on_event,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     uint8_t *buf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
@@ -579,6 +736,7 @@ esp_err_t yk_cloud_get(const char *url, uint8_t *buf, size_t size, size_t *len, 
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         .keep_alive_enable = false,
+        .event_handler = yk_http_on_event,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {

@@ -59,3 +59,5 @@ bool yk_claim_valid(const char *claim) {
     }
     return true;
 }
+
+bool yk_send_again(bool reused, yk_sent_t sent) { return reused && sent != YK_SENT_ALL; }

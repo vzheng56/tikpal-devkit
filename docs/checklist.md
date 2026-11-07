@@ -1,6 +1,6 @@
 # 兼容检查清单
 
-自测照它走，提交单里逐项打勾；我们审核也照它看。「证据」那一列是提交单里要附的东西。
+自测照它走，我们审核也照它看。「证据」那一列是自测时要留的东西；其中 `./kit check` 的输出、`shots/` 里的截图（最多 8 张）、`--heap` 带上的 `./kit info`，`./kit submit` 会打进提交包（[从想法到上架](from-idea-to-store.md)第 4 步）。
 
 ## 构建
 
@@ -8,7 +8,7 @@
 |---|---|
 | 项目名 `yaykit_<slug，连字符换下划线>`，`app.json` 的 `slug` 和它对得上 | — |
 | `app.json` 的 `version` 和 `CMakeLists.txt` 的 `PROJECT_VER` 一样；`minYay`、`apiLevel` 照开发包写 | — |
-| `./kit build --release` 编得过，镜像不超过 3.5 MB；应用仓库 CI 里 `./kit check` 全过 | CI 里 `./kit check` 的输出和运行链接（里面有提交号和镜像 SHA-256；Mac 上编的差 60 几个字节，不用它的） |
+| `./kit build --release` 编得过，镜像不超过 3.5 MB；应用仓库 CI 里 `./kit check` 全过 | `./kit check` 的输出（`./kit submit` 打进包）；CI 里打的镜像 SHA-256 可以用 `./kit submit --ci-sha` 带上 |
 | 所有改动都已提交、推到你的仓库（我们按提交号重编，字节要一样） | 提交号 |
 | 主机测试通过（`./kit test`） | 输出的最后一行 |
 | `devkit/` 没改过（`git -C devkit status` 是干净的） | — |
@@ -18,17 +18,17 @@
 | 项 | 证据 |
 |---|---|
 | `yk_app_start()` 是 NVS 之后的第一个调用；画好主界面以后 `yk_app_ready()`；有启动横幅 `YAYKIT_<SLUG>_READY` | 日志 |
-| 双击侧键开应用环，点中间回到 Yay；`yk cmd app.exit` 也能回去 | 截图或日志 |
-| 从 Yay 的应用环点你的应用能打开；从你的应用环换到别的应用再回来 | 日志 |
+| 双击侧键开应用环，点中间回到 Tikpal 主固件；`yk cmd app.exit` 也能回去 | 截图或日志 |
+| 从主固件的应用环点你的应用能打开；从你的应用环换到别的应用再回来 | 日志 |
 | 带启动参数打开能直接进对应页面（有 `launch.params` 的应用） | 日志 |
-| 离开前写了结果（`yk_app_set_result_summary`），Yay 回来念的那句是人话 | Yay 回来时的截图 |
-| 没用掉的按住（又没有自己的对话）出「回到 Yay 说？」；用掉的不出 | — |
+| 离开前写了结果（`yk_app_set_result_summary`），回到主固件时伙伴念的那句是人话 | 回到主固件时的截图 |
+| 没用掉的按住（又没有自己的对话）出「回到 Pip 说？」（伙伴名照共享设置）；用掉的不出 | — |
 
 ## 规矩
 
 | 项 | 证据 |
 |---|---|
-| 没有调用 `nvs_flash_erase()`；只写自己的 NVS 命名空间 `yk_<简称>` | — |
+| 没有调用 `nvs_flash_erase()`；只写自己的 NVS 命名空间 `yk_<简称>`（简称 = slug 去掉连字符，最长 15 个字符） | — |
 | 不轮询 GPIO0，不直接拉 GPIO43，不自己配网，不直接改启动分区 | — |
 | 蓝牙不用时关着；配对、安装、对话不同时进行 | — |
 | 记录的 `kind`、命令名用自己的简称做前缀（`mytimer.session`） | — |
@@ -45,10 +45,20 @@
 | 没网、没绑定、点数用完、低电量都有人话提示，不显示错误码 | 截图 |
 | 中文、英文两套界面文字都放得下（日文、西班牙文账号现在显示英文） | 截图 |
 
+## 应用码（开发包 1.9 起每个应用都写 `voiceCode`，[voice-code.md](voice-code.md)）
+
+| 项 | 证据 |
+|---|---|
+| 亮的码只用动作 0–2 | — |
+| `voiceCode.number` 是建应用时给的正式编号，不是测试号（65280–65535） | `./kit check` 的输出 |
+| 亮码时屏幕不熄（`yk_app_keep_screen_on`），收起后改回来；码停住以后用 Tikpal App 扫得到 | 截图 |
+| 屏幕最上面那一条不做往下拉的手势（从顶边往下拉是系统的下拉） | — |
+| 系统下拉绕不开：组件、链接表、`yk_app_start()`、`yk_app_ready()` 都在，没写 `.is_home`（[审核规则 F-05](review-rules.md)） | `./kit check` 的输出 |
+
 ## 内存和性能
 
 | 项 | 证据 |
 |---|---|
-| 内部 RAM 从 ready 起的最低（`./kit info` 的 `heap.internalMinSinceReady`）不低于 40,000 字节；低于 60,000 字节写明原因 | 用到最重的那一刻以后的 `./kit info` 输出 |
-| 打开到界面出现不超过 2.5 秒；回到 Yay 不超过 3 秒 | 日志的时间 |
+| 内部 RAM 从 ready 起的最低（`./kit info` 的 `heap.internalMinSinceReady`）不低于 40,000 字节；低于 60,000 字节在应用仓库的 README 里写明原因 | 用到最重的那一刻以后的 `./kit info` 输出（`./kit submit --heap` 带上） |
+| 打开到界面出现不超过 2.5 秒；回到主固件不超过 3 秒 | 日志的时间 |
 | 用了半小时以上没有重启、没有卡死 | — |

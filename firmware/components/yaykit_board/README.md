@@ -12,9 +12,10 @@ tikpal-r1 圆屏（ESP32-S3R8、32 MB Flash、8 MB PSRAM、466×466 AMOLED）的
 | `fonts/cjk/yaykit_fonts.bin`、`OFL.txt`、`OFL-NotoSansJP.txt` | 共享字体分区的内容：简中、日文两份子集加索引，3 MB 整个分区的镜像（SIL OFL 1.1，见下文「字体包」） |
 | `fonts/gen_font_pack.py`、`fonts/cjk/tikpal_sc_chars.txt` | 生成字体包；原来那份字体的全部字符（生成时照样放进简中） |
 | `board_pref.c` | 全设备共用的音量、亮度、息屏时间、伙伴（共享 NVS `yk_pref`，公共层计划 P10；伙伴 0.1.12 起） |
-| `board_power.c` | 电量（ESP32 ADC 读 GPIO17 的 V_BAT/2、GPIO18 的 USB 5 V/2，P20）和 SW6106 对照；开机把 SW6106 的 5 V 充电电流限到 0.5 A（`board_charge_limit`，唯一的写，`docs/delivery/2026-10-31-battery-charge-limit.md`） |
+| `board_power.c` | 电量（ESP32 ADC 读 GPIO17 的 V_BAT/2、GPIO18 的 USB 5 V/2，P20）；SW6106：读 `0x11` 的充电状态、插 USB 时的电压和充电电流（0.1.14 电量显示）；开机把 5 V 充电电流限到 0.5 A（`board_charge_limit`，唯一的写，`docs/delivery/2026-10-31-battery-charge-limit.md`） |
 | `board_touch_fast.c` | 指定时段每 5 ms 读触摸、带时间戳（P20；接了中断脚就用中断） |
-| `yk_board_logic.c`、`rtc_regs.c` | 不依赖 ESP-IDF 的部分（含电量换算、充电电流那几位、设置的范围），`test/run.sh` 在主机上测 |
+| `include/board_speaker.h`、`board_speaker.c` | 喇叭声明：所有声音的保护上限、人声高通、音量 0–10 档各是 ES8311 多少、人声提升多少（`board_speaker()`，纯 C）；`yaykit_speak` 只读它，换板只改这张表。做法和实测见 `yaykit/docs/architecture/audio.md` 放音的响度 |
+| `yk_board_logic.c`、`rtc_regs.c` | 不依赖 ESP-IDF 的部分（含电量换算、充电状态和平滑、充电电流那几位、设置的范围），`test/run.sh` 在主机上测 |
 
 依赖全是公开组件，版本和 Tikpal 0.4.9 在设备上跑的完全一致（对照它在 `5a299f5c` 的 `dependencies.lock`，每个组件的版本和 `component_hash` 都相同）：`lvgl/lvgl` 9.6.0、`espressif/esp_lvgl_adapter` 0.6.4、`waveshare/esp_lcd_sh8601` 2.0.0、`espressif/esp_codec_dev` 1.5.11，间接依赖 `espressif/button` 4.2.1、`espressif/libpng` 1.6.58~1 也钉住了（`require: no`，只管版本）。版本写死在 `idf_component.yml`，各固件的 `dependencies.lock` 提交进仓库；要升级就连同真机验收一起改。
 

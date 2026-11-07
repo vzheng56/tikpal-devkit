@@ -52,7 +52,8 @@ static int put_header(FILE *f, uint32_t rate, uint16_t channels, uint64_t data) 
 }
 
 static void path_of(char *out, const char *dir, const char *id, const char *suffix) {
-    snprintf(out, YK_REC_PATH_MAX, "%s/%s%s", dir, id, suffix);
+    // yk_rec_t's dir and id always fit; checking the length tells GCC so (-Wformat-truncation, an error in ESP-IDF).
+    if (snprintf(out, YK_REC_PATH_MAX, "%s/%s%s", dir, id, suffix) >= YK_REC_PATH_MAX) out[YK_REC_PATH_MAX - 1] = 0;
 }
 
 static int write_meta(const char *dir, const char *id, int64_t started, uint32_t rate, uint16_t channels,

@@ -14,6 +14,12 @@ if [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/components/json/cJSON/cJSON.c" ]; t
   cc -std=c11 -Wall -Wextra -Werror -O1 -I ../include -I "$CJSON" -o "$OUT/test_api" test_api.c ../yk_api.c "$CJSON/cJSON.c"
   "$OUT/test_api" "$(cd ../../../../.. && pwd)/packages/contracts/fixtures/device-api.json"
   rm -rf "$OUT"
+  # Streamed recordings (yk_cloud_stream.h, 录音卡 0.2) against the same fixtures
+  OUT=$(mktemp -d)
+  cc -std=c11 -Wall -Wextra -Werror -O1 -I stub -I ../include -I "$CJSON" -o "$OUT/test_stream" test_stream.c \
+    ../yk_api_stream.c ../yk_api.c "$CJSON/cJSON.c"
+  "$OUT/test_stream" "$(cd ../../../../.. && pwd)/packages/contracts/fixtures/device-api.json"
+  rm -rf "$OUT"
   # /me and the kept owner: yaykit_cloud.c itself, against test/stub (Yay's check leaves the language alone)
   OUT=$(mktemp -d)
   cc -std=c11 -Wall -Wextra -Werror -O1 -I stub -I ../include -I .. -I "$CJSON" -o "$OUT/test_me" test_me.c ../yaykit_cloud.c \

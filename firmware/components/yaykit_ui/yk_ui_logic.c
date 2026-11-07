@@ -465,6 +465,7 @@ int yk_yay_blink_gap_ms(uint32_t *seed) {
 // ---------------------------------------------------------------- the buddy
 
 const char *yk_buddy_name(int buddy) {
-    static const char *const NAMES[] = {"Yay", "Wow", "Aha"};  // names, not words: never translated
+    // By YK_PREF_BUDDY: 1 and 2 were Wow and Aha, set by nothing and retired. Names, not words: never translated.
+    static const char *const NAMES[] = {"Pip", "Pip", "Pip", "Mote", "Dial", "Bloom"};
     return buddy >= 0 && buddy < (int)(sizeof(NAMES) / sizeof(NAMES[0])) ? NAMES[buddy] : NAMES[0];
 }

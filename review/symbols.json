@@ -10,8 +10,8 @@
         "esp_partition_register_external"
       ],
       "why": {
-        "zh": "扩展固件不能直接写分区，会写坏 Yay 或者别的应用。",
-        "en": "An app may not write partitions: it would break Yay or other apps."
+        "zh": "扩展固件不能直接写分区，会写坏 Tikpal 主固件或者别的应用。",
+        "en": "An app may not write partitions: it would break the Tikpal main firmware or other apps."
       },
       "fix": {
         "zh": "设置放进自己的 NVS 命名空间，大的数据放 TF 卡你自己的目录。",
@@ -94,8 +94,8 @@
         "en": "An app may not change the boot partition or update itself."
       },
       "fix": {
-        "zh": "回 Yay 用 `yk_return_home()`；升级由商城做。",
-        "en": "Go back to Yay with `yk_return_home()`; updates come from the store."
+        "zh": "回主固件用 `yk_return_home()`；升级由商城做。",
+        "en": "Go back to the main firmware with `yk_return_home()`; updates come from the store."
       }
     },
     {
@@ -267,6 +267,17 @@
         "ble_*"
       ],
       "why": "碰硬件或者系统（GPIO、I2S、睡眠、重启、蓝牙）"
+    },
+    {
+      "match": [
+        "lv_layer_top",
+        "lv_layer_sys",
+        "lv_display_get_layer_*",
+        "lv_indev_delete",
+        "lv_indev_enable",
+        "lv_indev_set_read_cb"
+      ],
+      "why": "可能盖住顶边，或者删掉、关掉、换掉触摸（系统下拉靠这些，审核规则 F-05）"
     }
   ],
   "allow": {
@@ -328,6 +339,31 @@
       "esp_common"
     ]
   },
+  "require": {
+    "about": "系统下拉绕不开（审核规则 F-05）。开发包 1.9 起的名单才有这一节，./kit check 和审核见到它才查，老开发包的应用照旧。components：构建里要有。symbols：链接表里要有，而且定义在开发包的组件里。calls：应用自己的代码要调，也要是开发包的。why、fix 是「不是开发包那一份」时给开发者看的。",
+    "components": [
+      "yaykit_app",
+      "yaykit_ui",
+      "yaykit_voicecode"
+    ],
+    "symbols": [
+      "yk_app_sheet_attach",
+      "yk_sheet_create",
+      "yk_vc_show_ring"
+    ],
+    "calls": [
+      "yk_app_start",
+      "yk_app_ready"
+    ],
+    "why": {
+      "zh": "这不是开发包自带的那一份：系统下拉靠开发包的组件，应用不能换成自己改过的。",
+      "en": "this is not the kit's own copy: the system pull-down relies on the kit's components, and an app may not swap in a changed one."
+    },
+    "fix": {
+      "zh": "删掉项目里同名的组件或函数，用 devkit/ 里的。",
+      "en": "Remove the component or function of that name from the project and use the one in devkit/."
+    }
+  },
   "kit": {
     "about": "开发包自己的东西：组件头文件（firmware/components/*/include）里声明的函数自动允许；模板的 dependencies.lock 里锁定的组件库组件（名字、版本、哈希都对得上）算开发包的，不按应用自己的代码查。",
     "headers": "firmware/components/*/include",
@@ -339,6 +375,10 @@
       "yk_sys": {
         "zh": "那是系统的，里面有账号令牌。",
         "en": "it is the system's, and holds the account's token."
+      },
+      "yk_acct": {
+        "zh": "这是系统存账号和令牌的地方，应用不能打开。要账号的语言、昵称这些，用开发包的账号接口（yk_account_*），见 docs/app-guide.md。",
+        "en": "it is where the system keeps the account and its tokens, which an app may not open. For the account's language, nickname and the like, use the kit's account functions (yk_account_*): see docs/app-guide.md."
       },
       "nvs.net80211": {
         "zh": "那里面是 Wi-Fi 密码。",

@@ -33,6 +33,7 @@
 #include "yk_mem.h"
 #include "yk_line.h"
 #include "yk_link_priv.h"
+#include "yk_link_text.h"
 #include "yk_srp_salt.h"
 
 static const char *TAG = "yk_link";
@@ -147,12 +148,17 @@ const char *yk_link_ble_name(void) { return active ? ble_name : ""; }
 const char *yk_link_pairing_code(void) { return active ? code : ""; }
 const char *yk_link_pairing_qr(void) { return active ? qr : ""; }
 
-char *yk_link_info_json(void) {
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
-    cJSON_AddNumberToObject(root, "proto", 1);
+static void *text_psram(size_t size) { return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
+static void *text_internal(size_t size) { return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); }
 
-    cJSON *device = cJSON_AddObjectToObject(root, "device");
+char *yk_link_info_json(void) {
+    // A part at a time, the text in PSRAM (yk_link_text.h): the whole tree at once took ~6 KB of internal RAM (#1239).
+    yk_text_t t;
+    yk_text_init(&t, text_psram, text_internal, heap_caps_free);
+    yk_text_raw(&t, "{");
+    yk_text_add(&t, "proto", cJSON_CreateNumber(1));
+
+    cJSON *device = cJSON_CreateObject();
     uint32_t flash = 0;
     esp_flash_get_size(NULL, &flash);
     cJSON_AddStringToObject(device, "id", device_id);
@@ -160,45 +166,58 @@ char *yk_link_info_json(void) {
     cJSON_AddStringToObject(device, "chip", "ESP32-S3");
     cJSON_AddNumberToObject(device, "flash", flash);
     cJSON_AddNumberToObject(device, "psram", esp_psram_is_initialized() ? esp_psram_get_size() : 0);
+    yk_text_add(&t, "device", device);
 
-    cJSON *app = cJSON_AddObjectToObject(root, "app");
+    cJSON *app = cJSON_CreateObject();
     cJSON_AddStringToObject(app, "slug", cfg.app_slug);
     cJSON_AddStringToObject(app, "version", cfg.app_version);
     cJSON_AddStringToObject(app, "layout", cfg.layout);
-    cJSON *slots = cJSON_AddArrayToObject(root, "slots");
-    // Only the yaykit-v1 layout has app slots.
-    if (!strcmp(cfg.layout, "yaykit-v1")) yk_slots_to_json(slots);
+    yk_text_add(&t, "app", app);
+    yk_text_key(&t, "slots");
+    yk_text_raw(&t, "[");
+    // Only the yaykit-v1 layout has app slots; one at a time.
+    for (int i = 0; !strcmp(cfg.layout, "yaykit-v1") && i < YK_SLOT_COUNT; i++) {
+        cJSON *slot = yk_slot_json(i);
+        if (slot) yk_text_add(&t, NULL, slot);
+    }
+    yk_text_raw(&t, "]");
     if (cfg.describe_recovery) {
         cJSON *recovery = cJSON_CreateObject();
-        if (recovery && cfg.describe_recovery(recovery)) cJSON_AddItemToObject(root, "recovery", recovery);
+        if (recovery && cfg.describe_recovery(recovery)) yk_text_add(&t, "recovery", recovery);
         else cJSON_Delete(recovery);
     }
 
-    cJSON *heap = cJSON_AddObjectToObject(root, "heap");
+    cJSON *heap = cJSON_CreateObject();
     cJSON_AddNumberToObject(heap, "internalFree", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     // Since the app was ready: the 40,000 bytes line; from boot: the figure before 10-24, kept to compare (yk_mem.h).
     cJSON_AddNumberToObject(heap, "internalMinSinceReady", yk_mem_min_since_ready());
     cJSON_AddNumberToObject(heap, "internalMinEver", yk_mem_min_ever());
     cJSON_AddNumberToObject(heap, "internalLargest", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(heap, "psramFree", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    if (cfg.describe_heap) cfg.describe_heap(heap);
+    if (heap && cfg.describe_heap) cfg.describe_heap(heap);
+    yk_text_add(&t, "heap", heap);
 
-    cJSON *ble = cJSON_AddObjectToObject(root, "ble");
+    cJSON *ble = cJSON_CreateObject();
     cJSON_AddStringToObject(ble, "state", !active ? "off" : connected ? "connected" : "advertising");
-    cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
-    if (cfg.describe_wifi) cfg.describe_wifi(wifi);
+    yk_text_add(&t, "ble", ble);
+    cJSON *wifi = cJSON_CreateObject();
+    if (wifi && cfg.describe_wifi) cfg.describe_wifi(wifi);
     else cJSON_AddStringToObject(wifi, "state", cfg.wifi ? "unknown" : "off");
-    if (cfg.describe_account) cfg.describe_account(cJSON_AddObjectToObject(root, "account"));
-    if (cfg.capabilities) {
-        cJSON *caps = cJSON_AddArrayToObject(root, "capabilities");
-        for (const char *const *c = cfg.capabilities; *c; c++) cJSON_AddItemToArray(caps, cJSON_CreateString(*c));
+    yk_text_add(&t, "wifi", wifi);
+    if (cfg.describe_account) {
+        cJSON *account = cJSON_CreateObject();
+        if (account) cfg.describe_account(account);
+        yk_text_add(&t, "account", account);
     }
-    cJSON_AddNumberToObject(root, "uptime", (double)(esp_timer_get_time() / 1000000));
-    cJSON_AddStringToObject(root, "resetReason", reset_reason());
-
-    char *text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    return text;
+    if (cfg.capabilities) {
+        cJSON *caps = cJSON_CreateArray();
+        for (const char *const *c = cfg.capabilities; caps && *c; c++) cJSON_AddItemToArray(caps, cJSON_CreateString(*c));
+        yk_text_add(&t, "capabilities", caps);
+    }
+    yk_text_add(&t, "uptime", cJSON_CreateNumber((double)(esp_timer_get_time() / 1000000)));
+    yk_text_add(&t, "resetReason", cJSON_CreateString(reset_reason()));
+    yk_text_raw(&t, "}");
+    return yk_text_take(&t);
 }
 
 /** Wipes every string in a parsed request before it is freed: command arguments may carry a Wi-Fi password. */

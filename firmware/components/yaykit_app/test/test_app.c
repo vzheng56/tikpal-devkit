@@ -32,6 +32,18 @@ static void test_home(void) {
     CHECK(!yk_recovery_forward(false, "party-play", "valid"));
 }
 
+static void test_is_home(void) {
+    CHECK(yk_app_is_home("yay", true));  // the main firmware, as yay/main/main.c writes it
+    CHECK(!yk_app_is_home("yay", false));
+    // An app cannot make itself home: it would lose the app ring and the system pull-down.
+    CHECK(!yk_app_is_home("party-play", true));
+    CHECK(!yk_app_is_home("yay-clone", true));
+    CHECK(!yk_app_is_home("Yay", true));
+    CHECK(!yk_app_is_home("", true));
+    CHECK(!yk_app_is_home(NULL, true));
+    CHECK(!yk_app_is_home("party-play", false));
+}
+
 static void test_launch_accept(void) {
     const long long t = 1792310400;  // 2026-10-17
     CHECK(yk_launch_accept("language-buddy", t, "language-buddy", t + 3));
@@ -283,6 +295,37 @@ static void test_keys(void) {
     yk_keys_route(&k, DOWN, 9500, false);
     yk_keys_route(&k, HOLD, 9800, false);
     CHECK(!yk_keys_ask(&k, false, false) && !k.ask);
+    // The 应用码 the ring showed (voice-code handoff 2.1②): the key is the system's while it is up; a tap hides it and
+    // all of that press goes nowhere.
+    yk_keys_init(&k);
+    yk_keys_code(&k, true);
+    CHECK(!yk_keys_idle(&k));
+    CHECK(yk_keys_route(&k, DOWN, 50000, false) == YK_KEYS_CODE_CLOSE && !k.code);
+    CHECK(yk_keys_route(&k, UP, 50080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, TAP, 50080, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    CHECK(yk_keys_route(&k, DOWN, 52000, false) == YK_KEYS_APP);  // the app's again
+    yk_keys_route(&k, UP, 52080, false);
+    yk_keys_route(&k, TAP, 52080, false);
+    // A double click while it is up: the first press hides it; the double click opens no ring.
+    yk_keys_init(&k);
+    yk_keys_code(&k, true);
+    CHECK(yk_keys_route(&k, DOWN, 60000, false) == YK_KEYS_CODE_CLOSE);
+    CHECK(yk_keys_route(&k, UP, 60080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, DOWN, 60200, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, UP, 60280, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, DOUBLE, 60280, false) == YK_KEYS_EAT && !k.ring && yk_keys_idle(&k));
+    // A hold hides it and asks nothing; its release ends it.
+    yk_keys_init(&k);
+    yk_keys_code(&k, true);
+    CHECK(yk_keys_route(&k, DOWN, 70000, false) == YK_KEYS_CODE_CLOSE);
+    CHECK(yk_keys_route(&k, HOLD, 70300, false) == YK_KEYS_EAT);
+    CHECK(!yk_keys_ask(&k, false, false));
+    CHECK(yk_keys_route(&k, UP, 71000, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    // It went by itself (a tap on it, a swipe, 60 s): the key is the app's again at once.
+    yk_keys_init(&k);
+    yk_keys_code(&k, true);
+    yk_keys_code(&k, false);
+    CHECK(yk_keys_idle(&k) && yk_keys_route(&k, DOWN, 80000, false) == YK_KEYS_APP);
 }
 
 // ---------------------------------------------------------------- what the app gets (#371's review)
@@ -491,6 +534,9 @@ static void test_ring_tapped(void) {
     CHECK(!strcmp(p, "{\"then\":\"install\",\"slug\":\"translator\"}"));
     CHECK(!strcmp(YK_RING_MORE, "+more"));
     CHECK(!strcmp(YK_RING_SETTINGS, "+settings"));  // yaykit_ui's YK_APPS_SETTINGS
+    // The app in use, with a 应用码 or not: nothing since 0.1.14 (the ring only switches apps; the code is the system
+    // pull-down's, system-pulldown.md 8).
+    CHECK(yk_ring_tapped("recording-card", "recording-card", true, p, sizeof(p)) == YK_RING_STAY && p[0] == 0);
 }
 
 /** The new recovery (P3): the battery rule, which steps it guards, the automatic mark. */
@@ -684,6 +730,25 @@ static void test_settings(void) {
     CHECK(s.screen_off_s == 0);
     yk_settings_merge(6, 80, 30, "zh", true, true, &s);
     CHECK(s.screen_off_s == 0 && s.brightness == YK_POWER_BRIGHTNESS_MAX);
+    // The 应用码 the app ring showed keeps the screen on with a switch of its own (BOSS-2 11-02): the app's keep_on is
+    // still there once the code goes; with the app's off, the screen goes off after the set time again.
+    yk_keep_on_t keep = {.app = true};
+    keep.code = true;
+    yk_settings_merge(6, 80, 30, "zh", false, yk_keep_on(&keep), &s);
+    CHECK(s.screen_off_s == 0);
+    keep.code = false;  // the code went
+    yk_settings_merge(6, 80, 30, "zh", false, yk_keep_on(&keep), &s);
+    CHECK(keep.app && s.screen_off_s == 0);
+    keep = (yk_keep_on_t){.code = true};
+    yk_settings_merge(6, 80, 30, "zh", false, yk_keep_on(&keep), &s);
+    CHECK(s.screen_off_s == 0);
+    yk_settings_merge(6, 80, 30, "zh", true, yk_keep_on(&keep), &s);  // low battery: as the app's keep_on
+    CHECK(s.screen_off_s == 0 && s.brightness == YK_POWER_BRIGHTNESS_MAX);
+    keep.code = false;
+    yk_settings_merge(6, 80, 30, "zh", false, yk_keep_on(&keep), &s);
+    CHECK(!keep.app && s.screen_off_s == 30);
+    yk_settings_merge(6, 80, 30, "zh", true, yk_keep_on(&keep), &s);
+    CHECK(s.screen_off_s == YK_POWER_SCREEN_OFF_LOW_S);
     // Volume stays in yaykit_speak's steps.
     yk_settings_merge(12, 80, 30, "zh", false, false, &s);
     CHECK(s.volume == 10);
@@ -691,13 +756,91 @@ static void test_settings(void) {
     CHECK(s.volume == 0);
 }
 
+/** The system pull-down in an extension (docs/delivery/2026-11-02-system-pulldown.md): it opens only when nothing of the
+ *  system's is up; a press closes it and all of that press is the system's; a double click to close it opens no ring. */
+static void test_keys_sheet(void) {
+    yk_keys_t k;
+    yk_keys_init(&k);
+    CHECK(yk_keys_sheet_open(&k) && k.sheet && !yk_keys_idle(&k));
+    CHECK(!yk_keys_ask(&k, false, false));  // (a hold cannot be the app's while it is up anyway)
+    CHECK(yk_keys_route(&k, DOWN, 1000, false) == YK_KEYS_SHEET_CLOSE && !k.sheet);
+    CHECK(yk_keys_route(&k, UP, 1080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, TAP, 1080, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    CHECK(yk_keys_route(&k, DOWN, 3000, false) == YK_KEYS_APP);  // the app's again
+    yk_keys_route(&k, UP, 3080, false);
+    yk_keys_route(&k, TAP, 3080, false);
+    // A double click while it is up: the first press closes it, the double click opens no ring (delay_tap or not).
+    CHECK(yk_keys_sheet_open(&k));
+    CHECK(yk_keys_route(&k, DOWN, 5000, false) == YK_KEYS_SHEET_CLOSE);
+    CHECK(yk_keys_route(&k, UP, 5080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, DOWN, 5200, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, UP, 5280, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, DOUBLE, 5280, false) == YK_KEYS_EAT && yk_keys_idle(&k) && !k.ring);
+    // Held: closes it, the hold and its release are the system's (no 「回到 Yay 说？」).
+    CHECK(yk_keys_sheet_open(&k));
+    CHECK(yk_keys_route(&k, DOWN, 8000, false) == YK_KEYS_SHEET_CLOSE);
+    CHECK(yk_keys_route(&k, HOLD, 8300, false) == YK_KEYS_EAT && !yk_keys_ask(&k, false, false));
+    CHECK(yk_keys_route(&k, UP, 9000, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    // Closed by a touch: the key is the app's at once.
+    CHECK(yk_keys_sheet_open(&k));
+    yk_keys_sheet_closed(&k);
+    CHECK(yk_keys_idle(&k) && yk_keys_route(&k, DOWN, 12000, false) == YK_KEYS_APP);
+    yk_keys_route(&k, UP, 12080, false);
+    yk_keys_route(&k, TAP, 12080, false);
+    // Not over the ring, 「回到 Yay 说？」, the code, nor the rest of a press that closed one of them.
+    yk_keys_route(&k, DOUBLE, 20000, false);
+    CHECK(k.ring && !yk_keys_sheet_open(&k) && !k.sheet);
+    yk_keys_route(&k, DOWN, 21000, false);  // closes the ring; its press goes on
+    CHECK(!yk_keys_sheet_open(&k));
+    yk_keys_route(&k, UP, 21080, false);
+    yk_keys_route(&k, TAP, 21080, false);
+    CHECK(yk_keys_idle(&k) && yk_keys_sheet_open(&k));
+    yk_keys_init(&k);
+    yk_keys_code(&k, true);
+    CHECK(!yk_keys_sheet_open(&k));
+    yk_keys_init(&k);
+    yk_keys_route(&k, DOWN, 1000, false);
+    yk_keys_route(&k, HOLD, 1300, false);
+    CHECK(yk_keys_ask(&k, false, false) && !yk_keys_sheet_open(&k));
+}
+
+/** The way in from the top edge (8.4): a press on the edge's strip that goes far enough down, more down than sideways;
+ *  nothing else, and only once a press. */
+static void test_pull(void) {
+    yk_pull_t p;
+    yk_pull_start(&p, 233, 10, YK_PULL_EDGE_PX);
+    CHECK(p.armed && !yk_pull_move(&p, 236, 30, YK_PULL_PX) && p.dy_max == 20);
+    CHECK(yk_pull_move(&p, 240, 50, YK_PULL_PX) && p.pulled);
+    CHECK(!yk_pull_move(&p, 240, 120, YK_PULL_PX));  // once
+    // Below the edge: the app's, however far it goes.
+    yk_pull_start(&p, 233, YK_PULL_EDGE_PX, YK_PULL_EDGE_PX);
+    CHECK(!p.armed && !yk_pull_move(&p, 233, 200, YK_PULL_PX));
+    yk_pull_start(&p, 233, 120, YK_PULL_EDGE_PX);
+    CHECK(!yk_pull_move(&p, 233, 300, YK_PULL_PX));
+    // Sideways more than down: not a pull, until it goes down enough after all.
+    yk_pull_start(&p, 150, 20, YK_PULL_EDGE_PX);
+    CHECK(!yk_pull_move(&p, 210, 65, YK_PULL_PX));  // 60 across, 45 down
+    CHECK(yk_pull_move(&p, 200, 90, YK_PULL_PX));   // 50 across, 70 down
+    // Up: never.
+    yk_pull_start(&p, 233, 30, YK_PULL_EDGE_PX);
+    CHECK(!yk_pull_move(&p, 233, 0, YK_PULL_PX) && p.dy_max == 0);
+    // Other numbers (the development command measures with them).
+    yk_pull_start(&p, 233, 50, 60);
+    CHECK(p.armed && !yk_pull_move(&p, 233, 70, 30) && yk_pull_move(&p, 233, 80, 30));
+    yk_pull_start(&p, 233, -1, YK_PULL_EDGE_PX);
+    CHECK(!p.armed);
+}
+
 int main(void) {
     test_keys();
+    test_keys_sheet();
+    test_pull();
     test_ring_tapped();
     test_app_events();
     test_summary();
     test_outbox();
     test_home();
+    test_is_home();
     test_guard();
     test_names();
     test_launch_accept();

@@ -1,8 +1,10 @@
 // Extension firmware template (yaykit/docs/development/firmware-guide.md 6, yay-device.md 6.10). It shows the
 // order every extension firmware follows: NVS (never erased) -> yaykit_app (crash loop guard) -> board -> side
 // key -> Yaykit Link -> screen -> console -> yk_app_ready(). The app itself is a tap counter: tap adds one, hold resets, a double
-// click opens the app ring (yaykit_app), and the first time in the app the hint arrow says so (yk_hint APPS). Copy
-// this directory, rename the slug and the project, then replace the counter with your app.
+// click opens the app ring (yaykit_app), and the first time in the app the hint arrow says so (yk_hint APPS). A button
+// shows the app's 应用码 for the Tikpal app to scan (yaykit_voicecode, API level 4; devkit docs/voice-code.md): the same
+// page code the system pull-down shows, here to show how; drop it if the app has no use for it. Copy this directory,
+// rename the slug and the project, then replace the counter with your app.
 #include <stdio.h>
 #include <string.h>
 
@@ -21,6 +23,7 @@
 #include "yaykit_link.h"
 #include "yaykit_ui.h"
 #include "yk_hint.h"
+#include "yk_vc_view.h"
 
 #define APP_SLUG "template"
 static const char *TAG = "template";
@@ -31,9 +34,10 @@ static lv_obj_t *s_value;
 static volatile bool s_tapped, s_held;  // set in the key task, acted on in the LVGL task
 
 /** Through yaykit_app (yk_app_on_key): returns whether the event was used. A hold an app does not use asks
- *  「回到 Yay 说？」; this one uses both. */
+ *  「回到 Pip 说？」; this one uses both. */
 static bool on_key(const yk_key_event_t *ev, void *ctx) {
     (void)ctx;
+    if (yk_vc_on_key(ev)) return true;  // a tap while the code shows hides it, and counts nothing
     if (ev->type == YK_KEY_TAP) s_tapped = true;
     else if (ev->type == YK_KEY_HOLD) s_held = true;
     // YK_KEY_DOUBLE is yaykit_app's: the app ring.
@@ -65,17 +69,32 @@ static void tick(lv_timer_t *timer) {
     }
 }
 
-/** Leaving for Yay (a double click, app.exit): a record for the platform and what Yay shows and says when it is
- *  back. Runs in a task of yaykit_app's, cut after YK_APP_LEAVE_MS (400 ms): keep it to writing. */
+/** The code gone (its 60 s, a tap or a swipe on it, the side key): the screen may go off again. */
+static void code_hidden(yk_vc_hidden_t why, void *ctx) {
+    (void)why, (void)ctx;
+    yk_app_keep_screen_on(false);
+}
+
+/** The button: this app's page code (action 0, value 0); the Tikpal app opens the app's page when it scans it. Its
+ *  number is app.json's voiceCode.number, built in. The screen would go off (30 s) before the code hides (60 s): kept on
+ *  while it shows. */
+static void on_code(lv_event_t *e) {
+    (void)e;
+    if (yk_vc_show(YK_VC_ACTION_PAGE, 0, &(yk_vc_show_opts_t){.on_hidden = code_hidden}) == ESP_OK)
+        yk_app_keep_screen_on(true);
+}
+
+/** Leaving for the main firmware (a double click, app.exit): a record for the platform and what the buddy shows and
+ *  says when it is back. Runs in a task of yaykit_app's, cut after YK_APP_LEAVE_MS (400 ms): keep it to writing. */
 static void on_leave(void *ctx) {
     (void)ctx;
     const int taps = s_count.taps, rounds = s_rounds + (taps > 0);
-    if (!rounds) return;  // nothing happened: Yay just comes back
+    if (!rounds) return;  // nothing happened: the main firmware just comes back
     char data[64];
     snprintf(data, sizeof(data), "{\"taps\":%d,\"rounds\":%d}", taps, rounds);
-    // The record waits in the outbox until Yay is online (yk_app_record): the app needs no network.
+    // The record waits in the outbox until the main firmware is online (yk_app_record): the app needs no network.
     const bool recorded = yk_app_record("template.count", data) == ESP_OK;
-    // The summary Yay draws in its ring: up to 3 numbers, a bead per round (the best one in coral).
+    // The summary the main firmware draws in its ring: up to 3 numbers, a bead per round (the best one in coral).
     yk_summary_t summary;
     yk_summary_init(&summary);
     char value[12];
@@ -85,7 +104,7 @@ static void on_leave(void *ctx) {
     yk_summary_stat(&summary, value, "最多");
     yk_summary_beads(&summary, rounds, &s_best_round, s_best_round >= 0);
     summary.recorded = recorded;
-    // One sentence Yay says (not after 30 minutes), and data for the platform.
+    // One sentence the buddy says (not after 30 minutes), and data for the platform.
     char sentence[48];
     snprintf(sentence, sizeof(sentence), "数了 %d 轮", rounds);
     cJSON *doc = cJSON_Parse(data);
@@ -151,7 +170,7 @@ void app_main(void) {
     const yk_link_config_t link = {.board = "tikpal-r1", .app_slug = APP_SLUG, .app_version = APP_VERSION,
                                    .layout = "yaykit-v1", .idle_seconds = 90, .on_command = on_command};
     ESP_ERROR_CHECK(yk_link_init(&link));
-    // 5. Launch parameters from Yay (read once).
+    // 5. Launch parameters from the main firmware (read once).
     yk_launch_t launch;
     if (yk_app_launch(&launch) == ESP_OK && launch.present) printf("TEMPLATE_LAUNCH intent=%s params=%s\n", launch.intent, launch.params);
 
@@ -164,13 +183,14 @@ void app_main(void) {
     lv_obj_set_style_bg_color(screen, lv_color_hex(YK_PAPER), 0);
     yk_ui_label(screen, "计数", 0, 100, 466, YK_SIZE_STATUS, YK_SAGE_TEXT);
     s_value = yk_ui_label(screen, "", 0, 190, 466, 44, YK_INK);
-    yk_ui_label(screen, "短按加一 · 按住清零", 0, 330, 466, YK_SIZE_MIN, YK_INK2);
+    yk_ui_label(screen, "短按加一 · 按住清零", 0, 318, 466, YK_SIZE_MIN, YK_INK2);
+    yk_ui_button(screen, "在手机上打开", 148, 352, 170, 44, on_code, NULL, YK_PANEL);
     show();
     lv_screen_load(screen);
     lv_refr_now(NULL);
-    // Yay's settings through yaykit_app (0.1.13): the brightness (capped while the battery is low), and as needed
-    // yk_app_screen_off_s() for the screen-off, yk_app_volume() / yk_app_set_volume(), yk_app_english(). The battery
-    // guard (sleep when it runs out) comes with yk_app_start() and yk_app_ready() by itself.
+    // The main firmware's settings through yaykit_app (0.1.13): the brightness (capped while the battery is low), and
+    // as needed yk_app_screen_off_s() for the screen-off, yk_app_volume() / yk_app_set_volume(), yk_app_english(). The
+    // battery guard (sleep when it runs out) comes with yk_app_start() and yk_app_ready() by itself.
     board_brightness_set(yk_app_brightness());
     // The first time in this app: an arrow at the side key, 「双击：应用和回家」 (yk_hint, P24), until the app ring was
     // opened once. Any press takes it away (yaykit_app).

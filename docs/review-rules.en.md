@@ -65,7 +65,7 @@ This section covers only what you can tell by reading the code: when something h
 - **What to check**: every call that spends the user's credits (cloud features such as speech recognition, speech, models and transcription; see the cloud section of the [app guide](app-guide.md)) comes from something the user just did: a tap, a hold, speaking. Not at start-up, when the app opens, when it leaves, from a background timer or from automatic retries.
 - **Not allowed**:
   - greeting the user through the cloud as soon as the app opens;
-  - leaving a sentence for Yay when the app exits, so that Yay reads it out and credits are spent while the user did nothing;
+  - leaving a sentence for the buddy when the app exits, so that the buddy reads it out and credits are spent while the user did nothing;
   - retrying a failed call in the background, charging each time.
 - **Fine**: the user holds to speak and recognition runs once after release; on failure the app stops, says so in plain words, and lets the user press again.
 - **How to fix**: put calls that spend credits only in the handlers of user actions; retry automatically at most once, without charging twice (or ask the user first).
@@ -92,14 +92,20 @@ This section covers only what you can tell by reading the code: when something h
 - **What to check**: the system's side-button actions (double press for the app ring, hold, short press) still belong to the system ([design guide](round-screen-design.md) section 6); when the app leaves (`yk_app_on_leave` and similar), it stops sound and saves its state within 400 ms, without waiting for the network or a conversation to finish.
 - **Not allowed**: catching the double press for something else; waiting for an upload to finish before leaving; sound that keeps playing after the app has left.
 - **Fine**: the leave handler stops sound, records one line of result, puts pending uploads in the outbox, and returns at once.
-- **How to fix**: leave the system buttons to `yaykit_app`; do only quick work when leaving, and hand slow work to the next launch or Yay's outbox.
+- **How to fix**: leave the system buttons to `yaykit_app`; do only quick work when leaving, and hand slow work to the next launch or the Tikpal main firmware's outbox.
 
 ### F-05 block: taking the pull-down from the top edge
 
 - **What to check**: pulling down from the very top of the screen opens the system pull-down shared by all firmware (Wi-Fi, battery, phone). Apps may use their own swipes, but must not catch a pull-down that starts at the top edge, nor put buttons in the top strip where they would be hit by mistake.
-- **Not allowed**: taking over every gesture and using the top-edge pull-down as your own "previous page".
+- **Not allowed**: taking over every gesture and using the top-edge pull-down as your own "previous page". Getting around the system pull-down is not allowed, and the review on a real device looks at it:
+  - A build without `yaykit_app`, `yaykit_ui` or `yaykit_voicecode`, or an `app.json` without `voiceCode`.
+  - Not calling `yk_app_start()` and `yk_app_ready()`.
+  - Writing `.is_home`, or `yay` (`YK_APP_HOME_SLUG`) as `.slug`: those are the main firmware's.
+  - A component in the project named like one of the kit's, or your own definition of the pull-down's functions.
+  - Swapping functions with the linker flags `--wrap`, `--defsym`, `--allow-multiple-definition` and `-z muldefs`.
+  - Covering the top edge with `lv_layer_top()` or `lv_layer_sys()` (`lv_display_get_layer_*`), or deleting, turning off or replacing touch with `lv_indev_delete()`, `lv_indev_enable()` or `lv_indev_set_read_cb()`. Calling these is not wrong by itself: the machine marks them and a person looks at how they are used.
 - **Fine**: swiping down in the middle of the screen to change pages; leaving the top edge to the system.
-- **How to fix**: do not handle a pull-down that starts at the top edge. Once the devkit ships the system pull-down, it takes this over automatically.
+- **How to fix**: do not handle a pull-down that starts at the top edge. Do none of the above and the system pull-down is there, with nothing more to write.
 
 ### F-06 block: writing flash too often
 
@@ -207,7 +213,7 @@ This section covers only what you can tell by reading the code: when something h
 
 ## Manifest and store (S)
 
-Read the store material, `app.json` and the approved capabilities, and check them against the code. Machines already look for the hardware's name, Tikpal Voice, word for word; these rules cover only what they cannot catch.
+Read the store material, `app.json` and the approved capabilities, and check them against the code. Machines look for two things word for word and return the submission for you to change: the hardware called "round screen" or 圆屏 (it is Tikpal Voice in all four languages, or just "it"); and the words concept, test, testing, preview, beta (概念, 测试, 预览版). They look in the store texts in all four languages, the names in `app.json` and the mini app, and the version notes. What goes into the store is the reviewed text as it is, never rewritten on the way. These rules cover only what machines cannot catch.
 
 ### S-01 block: overstating, or promising what it cannot do
 
@@ -259,8 +265,8 @@ Read the store material, `app.json` and the approved capabilities, and check the
 
 ### S-07 suggest: other names for the hardware
 
-- **What to check**: the hardware is Tikpal Voice in all four languages.
-- **Not allowed**: "watch", "little round screen", "Yay device", "the round screen".
+- **What to check**: the hardware is Tikpal Voice in all four languages. Machines already return "round screen" and 圆屏; this rule is for the other names they cannot catch.
+- **Not allowed**: "watch", "little screen", "Yay device", "the gadget".
 - **Fine**: "Tap on Tikpal Voice to start".
 - **How to fix**: call it Tikpal Voice throughout.
 
@@ -275,3 +281,5 @@ Read the store material, `app.json` and the approved capabilities, and check the
 
 - **2026-11-02**: First version. Shared X-01, mini apps M-01–M-08, manifest and store S-01–S-08; firmware F-xx comes in the next version.
 - **2026-11-03**: S-01 says only the app's own numbers are compared, not the platform's rules for cloud features; `maxBytes` is one file's limit.
+- **2026-11-07**: F-05 says getting around the system pull-down is not allowed and lists the ways, and no longer says the kit takes it over by itself; from kit 1.9 `./kit check` and the machine review check it.
+- **2026-11-04**: The start of "Manifest and store" says what machines return word for word ("round screen" and 圆屏; concept, test, preview and the other ruled-out words) and where they look; S-07 covers only the names machines cannot catch.

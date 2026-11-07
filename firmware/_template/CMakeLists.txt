@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 # Extension firmware template (firmware guide 6). Copy to firmware/<slug>, rename the project to
 # yaykit_<slug with underscores> and the slug in main/main.c. Test builds may pass -DPROJECT_VER.
+# yaykit_voicecode: the app's 应用码 (devkit docs/voice-code.md), its number from app.json's voiceCode at build time.
 if(NOT DEFINED PROJECT_VER)
     set(PROJECT_VER "0.1.0")
 endif()
@@ -16,7 +17,8 @@ set(EXTRA_COMPONENT_DIRS
     "${YAYKIT_FIRMWARE}/components/yaykit_board"
     "${YAYKIT_FIRMWARE}/components/yaykit_key"
     "${YAYKIT_FIRMWARE}/components/yaykit_link"
-    "${YAYKIT_FIRMWARE}/components/yaykit_ui")
+    "${YAYKIT_FIRMWARE}/components/yaykit_ui"
+    "${YAYKIT_FIRMWARE}/components/yaykit_voicecode")
 set(COMPONENTS main espcoredump)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 include(${YAYKIT_FIRMWARE}/reproducible.cmake)

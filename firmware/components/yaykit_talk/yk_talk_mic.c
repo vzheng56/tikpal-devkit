@@ -52,6 +52,11 @@ static struct {
     struct {
         yk_ring_t ring;
         uint32_t gen;
+        volatile uint32_t speech;  // samples the voice-activity detection heard as speech, since this press began
+        // Where that speech was, as the ring's own count of samples written (yk_ring_t.head): the first speech
+        // sample and the one after the last; heard = false until then.
+        size_t first, last;
+        bool heard;
     } r[RINGS];
     volatile int cur;  // the ring the front end writes into
     yk_opus_enc_t *enc;
@@ -64,14 +69,26 @@ static struct {
     char tag[YK_TALK_TURN_LEN + 1];
     yk_talk_sink_t sink;
     uint32_t packets;
+    volatile int speech_ms;  // the last stream's, from its end on
+    size_t sorigin;          // the streaming ring's read count when the stream began: its first sample
+    volatile int span_from_ms, span_to_ms;  // the last stream's speech, from the stream's start; -1 when none
     volatile uint8_t level;
 } M = {.lock = portMUX_INITIALIZER_UNLOCKED};
 
 static void on_frame(const int16_t *pcm, size_t n, bool speech, uint8_t level, void *ctx) {
-    (void)speech, (void)ctx;
+    (void)ctx;
     if (!M.capturing) return;
     taskENTER_CRITICAL(&M.lock);
-    yk_ring_write(&M.r[M.cur].ring, pcm, n);
+    const size_t at = M.r[M.cur].ring.head;
+    const size_t wrote = yk_ring_write(&M.r[M.cur].ring, pcm, n);
+    if (speech) {
+        M.r[M.cur].speech += n;
+        if (wrote) {
+            if (!M.r[M.cur].heard) M.r[M.cur].first = at;
+            M.r[M.cur].last = at + wrote;
+            M.r[M.cur].heard = true;
+        }
+    }
     taskEXIT_CRITICAL(&M.lock);
     M.level = level;
     if (M.task) xTaskNotifyGive(M.task);
@@ -123,6 +140,14 @@ static void pump(void) {
 }
 
 static void finish(yk_talk_mic_end_t how) {
+    M.speech_ms = (int)((uint64_t)M.r[M.sring].speech * 1000 / YK_AUDIO_RATE);
+    taskENTER_CRITICAL(&M.lock);
+    const bool heard = M.r[M.sring].heard && M.r[M.sring].last > M.sorigin;
+    const size_t first = M.r[M.sring].first > M.sorigin ? M.r[M.sring].first - M.sorigin : 0;
+    const size_t last = heard ? M.r[M.sring].last - M.sorigin : 0;
+    taskEXIT_CRITICAL(&M.lock);
+    M.span_from_ms = heard ? (int)((uint64_t)first * 1000 / YK_AUDIO_RATE) : -1;
+    M.span_to_ms = heard ? (int)((uint64_t)last * 1000 / YK_AUDIO_RATE) : -1;
     if (M.sink.end) M.sink.end(M.tag, how, M.sink.ctx);
     M.streaming = false;
 }
@@ -143,6 +168,9 @@ static void run(const cmd_t *c) {
             if (!take(c->ring, c->gen, M.piece, n)) break;
             extra -= n;
         }
+        taskENTER_CRITICAL(&M.lock);
+        M.sorigin = M.r[c->ring].ring.tail;  // the first sample the sink gets (after the oldest went)
+        taskEXIT_CRITICAL(&M.lock);
         yk_opus_enc_reset(M.enc);
         M.packets = 0;
         if (M.sink.begin && !M.sink.begin(M.tag, preroll, M.sink.ctx)) break;
@@ -261,6 +289,8 @@ void yk_talk_mic_open(void) {
     taskENTER_CRITICAL(&M.lock);
     M.cur = (M.cur + 1) % RINGS;
     M.r[M.cur].gen++;
+    M.r[M.cur].speech = 0;
+    M.r[M.cur].heard = false;
     yk_ring_clear(&M.r[M.cur].ring);
     taskEXIT_CRITICAL(&M.lock);
     const yk_audio_config_t cfg = {.mode = YK_AUDIO_PUSH_TO_TALK, .noise_suppression = true, .voice_activity = true,
@@ -294,6 +324,15 @@ void yk_talk_mic_discard(void) {
 }
 
 uint8_t yk_talk_mic_level(void) { return M.capturing ? M.level : 0; }
+
+int yk_talk_mic_speech_ms(void) { return M.speech_ms; }
+
+bool yk_talk_mic_speech_span(int *from_ms, int *to_ms) {
+    const int from = M.span_from_ms, to = M.span_to_ms;
+    if (from < 0 || to <= from) return false;
+    *from_ms = from, *to_ms = to;
+    return true;
+}
 
 bool yk_talk_mic_post_send(char *json) { return json && post(CMD_SEND, NULL, NULL, json); }
 

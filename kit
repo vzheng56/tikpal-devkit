@@ -27,7 +27,7 @@ IDF_COMMIT=$(field idf.commit)
 
 usage() {
   cat <<EOF
-Tikpal 开发包 ${VERSION}（Yay $(field yay) 起，接口级别 $(field apiLevel)）
+Tikpal 开发包 ${VERSION}（Tikpal 主固件 $(field yay) 起，接口级别 $(field apiLevel)）
 
   kit setup [--cn]              装好环境：ESP-IDF $(field idf.version)（钉在 ${IDF_COMMIT:0:8}）。--cn 走国内镜像
   kit new <slug> [--dir <目录>]  从模板起一个新应用（一个应用一个 git 仓库，开发包作为 devkit/ 子模块）
@@ -284,7 +284,7 @@ dev() {
   python "$KIT/firmware/tools/yay_dev.py" ${port[@]+"${port[@]}"} "$@"
 }
 
-# What is shown, with the round screen's id and USB serial masked: logs and info are pasted into public submissions.
+# What is shown, with the round screen's id and USB serial masked: logs and info go into submission packages and public Request issues.
 shown() {
   set -o pipefail
   dev "$@" | sed "$(unbuffered)" -E -e 's/yk_[0-9a-f]{12}/yk_xxxxxxxxxxxx/g' -e 's/([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}/xx:xx:xx:xx:xx:xx/g'
@@ -302,7 +302,7 @@ cmd_install() {
       *) die "不认识的参数：${1}" ;;
     esac
   done
-  [ "$slot" = 2 ] || [ "$slot" = 3 ] || die "--slot 只能是 2 或 3（位置 1 是 Yay）"
+  [ "$slot" = 2 ] || [ "$slot" = 3 ] || die "--slot 只能是 2 或 3（位置 1 是 Tikpal 主固件）"
   [ -f "$build/project_description.json" ] || die "还没编：先 ./kit build$([ "$build" = "$app/build-release" ] && printf ' --release')"
   if [ $open = 1 ]; then dev install --slot "$slot" "$build" --open; else dev install --slot "$slot" "$build"; fi
 }

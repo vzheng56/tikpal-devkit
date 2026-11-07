@@ -6,12 +6,18 @@
 #define DUCK_MS 30      // the duck follows an utterance's start and end this fast
 #define RELEASE_MS 80   // the limiter lets go this slowly
 
-void yk_mix_init(yk_mix_t *m, uint32_t rate) {
+void yk_mix_set_ceiling(yk_mix_t *m, float ceiling_dbfs) {
+    m->ceiling = powf(10, ceiling_dbfs / 20);
+    if (m->ceiling > 1) m->ceiling = 1;
+}
+
+void yk_mix_init(yk_mix_t *m, uint32_t rate, float ceiling_dbfs) {
     memset(m, 0, sizeof(*m));
     m->rate = rate;
     m->next_id = 1;
     m->duck = 1;
     m->lim_gain = 1;
+    yk_mix_set_ceiling(m, ceiling_dbfs);
 }
 
 static yk_mix_voice_t *find(yk_mix_t *m, int id) {
@@ -164,6 +170,16 @@ static size_t clip_render(yk_mix_voice_t *v, float *out, size_t n) {
     return n;
 }
 
+/** Copies x to out and says whether every sample was under the ceiling (false: it stopped at the first that was not). */
+static bool copy_under_ceiling(const yk_mix_t *m, const int16_t *x, int16_t *out, size_t n) {
+    const int top = (int)(m->ceiling * 32768.0f);
+    for (size_t k = 0; k < n; k++) {
+        if (x[k] > top || x[k] < -top) return false;
+        out[k] = x[k];
+    }
+    return true;
+}
+
 int yk_mix_render(yk_mix_t *m, const int16_t *utter, size_t n, uint64_t sample0, int64_t heard_us0, int16_t *out) {
     if (n > YK_MIX_MAX_BLOCK) n = YK_MIX_MAX_BLOCK;
     float *mix = m->mix;
@@ -173,11 +189,13 @@ int yk_mix_render(yk_mix_t *m, const int16_t *utter, size_t n, uint64_t sample0,
     const float duck_step = (1 - YK_MIX_DUCK) / (float)(m->rate * DUCK_MS / 1000);
     int played = 0;
     if (!yk_mix_active(m) && m->lim_gain >= 1) {
-        // Nothing but the utterance: it passes untouched, as before the mixer (the main firmware's voice).
-        if (utter) memcpy(out, utter, n * sizeof(int16_t));
-        else memset(out, 0, n * sizeof(int16_t));
-        m->duck = duck_to;
-        return 0;
+        // Nothing but the utterance, under the ceiling: it passes untouched (yk_loud keeps the voice there; a cue over
+        // it goes through the limiter below).
+        if (!utter) memset(out, 0, n * sizeof(int16_t));
+        if (!utter || copy_under_ceiling(m, utter, out, n)) {
+            m->duck = duck_to;
+            return 0;
+        }
     }
     for (int i = 0; i < YK_SFX_VOICES; i++) {
         yk_mix_voice_t *v = &m->v[i];
@@ -228,7 +246,7 @@ int yk_mix_render(yk_mix_t *m, const int16_t *utter, size_t n, uint64_t sample0,
     const float dmove = duck_step * (float)n;
     if (m->duck < duck_to) m->duck = m->duck + dmove > duck_to ? duck_to : m->duck + dmove;
     else if (m->duck > duck_to) m->duck = m->duck - dmove < duck_to ? duck_to : m->duck - dmove;
-    // The utterance at full level, then the limiter at -3 dBFS: instant attack, RELEASE_MS release.
+    // The utterance at full level, then the limiter at the ceiling: instant attack, RELEASE_MS release.
     const float rel = 1.0f / (float)(m->rate * RELEASE_MS / 1000);
     bool limited = false;
     for (size_t k = 0; k < n; k++) {
@@ -238,8 +256,8 @@ int yk_mix_render(yk_mix_t *m, const int16_t *utter, size_t n, uint64_t sample0,
             m->lim_gain += rel;
             if (m->lim_gain > 1) m->lim_gain = 1;
         }
-        if (a * m->lim_gain > YK_MIX_CEILING) {
-            m->lim_gain = YK_MIX_CEILING / a;
+        if (a * m->lim_gain > m->ceiling) {
+            m->lim_gain = m->ceiling / a;
             limited = true;
         }
         x *= m->lim_gain;

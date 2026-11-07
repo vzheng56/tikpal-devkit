@@ -1,7 +1,11 @@
 // The device's shared preferences (P10): volume, brightness, screen-off time in NVS namespace yk_pref, read and
-// written by every firmware; since 0.1.12 also the buddy (written by the main firmware only). Values are checked on
-// the way in and out (yk_board_logic.c).
+// written by every firmware; since 0.1.12 also the buddy, since 0.1.14 the time zone (both written by the main
+// firmware only). Values are checked on the way in and out (yk_board_logic.c).
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 #include "board.h"
 #include "esp_log.h"
@@ -101,4 +105,80 @@ esp_err_t board_pref_set_buddy(int buddy) {
     }
     nvs_close(h);
     return err;
+}
+
+// The time zone (0.1.14): a string under its own key, added as the buddy was.
+_Static_assert(BOARD_PREF_TZ_MAX == YK_PREF_TZ_MAX, "board.h's buffer is the logic's");
+
+bool board_pref_tz(char *out, size_t size) {
+    if (!out || !size) return false;
+    out[0] = 0;
+    char v[YK_PREF_TZ_MAX];
+    size_t n = sizeof(v);
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    const bool got = nvs_get_str(h, "tz", v, &n) == ESP_OK && yk_board_tz_ok(v);
+    nvs_close(h);
+    if (got) snprintf(out, size, "%s", v);
+    return got;
+}
+
+esp_err_t board_pref_set_tz(const char *posix) {
+    const bool remove = !posix || !posix[0];
+    if (!remove && !yk_board_tz_ok(posix)) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "tz not saved: %s", esp_err_to_name(err));
+        return err;
+    }
+    char old[YK_PREF_TZ_MAX] = "";
+    size_t n = sizeof(old);
+    const bool had = nvs_get_str(h, "tz", old, &n) == ESP_OK;
+    const bool change = remove ? had : !had || strcmp(old, posix) != 0;  // no flash write for the same value
+    if (change) {
+        err = remove ? nvs_erase_key(h, "tz") : nvs_set_str(h, "tz", posix);
+        if (err == ESP_OK) err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+bool board_pref_tz_offset(int *minutes) {
+    nvs_handle_t h;
+    if (!minutes || nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    int32_t v = 0;
+    const bool got = nvs_get_i32(h, "tz_off", &v) == ESP_OK && yk_board_tz_offset_ok((int)v);
+    nvs_close(h);
+    if (got) *minutes = (int)v;
+    return got;
+}
+
+esp_err_t board_pref_set_tz_offset(bool known, int minutes) {
+    if (known && !yk_board_tz_offset_ok(minutes)) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "tz_off not saved: %s", esp_err_to_name(err));
+        return err;
+    }
+    int32_t old = 0;
+    const bool had = nvs_get_i32(h, "tz_off", &old) == ESP_OK;
+    const bool change = known ? !had || old != minutes : had;  // no flash write for the same value
+    if (change) {
+        err = known ? nvs_set_i32(h, "tz_off", minutes) : nvs_erase_key(h, "tz_off");
+        if (err == ESP_OK) err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+bool board_pref_tz_apply(const char *fallback) {
+    char tz[YK_PREF_TZ_MAX];
+    const bool shared = board_pref_tz(tz, sizeof(tz));
+    if (shared) setenv("TZ", tz, 1);
+    else if (fallback) setenv("TZ", fallback, 1);
+    else unsetenv("TZ");
+    tzset();
+    return shared;
 }

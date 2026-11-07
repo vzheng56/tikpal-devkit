@@ -102,6 +102,20 @@ void yk_apps_update_dot(int cx, int cy, float k, int *x, int *y, float *r, float
     *edge_r = (YK_APPS_UPDATE_R + YK_APPS_UPDATE_EDGE) * k;
 }
 
+void yk_apps_home_dot(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r) {
+    *x = cx + (int)lroundf(YK_APPS_HOME_DOT_D * k);
+    *y = cy - (int)lroundf(YK_APPS_HOME_DOT_D * k);
+    *r = YK_APPS_UPDATE_R * k;
+    *edge_r = (YK_APPS_UPDATE_R + YK_APPS_UPDATE_EDGE) * k;
+}
+
+void yk_apps_phone_mark(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r) {
+    *x = cx + (int)lroundf(YK_APPS_PHONE_D * k);
+    *y = cy - (int)lroundf(YK_APPS_PHONE_D * k);
+    *r = YK_APPS_PHONE_R * k;
+    *edge_r = (YK_APPS_PHONE_R + YK_APPS_PHONE_EDGE) * k;
+}
+
 void yk_apps_layout_at(int n, const int slots[], const int name_w[], int name_h, int label_w, yk_apps_layout_t *out) {
     memset(out, 0, sizeof(*out));
     out->n = n < 0 ? 0 : n > YK_APPS_MAX ? YK_APPS_MAX : n;
@@ -166,6 +180,33 @@ bool yk_apps_frame(const yk_apps_layout_t *L, int t_ms, bool closing, yk_apps_po
     return t >= end;
 }
 
+bool yk_apps_frame_away(const yk_apps_layout_t *L, int t_ms, int dx, int dy, yk_apps_pose_t pose[YK_APPS_MAX + 1]) {
+    const float t = (float)(t_ms < 0 ? 0 : t_ms), k = ease_in(clamp01(t / YK_APPS_AWAY_MS));
+    const float ox = (float)(dx > 0 ? 1 : dx < 0 ? -1 : 0) * YK_APPS_AWAY_PX;
+    const float oy = (float)(dy > 0 ? 1 : dy < 0 ? -1 : 0) * YK_APPS_AWAY_PX;
+    pose[0] = pose_at(YK_CX, YK_CY, YK_CX + ox, YK_CY + oy, k, 1.0f, 1.0f, 1, 0);
+    for (int i = 0; i < L->n; i++)
+        pose[i + 1] = pose_at(L->sat[i].cx, L->sat[i].cy, L->sat[i].cx + ox, L->sat[i].cy + oy, k, 1.0f, 1.0f, 1, 0);
+    return t >= YK_APPS_AWAY_MS;
+}
+
+void yk_apps_touch_press(yk_apps_touch_t *t) { t->swiped = false; }
+
+yk_apps_go_t yk_apps_touch_swipe(yk_apps_touch_t *t, int dx, int dy) {
+    if (t->closing || (!dx && !dy)) return (yk_apps_go_t){.kind = YK_APPS_GO_NONE};
+    t->swiped = t->closing = true;
+    return (yk_apps_go_t){.kind = YK_APPS_GO_AWAY, .dx = (int8_t)(dx > 0 ? 1 : dx < 0 ? -1 : 0),
+                          .dy = (int8_t)(dx ? 0 : dy > 0 ? 1 : -1)};
+}
+
+yk_apps_go_t yk_apps_touch_click(yk_apps_touch_t *t, const yk_apps_layout_t *L, int x, int y) {
+    if (t->closing || t->swiped) return (yk_apps_go_t){.kind = YK_APPS_GO_NONE};
+    t->closing = true;
+    return (yk_apps_go_t){.kind = YK_APPS_GO_TAP, .hit = yk_apps_hit(L, x, y)};
+}
+
+void yk_apps_touch_closing(yk_apps_touch_t *t) { t->closing = true; }
+
 static bool in_box(const yk_box_t *b, int x, int y, int pad) {
     return x >= b->x - pad && x < b->x + b->w + pad && y >= b->y - pad && y < b->y + b->h + pad;
 }
@@ -174,6 +215,13 @@ int yk_apps_hit(const yk_apps_layout_t *L, int x, int y) {
     for (int i = 0; i < L->n; i++) {
         const int dx = x - L->sat[i].cx, dy = y - L->sat[i].cy;
         if (dx * dx + dy * dy <= YK_APPS_HIT_R * YK_APPS_HIT_R || in_box(&L->sat[i].name, x, y, 4)) return i + 1;
+        if (L->sat[i].phone) {
+            int mx, my;
+            float r, edge;
+            yk_apps_phone_mark(L->sat[i].cx, L->sat[i].cy, 1.0f, &mx, &my, &r, &edge);
+            const int ex = x - mx, ey = y - my, R = (int)ceilf(edge) + 2;
+            if (ex * ex + ey * ey <= R * R) return i + 1;
+        }
     }
     const int dx = x - YK_CX, dy = y - YK_CY;
     if (dx * dx + dy * dy <= YK_APPS_CENTER_HIT_R * YK_APPS_CENTER_HIT_R || in_box(&L->label, x, y, 4)) return 0;
@@ -233,8 +281,8 @@ int yk_apps_pick_ring(const yk_apps_slot_t *installed, int n, const char *const 
                       const yk_catalog_t *cat, yk_apps_item_t *out, int max) {
     if (max > YK_APPS_MAX) max = YK_APPS_MAX;
     if (max < 1) return 0;
-    const bool settings = max >= 2;  // 「设置」 after 「更多」 when both fit (settings-u.md 5)
-    const int fixed = settings ? 2 : 1, apps = max - fixed < YK_APPS_RING_APPS ? max - fixed : YK_APPS_RING_APPS;
+    // Only apps and 「更多」 (docs/delivery/2026-11-02-system-pulldown.md 2: 「设置」 is no longer on it since 0.1.14)
+    const int apps = max - 1 < YK_APPS_RING_APPS ? max - 1 : YK_APPS_RING_APPS;
     // The ones in a slot, as yk_apps_pick() takes them (the most recently used first).
     int count = yk_apps_pick(installed, n, NULL, out, apps);
     for (int k = 0; cat && k < count; k++) {
@@ -248,7 +296,6 @@ int yk_apps_pick_ring(const yk_apps_slot_t *installed, int n, const char *const 
     for (int i = 0; cat && i < cat->count; i++)
         if (!ring_add(out, &count, apps, cat->app[i].slug, cat->app[i].name, false, false)) break;
     out[count++] = (yk_apps_item_t){.slug = YK_APPS_MORE};
-    if (settings) out[count++] = (yk_apps_item_t){.slug = YK_APPS_SETTINGS};
     return count;
 }
 

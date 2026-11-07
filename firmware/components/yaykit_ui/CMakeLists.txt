@@ -6,10 +6,12 @@
 # Bluetooth (Party Play, Breathe) can use the rest.
 # P23/P24: the app ring (yk_apps), the app catalog cache it reads (yk_catalog, in `userfs`) and the hint arrow
 # (yk_hint, counts in NVS `yk_hint`); pure parts in yk_apps_logic.c, host tested. App ecosystem stage 1: 「我的应用」
-# (yk_more, Yay's page behind the ring's 「更多」); pure parts in yk_more_logic.c, host tested.
+# (yk_more, Yay's page behind the ring's 「更多」); pure parts in yk_more_logic.c, host tested. The system pull-down
+# (yk_sheet, docs/delivery/2026-11-02-system-pulldown.md): the status sheet every firmware shares.
 include(${CMAKE_CURRENT_LIST_DIR}/../../assets/yay/yay_art.cmake)
 idf_component_register(SRCS "yaykit_ui.c" "yk_ui_pair.c" "yk_ui_logic.c" "yk_rim.c" "yk_yay.c" "yk_notice.c" "yk_caption.c"
-                            "yk_transition.c" "yk_apps_logic.c" "yk_apps.c" "yk_catalog.c" "yk_hint.c" "yk_more_logic.c" "yk_more.c" "yk_mark.c"
+                            "yk_transition.c" "yk_apps_logic.c" "yk_apps.c" "yk_catalog.c" "yk_hint.c" "yk_more_logic.c" "yk_more.c" "yk_mark.c" "yk_mark_fit.c"
+                            "yk_sheet.c" "yk_sheet_logic.c"
                             ${YAY_ART_SRCS}
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS ${YAY_ART_INCLUDE_DIRS}

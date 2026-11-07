@@ -271,6 +271,15 @@ void yk_wifi_describe(cJSON *wifi) {
     if (ip[0]) cJSON_AddStringToObject(wifi, "ip", ip);
 }
 
+int yk_wifi_status(char *ssid, size_t size, int *rssi) {
+    const yk_wifi_state_t now = state;
+    wifi_ap_record_t ap;
+    const bool info = now == YK_WIFI_CONNECTED && esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+    if (ssid && size) snprintf(ssid, size, "%s", info ? (const char *)ap.ssid : "");
+    if (rssi) *rssi = info ? ap.rssi : 0;
+    return (int)now;
+}
+
 // ---- prov-scan ----
 
 static esp_err_t scan_start(bool blocking, bool passive, uint8_t group_channels, uint32_t period_ms,

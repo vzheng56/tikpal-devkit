@@ -1220,24 +1220,37 @@ yk_vc_status_t yk_vc_scan(const uint8_t *luma, int width, int height, int stride
                 peak_t peaks[PEAKS];
                 const int np = find_peaks(&c, peaks);
                 pass.status = YK_VC_NO_CENTRE;
-                // keep the hypothesis that got furthest (the enum is in pipeline order after OK)
+                // keep the hypothesis that got furthest (yk_vc_status_stage: the numbers are not in that order)
                 for (int i = 0; i < np; i++) {
                     yk_vc_result_t t = pass;
                     const yk_vc_status_t st = try_centre(&c, peaks[i].x, peaks[i].y, &t);
                     t.status = st;
-                    if (st == YK_VC_OK || st > pass.status || i == 0) pass = t;
+                    if (i == 0 || yk_vc_status_stage(st) > yk_vc_status_stage(pass.status)) pass = t;
                     if (st == YK_VC_OK || st == YK_VC_LATER) break;
                 }
             }
         }
         free(c.marks);
         free(c.cand);
-        if (ridge == 0 || pass.status == YK_VC_OK || pass.status > r.status) r = pass;
+        if (ridge == 0 || yk_vc_status_stage(pass.status) > yk_vc_status_stage(r.status)) r = pass;
     }
     free(ii);
     if (r.status != YK_VC_OK) memset(&r.payload, 0, sizeof r.payload);
     if (result) *result = r;
     return r.status;
+}
+
+int yk_vc_status_stage(yk_vc_status_t status) {
+    switch (status) {
+        case YK_VC_NO_BARS: return 0;
+        case YK_VC_NO_CENTRE: return 1;
+        case YK_VC_BAD_LEVELS: return 2;  // 6. lengths -> levels
+        case YK_VC_NO_DOT: return 3;      // 7. the dot (after the levels, though its number is smaller)
+        case YK_VC_NOT_DECODED: return 4;
+        case YK_VC_LATER: return 5;
+        case YK_VC_OK: return 6;
+    }
+    return -1;
 }
 
 const char *yk_vc_status_name(yk_vc_status_t status) {

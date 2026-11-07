@@ -119,10 +119,7 @@ void yk_talk_play_cue(bool start) {
     const int i = start ? 0 : 1;
     xSemaphoreTake(s_spk, portMAX_DELAY);
     s_epoch++;
-    if (yk_speak_begin() == ESP_OK) {
-        yk_speak_pcm(s_cue[i], s_cue_n[i]);
-        yk_speak_end();
-    }
+    yk_speak_cue_pcm(s_cue[i], s_cue_n[i]);
     xSemaphoreGive(s_spk);
 }
 

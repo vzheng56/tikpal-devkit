@@ -13,6 +13,9 @@ typedef struct {
     size_t len;
 } yk_http_response_t;
 
+/** esp_http_client's event handler for every client yaykit_cloud makes: notes whether its connection opened
+ *  (yk_cloud_reach). */
+esp_err_t yk_http_on_event(esp_http_client_event_t *event);
 /** App identity sent with every request (X-Yaykit-App / X-Yaykit-Firmware). */
 void yk_http_set_app(const char *app, const char *version);
 /** Bluetooth off (HTTPS needs its internal RAM) and Wi-Fi up. Sets *code to NO_WIFI on failure. */

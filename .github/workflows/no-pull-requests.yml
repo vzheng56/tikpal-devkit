@@ -1,5 +1,5 @@
-# The kit takes no pull requests (CONTRIBUTING.md): a pull request from outside gets a comment pointing to the issue
-# forms and is closed. pull_request_target, so that a fork's pull request can be commented on and closed; nothing of
+# The kit takes no pull requests (CONTRIBUTING.md): a pull request from outside gets a comment pointing to the developer
+# platform (apps) and the Request form (the kit), and is closed. pull_request_target, so that a fork's pull request can be commented on and closed; nothing of
 # the pull request is checked out or run, and only its number and the repository's name are used.
 name: No pull requests
 on:
@@ -20,18 +20,18 @@ jobs:
         run: |
           body=$(mktemp)
           cat > "$body" <<'EOF'
-          谢谢！这个仓库不收 PR，这个 PR 先关掉了，不影响你用单子提交。
+          谢谢！这个仓库不收 PR，这个 PR 先关掉了。
 
-          - **交应用**：应用放在你自己的 GitHub 仓库里（`./kit new` 会建好，开发包是 `devkit/` 子模块），然后开一张「提交」单：{repo}/issues/new?template=submission.yml 。还没立项的先开「立项」单：{repo}/issues/new?template=proposal.yml 。
+          - **交应用**：去开发者平台 https://developer.tikpal.ai ：在那里建应用、传 `./kit submit` 打的提交包，审核进度和意见也在那里看。代码放在你自己的 GitHub 仓库里（`./kit new` 会建好，开发包是 `devkit/` 子模块）。这个仓库不收「立项」单、「提交」单。
           - **改开发包**：开一张「需求」单：{repo}/issues/new?template=request.yml 。开发包是从我们的主仓库导出的，这里合进去的改动会被下一次导出盖掉，所以我们会做进下一版。
 
           完整流程见 {repo}/blob/main/AGENTS.md 。
 
           ---
 
-          Thanks! This repository does not accept pull requests, so this one is closed; you can still submit through an issue.
+          Thanks! This repository does not accept pull requests, so this one is closed.
 
-          - **To submit an app**: keep it in your own GitHub repository (`./kit new` sets it up, with the kit as the `devkit/` submodule) and open a Submission issue: {repo}/issues/new?template=submission.yml . If you have not proposed it yet, open a Proposal first: {repo}/issues/new?template=proposal.yml .
+          - **To submit an app**: go to the developer platform, https://developer.tikpal.ai : make your app there, upload the package `./kit submit` makes, and follow the review there. Keep the code in your own GitHub repository (`./kit new` sets it up, with the kit as the `devkit/` submodule). This repository takes no proposal or submission issues.
           - **To change the kit**: open a Request issue: {repo}/issues/new?template=request.yml . The kit is exported from our main repository, so a change merged here would be overwritten by the next export; we make it in the next version instead.
 
           The whole process: {repo}/blob/main/AGENTS.md .

@@ -16,13 +16,14 @@
  *   Touch    CST820, RST=40; INT is TP_INT on the reference schematic (docs/hardware/ESP32-S3-1.75-AMOLED-AI.pdf),
  *            GPIO11 or GPIO13 there; CONFIG_YK_BOARD_TOUCH_INT_GPIO says which once measured (-1: polled)
  *   Battery  V_BAT / 2 (100k + 100k) on GPIO17 (ADC2 ch 6); USB 5 V / 2 (200k + 200k) on GPIO18 (ADC2 ch 7), same
- *            schematic; the SW6106 power chip (I2C 0x3C) is read, and written only for its 5 V charge current
- *            (0.5 A, board_init: docs/delivery/2026-10-31-battery-charge-limit.md)
+ *            schematic; the SW6106 power chip (I2C 0x3C) is read (status, charging, full), and written only
+ *            for its 5 V charge current (0.5 A, board_init: docs/delivery/2026-10-31-battery-charge-limit.md)
  *   Audio    I2S0: MCLK=42 BCLK=9 WS=45 DOUT=8 DIN=10, amplifier enable=43 (high = on)
  */
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "driver/i2c_master.h"
@@ -71,20 +72,41 @@ void      board_unlock(void);
 lv_indev_t *board_touch_indev(void);
 
 /* The battery (P20). The voltage comes from the ESP32's own ADC on V_BAT / 2 (GPIO17), which reads on battery and
- * on USB alike; the SW6106's registers 0x14/0x15 (read over I2C; that chip is the power path and the only write
- * it gets is the charge current at start, board_init) read 0 on battery and are only a cross-check now. mv
- * averaged over a few reads; percent from the resting cell's curve, corrected for the rise while charging
- * (yk_board_logic.h), -1 when unknown. usb: external power is present (USB 5 V / 2 on GPIO18). charging: on USB and
- * not yet full. `status` is SW6106 register 0x06 as read (-1 when that read failed), for diagnostics.
- * ESP_ERR_NOT_FOUND when no voltage could be read at all. */
+ * on USB alike; usb: external power is present (USB 5 V / 2 on GPIO18). Charging and full come from the SW6106
+ * (I2C 0x3C, read here: register 0x11, bit 4 its charger; its only write is the charge current at start,
+ * board_init), and the number is smoothed (docs/delivery/2026-10-31-battery-display.md 4, yk_board_logic.h): an
+ * average of the last readings, 1 at most a reading 10 s apart, only up while plugged in and only down on the
+ * battery, 100 only once the chip says full. Each firmware smooths from its own start. ESP_ERR_NOT_FOUND when no
+ * voltage could be read at all. */
+typedef enum {  /* the order of yk_board_batt_state_t */
+    BOARD_BATTERY_DISCHARGING,  /* on the battery */
+    BOARD_BATTERY_CHARGING,     /* plugged in, charging (or its first minute) */
+    BOARD_BATTERY_FULL,         /* plugged in, full: kept until unplugged */
+    BOARD_BATTERY_STOPPED,      /* plugged in, not charging, not full, for over a minute */
+    BOARD_BATTERY_UNKNOWN,      /* plugged in, the chip did not answer: charging guessed from the voltage */
+} board_battery_state_t;
+typedef enum { BOARD_BATTERY_FAULT_NONE, BOARD_BATTERY_FAULT_NO_RISE } board_battery_fault_t;
 typedef struct {
-    int mv;
-    int percent;
-    int status;
+    int mv;         /* the cell, averaged over 8 ADC reads */
+    int percent;    /* the number to show: smoothed, 99 at most until full; -1 when unknown */
+    int status;     /* SW6106 0x11 as read (-1 when that read failed), for diagnostics (0x06 before 0.1.14) */
     bool usb;       /* external power present */
-    bool charging;  /* on USB and the cell is not full yet */
+    bool charging;  /* the chip charging (guessed when it did not answer) */
+    /* Added in Yay 0.1.14 (the fields above keep their names; their values are the chip's now). */
+    int level;      /* this reading straight from the voltage, not smoothed or capped: the battery guards use it */
+    board_battery_state_t state;
+    bool low;       /* charging below 3.3 V: show 「电量很低，正在充电」, not a number */
+    board_battery_fault_t fault;  /* plugged in 30 min and still below 3.3 V: told once a plugging */
+    int chip_mv;    /* the SW6106's own voltage reading, on USB only; -1 not read */
+    int charge_ma;  /* the charge current it measures, on USB only; -1 not read */
 } board_battery_t;
 esp_err_t board_battery(board_battery_t *out);
+/* The status report's words: "discharging", "charging", "full", "stopped", "unknown"; "no_rise" (NULL: no fault). */
+const char *board_battery_state_name(board_battery_state_t state);
+const char *board_battery_fault_name(board_battery_fault_t fault);
+/* Development (yay battery fake): mv > 0 stands in for the cell's voltage, and with chip false the SW6106 is taken
+ * as not answering. board_battery_test(0, true) is back to real readings. */
+void board_battery_test(int mv, bool chip);
 /* Development: the SW6106's registers 0x00..0x3F as read (nothing written), to find what plugging in changes. A
  * register that did not answer reads 0xFF. Prints the start's YK_BOARD_CHARGE line again: the USB console is
  * usually not back yet when board_init() first prints it. */
@@ -133,14 +155,35 @@ esp_err_t board_pref_set_brightness(int percent);   /* clamped to 5..100 (0 woul
 int       board_pref_screen_off_s(void);
 esp_err_t board_pref_set_screen_off_s(int seconds); /* 0 or 15..3600 */
 /* The buddy, who talks with you (0.1.12, YK_PREF_BUDDY): key `buddy`, a u8. The main firmware sets it; apps only read
- * it (yaykit_ui's 「回到 Yay 说？」 takes its name). A value this build does not know reads as Yay. Added without
- * changing anything above: YK_API_LEVEL stays 3, and an app built before it simply never reads it (it shows Yay). */
+ * it (yaykit_ui's 「回到 Pip 说？」 takes its name). A value this build does not know reads as Pip. Added without
+ * changing anything above: YK_API_LEVEL stays 3, and an app built before it simply never reads it (it shows Yay).
+ * BOARD_BUDDY_YAY is Pip since 0.1.14 (the name, not the number, changed); WOW and AHA are retired: they read as Pip. */
 #define BOARD_BUDDY_YAY 0
 #define BOARD_BUDDY_WOW 1
 #define BOARD_BUDDY_AHA 2
+#define BOARD_BUDDY_MOTE 3
+#define BOARD_BUDDY_DIAL 4
+#define BOARD_BUDDY_BLOOM 5
 #define BOARD_PREF_BUDDY_DEFAULT BOARD_BUDDY_YAY
 int       board_pref_buddy(void);                   /* BOARD_BUDDY_*; missing or unknown: BOARD_BUDDY_YAY */
-esp_err_t board_pref_set_buddy(int buddy);          /* the main firmware's; unknown values are stored as Yay */
+esp_err_t board_pref_set_buddy(int buddy);          /* the main firmware's; unknown values are stored as Pip */
+/* The time zone (0.1.14, YK_PREF_TZ; docs/delivery/2026-11-02-system-pulldown.md 8): key `tz`, the POSIX TZ string
+ * newlib reads ("CST-8"), at most 63 characters. The main firmware writes it whenever it knows the account's zone
+ * (and removes it when it does not); apps only read it, for the system pull-down's clock. Added like the buddy:
+ * YK_API_LEVEL stays 3. */
+#define BOARD_PREF_TZ_MAX 64                         /* its buffer: 63 characters and the end */
+bool      board_pref_tz(char *out, size_t size);    /* false (and "") when not written or not a TZ string */
+esp_err_t board_pref_set_tz(const char *posix);     /* the main firmware's; NULL or "" removes it */
+/* ... and its offset east of UTC now, in minutes (key `tz_off`, an i32, -720..840; BOSS-2 11-02): summer time included,
+ * written again by the main firmware when it changes. The apps' system pull-down shows UTC plus this, and never sets
+ * the firmware's own zone (setenv("TZ") is the whole firmware's, and not thread safe). */
+bool      board_pref_tz_offset(int *minutes);       /* false when not written or out of range */
+/* For an app that shows local time itself (Homework Buddy's clock): sets the firmware's own zone (setenv("TZ"),
+ * tzset) to the shared one, or to `fallback` (NULL: UTC) when none is written (a main firmware before 0.1.14). Once, at
+ * the start: TZ is the whole firmware's and not thread safe. True when it was the shared one. NVS initialised. The
+ * system pull-down never calls it (it works out its clock from board_pref_tz_offset). */
+bool      board_pref_tz_apply(const char *fallback);
+esp_err_t board_pref_set_tz_offset(bool known, int minutes);  /* the main firmware's; !known removes it */
 
 /* ---------------------------------------------------------------- fast touch (P20)
  * LVGL reads the touch controller once a frame (about every 33 ms). For a reaction game, board_touch_fast_start()

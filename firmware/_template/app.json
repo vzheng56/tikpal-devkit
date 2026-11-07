@@ -6,7 +6,7 @@
   "boards": ["tikpal-r1"],
   "layout": "yaykit-v1",
   "minYay": "0.1.0",
-  "apiLevel": 3,
+  "apiLevel": 4,
   "capabilities": {},
   "launch": {
     "summary": {"zh": "计数器样板：短按加一，按住清零。", "en": "Counter template: tap to count, hold to reset."},
@@ -15,5 +15,6 @@
   "aliases": {"zh": ["计数器"], "en": ["Counter"]},
   "scenes": ["tools"],
   "audience": "all",
-  "pricing": {"kind": "free"}
+  "pricing": {"kind": "free"},
+  "voiceCode": {"number": 65280}
 }

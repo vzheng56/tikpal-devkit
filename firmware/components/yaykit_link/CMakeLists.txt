@@ -1,4 +1,4 @@
-set(srcs "yaykit_link.c" "yaykit_slots.c" "yk_line.c" "yk_srp_salt.c" "yk_mem.c" "yk_link_bond.c")
+set(srcs "yaykit_link.c" "yaykit_slots.c" "yk_line.c" "yk_srp_salt.c" "yk_mem.c" "yk_link_bond.c" "yk_link_text.c")
 # The long mode (yk_link_keep.h) talks to NimBLE itself: only firmware with NimBLE on builds it (Party Play has no
 # Bluetooth at all).
 if(CONFIG_BT_NIMBLE_ENABLED)

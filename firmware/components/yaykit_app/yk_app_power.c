@@ -49,12 +49,16 @@ static struct {
     char locale[8];
 } s_stored = {BOARD_PREF_VOLUME_DEFAULT, BOARD_PREF_BRIGHTNESS_DEFAULT, BOARD_PREF_SCREEN_OFF_DEFAULT, "zh"};  // s_mux
 static yk_power_t s_power = {.percent = -1};  // the watch's; s_mux
-static volatile bool s_keep_on;
+static volatile bool s_keep_on;       // the app's (yk_app_keep_screen_on)
+static volatile bool s_keep_on_code;  // ours: the 应用码 the app ring showed is up (yk_app_keep_screen_on_code)
 static bool s_guard;                // an extension in an app slot: the battery guard is on
 static volatile bool s_sleeping;    // going to sleep: nothing more from the watch
 static int64_t s_next_read_ms;      // the watch's next look (LVGL task)
 static int s_fake_pct = -2;         // development: `yay power <pct>` (-2: the battery's own)
 static bool s_fake_usb;
+#if CONFIG_YAY_DEV
+static int s_dev_look_s;            // development: `yay power look <s>`, the sleep's timer (0: YK_POWER_LOOK_S)
+#endif
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -90,7 +94,8 @@ void yk_app_settings(yk_settings_t *out) {
     memcpy(locale, s_stored.locale, sizeof(locale));
     const bool low = yk_power_low(&s_power);
     taskEXIT_CRITICAL(&s_mux);
-    yk_settings_merge(volume, brightness, off, locale, low, s_keep_on, out);
+    const yk_keep_on_t keep = {.app = s_keep_on, .code = s_keep_on_code};
+    yk_settings_merge(volume, brightness, off, locale, low, yk_keep_on(&keep), out);
 }
 
 int yk_app_brightness(void) {
@@ -141,6 +146,11 @@ void yk_app_keep_screen_on(bool on) {
     s_keep_on = on;
 }
 
+void yk_app_keep_screen_on_code(bool on) {
+    if (on != s_keep_on_code) printf("YAY_APP screen keep_on_code=%d\n", on);
+    s_keep_on_code = on;
+}
+
 bool yk_app_battery_low(void) {
     taskENTER_CRITICAL(&s_mux);
     const bool low = yk_power_low(&s_power);
@@ -161,7 +171,8 @@ static RTC_NOINIT_ATTR struct {
 #endif
 
 /** The level (-1 when not known) and USB, as board_battery() reads them (or `yay power` made them up). False when
- *  nothing could be read. */
+ *  nothing could be read. The level is this reading's, not the smoothed number on the screen (0.1.14,
+ *  docs/delivery/2026-10-31-battery-display.md 4.7): the guards fire on the same reading as before. */
 static bool reading(int *pct, bool *usb) {
     if (s_fake_pct > -2) {
         *pct = s_fake_pct, *usb = s_fake_usb;
@@ -170,7 +181,7 @@ static bool reading(int *pct, bool *usb) {
     board_battery_t b;
     const esp_err_t err = board_battery(&b);
     if (err != ESP_OK && err != ESP_ERR_INVALID_RESPONSE) return false;
-    *pct = err == ESP_OK ? b.percent : -1;
+    *pct = err == ESP_OK ? b.level : -1;
     *usb = b.usb;
     return true;
 }
@@ -195,11 +206,15 @@ static void deep_sleep(bool panel, int pct) {
     rtc_gpio_pullup_dis(BOARD_PIN_VBUS);  // the divider holds it at 0 V without power
     rtc_gpio_pulldown_dis(BOARD_PIN_VBUS);
     esp_sleep_enable_ext1_wakeup_io(1ULL << BOARD_PIN_VBUS, ESP_EXT1_WAKEUP_ANY_HIGH);
-    esp_sleep_enable_timer_wakeup((uint64_t)YK_POWER_LOOK_S * 1000000ULL);
+    int look_s = YK_POWER_LOOK_S;
+#if CONFIG_YAY_DEV
+    if (s_dev_look_s > 0) look_s = s_dev_look_s;  // a test of the whole path wakes by itself, no hand on the key
+#endif
+    esp_sleep_enable_timer_wakeup((uint64_t)look_s * 1000000ULL);
     if (yk_speak_sleep) yk_speak_sleep();
     const esp_err_t held = board_sleep_prepare(panel);
     printf("YAY_APP power deep_sleep next=%s boot_set=%d key=%d usb=1 look_s=%d pct=%d panel_sleep=%d held=%d\n", home,
-           boot == ESP_OK, key, YK_POWER_LOOK_S, pct, panel, held == ESP_OK);
+           boot == ESP_OK, key, look_s, pct, panel, held == ESP_OK);
     fflush(stdout);
     vTaskDelay(pdMS_TO_TICKS(50));  // the line out over USB
     esp_deep_sleep_start();
@@ -221,6 +236,7 @@ static lv_obj_t *plain(lv_obj_t *parent, int x, int y, int w, int h, uint32_t co
 static void sleep_page(void) {
     yk_apps_close(false);  // the app ring and 「回到 Yay 说？」, when up
     yk_apps_ask_close();
+    yk_app_sheet_close("sleep");  // the system pull-down
     yk_hint_hide();
     if (board_display_asleep()) board_display_wake(0);  // lit below, once drawn
     lv_obj_t *scr = lv_obj_create(NULL);
@@ -347,6 +363,11 @@ int yk_app_power_dev(int argc, char **argv) {
         return 0;
     }
 #if CONFIG_YAY_DEV
+    if (argc > 2 && !strcmp(argv[1], "look")) {
+        s_dev_look_s = atoi(argv[2]);
+        printf("YAY_APP power look_s=%d (the next sleep's timer; 0: %d)\n", s_dev_look_s, YK_POWER_LOOK_S);
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "next")) {
         s_next.pct = (int8_t)atoi(argv[2]);
         s_next.usb = argc > 3 && !strcmp(argv[3], "usb");

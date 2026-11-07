@@ -8,6 +8,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "cJSON.h"
 #include "esp_err.h"
@@ -32,6 +33,11 @@ const char *yk_wifi_state_name(void);
 bool yk_wifi_wait_connected(uint32_t timeout_ms);
 /** Fills a yk-info "wifi" object: state; ssid / rssi / ip when connected; error (WRONG_PASSWORD or NOT_FOUND) when failed. */
 void yk_wifi_describe(cJSON *wifi);
+/** For a status line (the system pull-down, docs/delivery/2026-11-02-system-pulldown.md): the state as yk_wifi_state()
+ *  (a yk_wifi_state_t, as an int), and when connected the network's name in `ssid` ("" otherwise) and its signal in
+ *  `rssi` (dBm; 0 otherwise). Plain types, so that yaykit_app can link it weakly (an app without Wi-Fi has none).
+ *  `ssid` and `rssi` may be NULL. */
+int yk_wifi_status(char *ssid, size_t size, int *rssi);
 /**
  * Yaykit Link commands; ESP_ERR_NOT_FOUND for other names.
  *   wifi.scan                         -> {"networks":[{"ssid","rssi","auth":"open|password|unsupported"}]}, strongest

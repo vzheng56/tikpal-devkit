@@ -88,6 +88,11 @@ esp_err_t yk_http_send(esp_http_client_method_t method, const char *path, const 
     memset(out, 0, sizeof(*out));
     return ESP_FAIL;
 }
+esp_err_t yk_http_on_event(esp_http_client_event_t *event) {
+    (void)event;
+    return ESP_OK;
+}
+
 void yk_http_read_body(esp_http_client_handle_t client, yk_http_response_t *out) {
     (void)client;
     memset(out, 0, sizeof(*out));
@@ -122,6 +127,15 @@ int esp_http_client_read(esp_http_client_handle_t c, char *b, int n) { (void)c, 
 esp_err_t esp_http_client_set_timeout_ms(esp_http_client_handle_t c, int ms) { (void)c, (void)ms; return ESP_OK; }
 esp_err_t esp_http_client_close(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
 esp_err_t esp_http_client_cleanup(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
+esp_err_t esp_http_client_set_url(esp_http_client_handle_t c, const char *u) { (void)c, (void)u; return ESP_OK; }
+esp_err_t esp_http_client_set_method(esp_http_client_handle_t c, esp_http_client_method_t m) { (void)c, (void)m; return ESP_OK; }
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *k, const char *v) {
+    (void)c, (void)k, (void)v;
+    return ESP_OK;
+}
+int esp_http_client_get_socket(esp_http_client_handle_t c) { (void)c; return -1; }
+bool esp_http_client_is_complete_data_received(esp_http_client_handle_t c) { (void)c; return false; }
+bool esp_http_client_is_persistent_connection(esp_http_client_handle_t c) { (void)c; return false; }
 esp_err_t esp_crt_bundle_attach(void *conf) { (void)conf; return ESP_OK; }
 int64_t esp_timer_get_time(void) { return 0; }
 

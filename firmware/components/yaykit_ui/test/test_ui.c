@@ -377,21 +377,63 @@ static void test_yay_palette(void) {
     CHECK(YK_YAY_TRANSPARENT > 0xFFFFFF);
 }
 
-// The buddy's name (0.1.12, YK_PREF_BUDDY): 0 Yay, 1 Wow, 2 Aha; anything else (a later buddy, a bad byte, the -1 of
-// a missing value) is Yay. Names, the same in every language.
+// The buddy's name (0.1.12, YK_PREF_BUDDY): 0 Pip, 3 Mote, 4 Dial, 5 Bloom; anything else (1 and 2, retired, a later
+// buddy, a bad byte, the -1 of a missing value) is Pip. Names, the same in every language.
 static void test_buddy(void) {
-    CHECK(!strcmp(yk_buddy_name(0), "Yay") && !strcmp(yk_buddy_name(1), "Wow") && !strcmp(yk_buddy_name(2), "Aha"));
-    CHECK(!strcmp(yk_buddy_name(3), "Yay") && !strcmp(yk_buddy_name(-1), "Yay") && !strcmp(yk_buddy_name(255), "Yay"));
+    CHECK(!strcmp(yk_buddy_name(0), "Pip") && !strcmp(yk_buddy_name(3), "Mote") && !strcmp(yk_buddy_name(4), "Dial") &&
+          !strcmp(yk_buddy_name(5), "Bloom"));
+    CHECK(!strcmp(yk_buddy_name(1), "Pip") && !strcmp(yk_buddy_name(2), "Pip"));
+    CHECK(!strcmp(yk_buddy_name(6), "Pip") && !strcmp(yk_buddy_name(-1), "Pip") && !strcmp(yk_buddy_name(255), "Pip"));
 }
 
-// The Tikpal mark's checks (yk_mark_fit.h, 0.1.12): inside the safe circle up to its edge, not a pixel past it; clear
-// of a box only with the gap kept; a page's room caps the size.
+// The Tikpal mark's checks (yk_mark_fit.h, 0.1.12; the 伴环 ring and dot from 0.1.14): inside the safe circle up to
+// its edge, not a pixel past it, the ring's way and the dot's; clear of a box only with the gap kept; a page's room
+// caps the size.
 static void test_mark_fit(void) {
-    CHECK(yk_mark_within(YK_CX, YK_CY, 2 * YK_R_CONTENT, YK_R_CONTENT));
-    CHECK(!yk_mark_within(YK_CX, YK_CY, 2 * YK_R_CONTENT + 2, YK_R_CONTENT));
-    CHECK(yk_mark_within(YK_CX, YK_CY - 168, 64, YK_R_CONTENT));   // its top on the circle's top (33)
-    CHECK(!yk_mark_within(YK_CX, YK_CY - 169, 64, YK_R_CONTENT));
-    CHECK(!yk_mark_within(YK_CX + 120, YK_CY - 120, 64, YK_R_CONTENT));  // a corner: 170 + 32 out
+    // The master in pixels: 64 px is 0.165 of the 388, the dot 22 right and 22 up, 20 across.
+    CHECK(yk_mark_px(YK_MARK_DOT_X, 64) == 22 && yk_mark_px(YK_MARK_DOT_Y, 64) == -22);
+    CHECK(yk_mark_px(2 * YK_MARK_DOT_R, 64) == 20 && yk_mark_px(YK_MARK_STROKE, 64) == 16);
+    CHECK(yk_mark_px(YK_MARK_UNITS, 200) == 200 && yk_mark_px(-YK_MARK_UNITS, 200) == -200);
+    CHECK(yk_mark_px(1, 194) == 1 && yk_mark_px(-1, 194) == -1 && yk_mark_px(1, 193) == 0);  // halves away from zero
+    // The dot reaches 0.64 of the size from the centre (sqrt(133² + 132²) + 61 = 248.4 of 388), rounded as drawn.
+    CHECK(fabsf(yk_mark_reach(388) - 248.4f) < 0.1f);
+    CHECK(fabsf(yk_mark_reach(200) / 200 - 0.640f) < 0.005f && fabsf(yk_mark_reach(64) / 64 - 0.640f) < 0.01f);
+    // Down and to the left the ring is what touches the circle: its edge on it (33 + 400 = 433), not a pixel more.
+    CHECK(yk_mark_within(YK_CX, YK_CY + 168, 64, YK_R_CONTENT));
+    CHECK(!yk_mark_within(YK_CX, YK_CY + 169, 64, YK_R_CONTENT));
+    CHECK(yk_mark_within(YK_CX - 168, YK_CY, 64, YK_R_CONTENT));
+    CHECK(!yk_mark_within(YK_CX - 169, YK_CY, 64, YK_R_CONTENT));
+    // Up it is the dot: its centre (22, -188) from the screen's, 189.3 away, and 10 of radius make 199.3; a pixel more
+    // is out, though the ring alone would still fit two more (the 0.1.12 mark went up to 168).
+    CHECK(yk_mark_within(YK_CX, YK_CY - 166, 64, YK_R_CONTENT));
+    CHECK(!yk_mark_within(YK_CX, YK_CY - 167, 64, YK_R_CONTENT));
+    CHECK(yk_mark_disc_within(YK_CX, YK_CY - 168, 64, YK_R_CONTENT));
+    // Up and to the right, the dot's own way: 112 px each way at most.
+    CHECK(yk_mark_within(YK_CX + 112, YK_CY - 112, 64, YK_R_CONTENT));
+    CHECK(!yk_mark_within(YK_CX + 113, YK_CY - 113, 64, YK_R_CONTENT));
+    CHECK(!yk_mark_within(YK_CX + 120, YK_CY - 120, 64, YK_R_CONTENT));
+    // 88 (Settings › 关于) and 200 (the brand on a cold start, centred): the same both ways.
+    CHECK(yk_mark_within(YK_CX, YK_CY + 156, 88, YK_R_CONTENT) && !yk_mark_within(YK_CX, YK_CY + 157, 88, YK_R_CONTENT));
+    CHECK(yk_mark_within(YK_CX, YK_CY - 153, 88, YK_R_CONTENT) && !yk_mark_within(YK_CX, YK_CY - 154, 88, YK_R_CONTENT));
+    CHECK(yk_mark_within(YK_CX, YK_CY, 200, YK_R_CONTENT) && yk_mark_reach(200) < 130);
+    // Centred, the largest that fits is 313 (the dot's 0.64): the ring alone would be 400.
+    CHECK(yk_mark_within(YK_CX, YK_CY, 313, YK_R_CONTENT) && !yk_mark_within(YK_CX, YK_CY, 314, YK_R_CONTENT));
+    CHECK(yk_mark_disc_within(YK_CX, YK_CY, 2 * YK_R_CONTENT, YK_R_CONTENT));
+    CHECK(!yk_mark_disc_within(YK_CX, YK_CY, 2 * YK_R_CONTENT + 2, YK_R_CONTENT));
+    // Against the geometry itself, everywhere on the screen at the sizes in use: inside by the check means inside by
+    // the real circles (a pixel of rounding allowed), and a pixel and a half to spare means inside by the check.
+    const int sizes[] = {48, 64, 73, 88, 200};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++)
+        for (int y = 0; y < 466; y += 3)
+            for (int x = 0; x < 466; x += 3) {
+                const float k = sizes[i] / (float)YK_MARK_UNITS, dx = (float)(x - YK_CX), dy = (float)(y - YK_CY);
+                const float ring = hypotf(dx, dy) + sizes[i] / 2.0f;
+                const float dot = hypotf(dx + YK_MARK_DOT_X * k, dy + YK_MARK_DOT_Y * k) + YK_MARK_DOT_R * k;
+                const float worst = ring > dot ? ring : dot;
+                const bool in = yk_mark_within(x, y, sizes[i], YK_R_CONTENT);
+                if (in) CHECK(worst <= YK_R_CONTENT + 1.0f);
+                if (worst <= YK_R_CONTENT - 1.5f) CHECK(in);
+            }
     CHECK(yk_mark_clear(233, 100, 64, 0, 0, 132, 466, 20));   // its square ends at 132, the box starts there
     CHECK(!yk_mark_clear(233, 100, 64, 1, 0, 132, 466, 20));  // ... not with a gap of one
     CHECK(yk_mark_clear(233, 100, 64, 6, 300, 60, 100, 80));  // beside it

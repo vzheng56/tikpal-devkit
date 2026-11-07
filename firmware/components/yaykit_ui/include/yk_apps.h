@@ -3,16 +3,22 @@
 // r 142, clockwise from 12 o'clock every 72 degrees, each a dark disc (r 38) with its 64 x 64 icon and its name. The
 // app in use has a sage ring and a sage name; one in the package cache a small hollow sage ring on the disc's lower
 // right; one on neither (to download) is dimmed to 42 % with a small sage download mark; one with a newer version
-// (`update`, the main firmware's only) a coral dot on the disc's upper right. Since the app ecosystem's
+// (`update`, the main firmware's only) a coral dot on the disc's upper right; a place with `phone` a small sage phone
+// mark there instead (an extension's own place had it when it had a 应用码, voice-code handoff 2.1②, until 0.1.14:
+// the code is the system pull-down's now, and no ring sets it). Since the app ecosystem's
 // stage 1 (docs/design/app-ecosystem.md 4.5) the fifth place is 「更多」 (three dots): yk_apps_pick_ring() gives up
-// to 4 apps and 「更多」 last; the callback then reports YK_APPS_MORE. Since 0.1.6 (docs/delivery/2026-10-25-settings-u.md
-// 5) 「设置」 (a gear) comes after it, and a ring with it has 6 places every 60 degrees on a circle of r 128 (the name
-// under the bottom one stays in the safe circle): apps from 12 o'clock, 「更多」 lower left, 「设置」 upper left. A ring
-// without 「设置」 (an extension built before) keeps the 5 places at r 142.
+// to 4 apps and 「更多」 last; the callback then reports YK_APPS_MORE. From 0.1.6 to 0.1.13 (docs/delivery/2026-10-25-
+// settings-u.md 5) 「设置」 (a gear) came after it, on a ring of 6 places every 60 degrees at r 128: apps from 12 o'clock,
+// 「更多」 lower left, 「设置」 upper left. Since 0.1.14 the ring holds apps only (docs/delivery/2026-11-02-system-pulldown.md
+// 2: the settings are the main screen's swipe to the left), and yk_apps_pick_ring() no longer gives 「设置」; the 6 places
+// are still drawn for items that end with it.
 // The background is opaque paper: nothing behind shows through (and LVGL skips drawing what is under it).
 //
 // Opening: the middle grows from 0.6, the apps fly out from the centre one after another (28 ms apart), about
-// 300 ms in all. Closing: back into the centre, 180 ms. Untouched for 8 s it closes by itself.
+// 300 ms in all. Closing: back into the centre, 180 ms. Untouched for 8 s it closes by itself. A swipe anywhere on it
+// (docs/delivery/2026-10-31-round-screen-gestures.md 5.2, 7) closes it towards the finger (everything slides 160 px
+// that way and fades, 200 ms) and is never a tap: wherever the finger lets go, on an app or the one in use, nothing
+// is opened or installed.
 //
 // Objects exist only while it is open (one drawing object and Yay); icons are made in PSRAM when it opens and freed
 // when it closes. Where an item gives no icon, the shared app catalog (yk_catalog.h) is asked; without one the
@@ -35,7 +41,7 @@ extern "C" {
 #define YK_APPS_MAX 6
 #define YK_APPS_HOME "yay"    // the middle's slug (yaykit_app's YK_APP_HOME_SLUG)
 #define YK_APPS_MORE "+more"  // 「更多」, the fifth place: all of one's apps (never an app's slug: those start with a letter)
-#define YK_APPS_SETTINGS "+settings"  // 「设置」, the last place: Yay's settings
+#define YK_APPS_SETTINGS "+settings"  // 「设置」, the last place: Yay's settings (0.1.6 to 0.1.13; no ring gives it now)
 #define YK_APPS_RING_APPS 4   // apps on a ring with 「更多」
 
 typedef struct {
@@ -49,6 +55,11 @@ typedef struct {
     // has a newer version, and on 「设置」 when Tikpal or any app has one; an extension's ring never knows, and leaves it
     // false.
     bool update;
+    // The voice-code handoff 2.1② (docs/handoff/2026-11-01-voice-code.md), added last as `update` was: a small phone
+    // mark on the disc's upper right, sage with a paper phone (「在手机上打开」: a tap shows its 应用码 for the phone to
+    // scan); never with `update`. yaykit_app set it on the extension's own place when its app.json had voiceCode;
+    // since 0.1.14 the ring only switches apps (docs/delivery/2026-11-02-system-pulldown.md 8) and nothing sets it.
+    bool phone;
 } yk_apps_item_t;
 
 /** An installed app, from yaykit_app's slot table: its slug and when it was last used (Unix ms; 0 unknown). */
@@ -64,14 +75,14 @@ typedef struct {
 int yk_apps_pick(const yk_apps_slot_t *installed, int n, const yk_catalog_t *cat, yk_apps_item_t *out, int max);
 /** The ring with 「更多」 (app-ecosystem.md 4.5): up to YK_APPS_RING_APPS apps, those on the device first (in a slot,
  *  the most recently used first; then `cached`: the package cache's slugs, most recently used first), then the
- *  catalog's that are on neither, in its order; then 「更多」 (YK_APPS_MORE), always, and 「设置」 (YK_APPS_SETTINGS) last
- *  when there is room for both (`max` 2 or more). `cached` may be NULL. At most `max` items, those two included. Yay,
- *  empty slugs and repeats are skipped. Pure. */
+ *  catalog's that are on neither, in its order; then 「更多」 (YK_APPS_MORE), always, last. Apps only and 「更多」: no
+ *  「设置」 since 0.1.14 (system-pulldown.md 2; 0.1.6 to 0.1.13 put YK_APPS_SETTINGS after it). `cached` may be NULL. At
+ *  most `max` items, 「更多」 included. Yay, empty slugs and repeats are skipped. Pure. */
 int yk_apps_pick_ring(const yk_apps_slot_t *installed, int n, const char *const cached[], int nc,
                       const yk_catalog_t *cat, yk_apps_item_t *out, int max);
 
 /** What was tapped, called once the ring has closed: the item's slug, YK_APPS_HOME for the middle, NULL for the
- *  paper around them or 8 s without a touch. Not called after yk_apps_close(). The ring is gone by then: the
+ *  paper around them, a swipe or 8 s without a touch. Not called after yk_apps_close(). The ring is gone by then: the
  *  callback may open it again, draw a page, or restart. */
 typedef void (*yk_apps_cb_t)(const char *slug, void *ctx);
 
@@ -84,6 +95,11 @@ typedef void (*yk_apps_cb_t)(const char *slug, void *ctx);
  *  The items are copied. Already open: closes that one at once (no callback) and opens anew. */
 bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const char *current, yk_apps_cb_t cb,
                   void *ctx);
+/** The main firmware's (0.1.14, BOSS-2 11-02): Tikpal itself has a newer version, and the middle carries the apps'
+ *  coral update dot on its disc's upper right (as `update` on an app: the main firmware fills it, an extension's ring
+ *  never knows and leaves it off, the default). Set before yk_apps_open(); it stays for the next opens. Since the ring
+ *  holds no 「设置」 (whose dot said so before), this is where the ring shows it. */
+void yk_apps_home_update(bool on);
 /** Closes it without a callback: folding back in 180 ms (`animated`) or at once. Nothing when it is closed. */
 void yk_apps_close(bool animated);
 /** Open, or still folding back. */

@@ -32,9 +32,12 @@ typedef struct {
     bool more;                   // 「更多」: three dots
     bool settings;               // 「设置」: a gear
     bool update;                 // a newer version (0.1.12): a coral dot on the upper right
+    bool phone;                  // its 应用码 (voice-code handoff 2.1②): the phone mark on the upper right
     const lv_image_dsc_t *icon;  // the caller's, or `own`
     lv_image_dsc_t own;          // from the catalog: RGB565A8 in PSRAM, already dimmed when not installed
 } sat_t;
+
+static bool s_home_update;  // yk_apps_home_update(): kept across opens (`s` is cleared at each)
 
 static struct {
     lv_obj_t *root;
@@ -52,6 +55,8 @@ static struct {
     void *ctx;
     uint32_t t0, last_input;
     bool closing, moving, report;
+    yk_apps_touch_t touch;  // the press now: a swipe is not a tap (round-screen-gestures.md 7)
+    int8_t away_dx, away_dy;  // closing after a swipe: towards the finger (0, 0: folding back)
     bool has_result;
     char result[32];
     int64_t opened_us;
@@ -95,6 +100,13 @@ static lv_area_t element_area(int e, const yk_apps_pose_t *p) {
         lv_area_t a = disc_area(p->cx, p->cy, (YK_APPS_CENTER_R + YK_APPS_RING_W) * k);
         const lv_area_t l = carried(&s.L.label, YK_CX, YK_CY, p);
         join(&a, &l);
+        if (s_home_update) {
+            int dx, dy;
+            float r, edge;
+            yk_apps_home_dot(p->cx, p->cy, k, &dx, &dy, &r, &edge);
+            const lv_area_t dot = disc_area(dx, dy, edge);
+            join(&a, &dot);
+        }
         return a;
     }
     const yk_apps_sat_t *st = &s.L.sat[e - 1];
@@ -111,6 +123,13 @@ static lv_area_t element_area(int e, const yk_apps_pose_t *p) {
         yk_apps_update_dot(p->cx, p->cy, k, &dx, &dy, &r, &edge);
         const lv_area_t dot = disc_area(dx, dy, edge);
         join(&a, &dot);
+    }
+    if (s.sat[e - 1].phone) {  // the phone mark, upper right
+        int mx, my;
+        float r, edge;
+        yk_apps_phone_mark(p->cx, p->cy, k, &mx, &my, &r, &edge);
+        const lv_area_t mark = disc_area(mx, my, edge);
+        join(&a, &mark);
     }
     const lv_area_t name = carried(&st->name, st->cx, st->cy, p);
     join(&a, &name);
@@ -192,6 +211,28 @@ void yk_draw_update_dot(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa
     yk_draw_disc(layer, x, y, r, YK_CORAL, opa);
 }
 
+/** The phone mark (voice-code handoff 2.1②): a sage disc in a paper ring, a paper phone on it (a rounded outline
+ *  and a short line at its foot), like the download mark's sage and paper. */
+void yk_draw_phone_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
+    int x, y;
+    float r, edge;
+    yk_apps_phone_mark(cx, cy, k, &x, &y, &r, &edge);
+    yk_draw_disc(layer, x, y, edge, YK_PAPER, opa);
+    yk_draw_disc(layer, x, y, r, YK_SAGE, opa);
+    if (k < 0.5f) return;
+    const int w = (int)lroundf(10 * k), h = (int)lroundf(16 * k);
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.bg_opa = LV_OPA_TRANSP;
+    d.border_color = lv_color_hex(YK_PAPER);
+    d.border_opa = opa;
+    d.border_width = LV_MAX(1, (int32_t)lroundf(2 * k));
+    d.radius = (int32_t)lroundf(3 * k);
+    const lv_area_t body = {x - w / 2, y - h / 2, x - w / 2 + w - 1, y - h / 2 + h - 1};
+    lv_draw_rect(layer, &d, &body);
+    line(layer, x - 1.5f * k, y + 4.5f * k, x + 1.5f * k, y + 4.5f * k, 2 * k, opa);
+}
+
 /** 「设置」's gear (the canvas's 24-unit icon at 36 px): a ring, a hub and eight spokes, on the disc. */
 static void draw_gear(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
     const float u = YK_APPS_GEAR_UNIT * k, w = 2 * u;
@@ -259,6 +300,7 @@ static void draw_sat(lv_layer_t *layer, int i) {
     else if (!local && !own) yk_draw_download_mark(layer, p->cx, p->cy, k, p->opa);
     // A newer version (0.1.12): on an app in a slot, or on 「设置」 when Tikpal or any app has one (the main firmware's).
     if (t->update && (t->installed || t->settings)) yk_draw_update_dot(layer, p->cx, p->cy, k, p->opa);
+    else if (t->phone) yk_draw_phone_mark(layer, p->cx, p->cy, k, p->opa);
     const lv_area_t na = carried(&s.L.sat[i].name, s.L.sat[i].cx, s.L.sat[i].cy, p);
     const uint32_t color = t->current ? YK_SAGE_TEXT : local || own ? YK_INK : YK_INK2;
     yk_draw_text(layer, t->name, s.font, color, text_opa(p, 0.6f), &na);
@@ -272,6 +314,13 @@ static void draw_cb(lv_event_t *e) {
     const float k = k_of(p);
     yk_draw_disc(layer, p->cx, p->cy, YK_APPS_CENTER_R * k, YK_PANEL, p->opa);
     if (s.home) yk_draw_in_use(layer, p->cx, p->cy, YK_APPS_CENTER_R, k, p->opa);
+    if (s_home_update) {  // Tikpal has a newer version (the main firmware's)
+        int x, y;
+        float r, edge;
+        yk_apps_home_dot(p->cx, p->cy, k, &x, &y, &r, &edge);
+        yk_draw_disc(layer, x, y, edge, YK_PAPER, p->opa);
+        yk_draw_disc(layer, x, y, r, YK_CORAL, p->opa);
+    }
     const lv_area_t la = carried(&s.L.label, YK_CX, YK_CY, p);
     yk_draw_text(layer, s.label, s.font, s.home ? YK_SAGE_TEXT : YK_INK, text_opa(p, 0.8f), &la);
     // Yay is a child: drawn over this
@@ -299,9 +348,12 @@ static void apply(const yk_apps_pose_t pose[YK_APPS_MAX + 1]) {
 
 static void finish(void);
 
-static void start_close(bool report, const char *result) {
+/** Closes it: folding back into the centre, or with (dx, dy) towards the finger after a swipe. */
+static void start_close(bool report, const char *result, int dx, int dy) {
     if (s.closing) return;
     s.closing = true;
+    yk_apps_touch_closing(&s.touch);
+    s.away_dx = (int8_t)dx, s.away_dy = (int8_t)dy;
     s.moving = true;
     s.report = report;
     s.has_result = result != NULL;
@@ -318,7 +370,10 @@ static void tick(lv_timer_t *t) {
         lv_obj_move_to_index(s.root, -1);
     if (s.moving) {
         yk_apps_pose_t pose[YK_APPS_MAX + 1];
-        const bool done = yk_apps_frame(&s.L, (int)lv_tick_elaps(s.t0), s.closing, pose);
+        const int t_ms = (int)lv_tick_elaps(s.t0);
+        const bool done = s.closing && (s.away_dx || s.away_dy)
+                              ? yk_apps_frame_away(&s.L, t_ms, s.away_dx, s.away_dy, pose)
+                              : yk_apps_frame(&s.L, t_ms, s.closing, pose);
         apply(pose);
         if (!s.closing) s.frames++;
         if (!done) return;
@@ -331,23 +386,42 @@ static void tick(lv_timer_t *t) {
         s_stats.frames = s.frames;
         lv_timer_set_period(t, IDLE_CHECK_MS);
     } else if (lv_tick_elaps(s.last_input) >= YK_APPS_IDLE_MS) {
-        start_close(true, NULL);
+        start_close(true, NULL, 0, 0);
     }
 }
 
 static void on_press(lv_event_t *e) {
     (void)e;
     s.last_input = lv_tick_get();
+    yk_apps_touch_press(&s.touch);
+}
+
+/** A swipe anywhere on it: closes towards the finger, nothing tapped. Its release goes nowhere (LVGL would still
+ *  send CLICKED for it, at wherever the finger lets go). */
+static void on_gesture(lv_event_t *e) {
+    (void)e;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    const lv_dir_t d = lv_indev_get_gesture_dir(indev);
+    const int dx = d == LV_DIR_LEFT ? -1 : d == LV_DIR_RIGHT ? 1 : 0;
+    const int dy = d == LV_DIR_TOP ? -1 : d == LV_DIR_BOTTOM ? 1 : 0;
+    const yk_apps_go_t go = yk_apps_touch_swipe(&s.touch, dx, dy);
+    if (go.kind != YK_APPS_GO_AWAY) return;
+    lv_indev_wait_release(indev);
+    s.last_input = lv_tick_get();
+    start_close(true, NULL, go.dx, go.dy);
+    ESP_LOGI(TAG, "swipe %s: closes, nothing tapped",
+             go.dx < 0 ? "left" : go.dx > 0 ? "right" : go.dy < 0 ? "up" : "down");
 }
 
 static void on_click(lv_event_t *e) {
     (void)e;
-    if (s.closing) return;
     lv_point_t p = {0};
     lv_indev_t *indev = lv_indev_active();
     if (indev) lv_indev_get_point(indev, &p);
-    const int hit = yk_apps_hit(&s.L, p.x, p.y);
-    start_close(true, hit < 0 ? NULL : hit == 0 ? YK_APPS_HOME : s.sat[hit - 1].slug);
+    const yk_apps_go_t go = yk_apps_touch_click(&s.touch, &s.L, p.x, p.y);
+    if (go.kind != YK_APPS_GO_TAP) return;
+    start_close(true, go.hit < 0 ? NULL : go.hit == 0 ? YK_APPS_HOME : s.sat[go.hit - 1].slug, 0, 0);
 }
 
 /** The root is going (closed, or its screen deleted): everything else goes with it. */
@@ -390,6 +464,8 @@ static const lv_image_dsc_t *catalog_icon(sat_t *t, const yk_catalog_entry_t *e,
     return &t->own;
 }
 
+void yk_apps_home_update(bool on) { s_home_update = on; }
+
 static void teardown(void) {
     if (s.root) lv_obj_delete(s.root);  // on_delete clears `s`
 }
@@ -425,6 +501,7 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
         t->installed = items[i].installed;
         t->cached = items[i].cached;
         t->update = items[i].update && !t->more;
+        t->phone = items[i].phone && !t->more && !t->settings;
         t->current = current && !strcmp(t->slug, current);
         const yk_catalog_entry_t *e = have_cat && !t->more && !t->settings ? yk_catalog_find(cat, t->slug) : NULL;
         const char *name = items[i].name ? items[i].name
@@ -452,6 +529,7 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
     if (s.font) label_w = yk_text_fit(label, glyph_w, (void *)s.font, label_max, s.label, sizeof(s.label));
     else snprintf(s.label, sizeof(s.label), "%s", label);
     yk_apps_layout_at(n, slots, name_w, s.line_h, label_w, &s.L);
+    for (int i = 0; i < n; i++) s.L.sat[i].phone = s.sat[i].phone && !s.sat[i].update;
 
     // The paper over everything, one object; Yay in the middle.
     lv_obj_t *root = lv_obj_create(parent);
@@ -466,6 +544,7 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
     lv_obj_add_event_cb(root, draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(root, on_press, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(root, on_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(root, on_gesture, LV_EVENT_GESTURE, NULL);
     lv_obj_add_event_cb(root, on_delete, LV_EVENT_DELETE, NULL);
     s.root = root;
     yk_apps_frame(&s.L, 0, false, s.pose);
@@ -490,7 +569,7 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
 void yk_apps_close(bool animated) {
     if (!s.root) return;
     s.report = false;  // whatever was tapped before, the caller closed it
-    if (animated) start_close(false, NULL);
+    if (animated) start_close(false, NULL, 0, 0);
     else teardown();
 }
 
@@ -506,7 +585,7 @@ bool yk_apps_tap(const char *slug) {
     for (int i = 0; slug && !hit && i < s.L.n; i++)
         if (!strcmp(s.sat[i].slug, slug)) hit = s.sat[i].slug;
     s.last_input = lv_tick_get();
-    start_close(true, hit);
+    start_close(true, hit, 0, 0);
     return true;
 }
 
@@ -578,7 +657,7 @@ bool yk_apps_ask(lv_obj_t *parent, yk_apps_cb_t cb, void *ctx) {
     lv_obj_set_style_bg_color(card, lv_color_hex(ASK_CARD), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_clickable(card, false);  // the tap is the paper's, anywhere
-    char ask[48];  // the buddy's name (YK_PREF_BUDDY): 「回到 Yay 说？」 until the main firmware sets another
+    char ask[48];  // the buddy's name (YK_PREF_BUDDY): 「回到 Pip 说？」 until the main firmware sets another
     ask_label(card, 22, 22, YK_INK, yk_apps_ask_text(yk_ui_buddy_name(), en, ask, sizeof(ask)));
     ask_label(card, 62, YK_SIZE_MIN, YK_INK3, en ? "Tap to go · press to stay" : "点屏幕回去 · 短按留下");
     lv_obj_add_event_cb(root, ask_tapped, LV_EVENT_CLICKED, NULL);

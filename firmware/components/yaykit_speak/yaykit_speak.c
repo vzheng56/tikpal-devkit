@@ -7,6 +7,7 @@
 
 #include "audio.h"
 #include "board.h"
+#include "board_speaker.h"
 #include "decoder/impl/esp_opus_dec.h"
 #include "driver/gpio.h"
 #include "esp_codec_dev.h"
@@ -18,6 +19,8 @@
 #include "freertos/message_buffer.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
+#include "yk_loud.h"
 #include "yk_mix.h"
 
 // The speaker task writes one block at a time (20 ms, or 5 ms for low latency), at most `ahead` blocks before they
@@ -54,11 +57,13 @@ static struct {
     bool open;
     volatile int state;
     volatile bool ended, stop, live, hold_amp;
+    volatile bool cue;      // this utterance is a cue (yk_speak_cue_pcm): no voice loudness
     volatile bool reclaim;  // yk_speak_reclaim(): open and close the codec once, when idle
     volatile bool mic;      // yk_speak_mic(): the microphones are recording
     SemaphoreHandle_t reclaim_lock;  // a reclaim's check and its codec open/close, against yk_speak_mic(true)
-    int volume;
+    volatile int volume;
     yk_mix_t *mix;
+    yk_loud_t *loud;  // the voice's loudness (yk_loud.h), on the utterance before the mix
     int16_t *pcm;     // max_pcm: one decoded packet
     int16_t *chunk;   // the utterance's block
     int16_t *mono;    // the mixed block
@@ -81,7 +86,27 @@ static struct {
     yk_speak_stats_t st;
     volatile bool pa_on;
     volatile int64_t pa_on_us, pa_off_us;  // when the amplifier came on; when it may go off (0 = not before use)
-} S = {.lock = portMUX_INITIALIZER_UNLOCKED, .volume = 6};
+    // the utterance's level as it arrives (stats: utter_peak_db10, utter_rms_db10)
+    uint64_t u_sum;
+    uint32_t u_n;
+    int u_peak;
+    int codec_vol;  // `speak codec <0-100>` (development): the codec's output volume as given; -1 = from `volume`
+    int16_t *keep;  // `speak keep` (development): the last utterance as it arrived, for `speak dump`
+    size_t keep_n, keep_cap;
+} S = {.lock = portMUX_INITIALIZER_UNLOCKED, .volume = 6, .codec_vol = -1};
+
+// The voice's loudness follows the volume step (board_speaker.h); a change applies from the next utterance, so an
+// utterance never changes its sound halfway. `speak loud` sets it by hand until `speak loud default`.
+static volatile bool s_loud_pending = true, s_loud_manual;
+
+/** The codec's output volume now: the user's step, or what `speak codec` set. */
+static int codec_volume(void) { return S.codec_vol >= 0 ? S.codec_vol : board_speaker_codec_vol(S.volume); }
+
+/** The codec to that volume, muted outright at step 0. esp_codec_dev keeps the mute across a close and an open. */
+static void codec_set_volume(void) {
+    esp_codec_dev_set_out_vol(S.spk, codec_volume());
+    esp_codec_dev_set_out_mute(S.spk, yk_speak_muted(S.volume, S.codec_vol));
+}
 
 static int64_t now_us(void) { return esp_timer_get_time(); }
 
@@ -144,7 +169,7 @@ static bool codec_open(void) {
         ESP_LOGE(TAG, "speaker open failed");
         return false;
     }
-    esp_codec_dev_set_out_vol(S.spk, yk_volume_to_codec(S.volume));
+    codec_set_volume();
     S.open = true;
     S.st.open_ms = (uint32_t)((now_us() - t0) / 1000);
     return true;
@@ -246,6 +271,7 @@ static void end_stretch(void) {
     while (S.t_play && blocks_heard() <= S.written) vTaskDelay(pdMS_TO_TICKS(2));
     vTaskDelay(pdMS_TO_TICKS(20));
     pa_linger();
+    yk_loud_reset(S.loud);
     S.st.played_ms += S.written * S.block_us / 1000;
     S.t_play = 0;
     S.written = 0;
@@ -260,7 +286,7 @@ static void start_stretch(void) {
         S.clip = NULL;
         S.state = IDLE;
         xSemaphoreTakeRecursive(S.mix_lock, portMAX_DELAY);
-        yk_mix_init(S.mix, S.rate);
+        yk_mix_init(S.mix, S.rate, board_speaker()->ceiling_dbfs);
         xSemaphoreGiveRecursive(S.mix_lock);
         S.hold_amp = false;
         vTaskDelay(pdMS_TO_TICKS(100));  // not again at once
@@ -347,6 +373,27 @@ static const int16_t *utterance_block(int64_t heard_us) {
     return S.chunk;
 }
 
+/** Adds a block of the utterance to its level (sounding blocks only, so pauses do not pull the RMS down). */
+static void measure_utterance(const int16_t *x, size_t n) {
+    uint64_t sum = 0;  // whole numbers: every block, on a core with no double-precision hardware
+    int peak = 0;
+    for (size_t i = 0; i < n; i++) {
+        sum += (uint64_t)((int32_t)x[i] * x[i]);
+        const int a = x[i] < 0 ? -x[i] : x[i];
+        if (a > peak) peak = a;
+    }
+    if (peak > S.u_peak) S.u_peak = peak;
+    if (S.keep) {
+        const size_t k = S.keep_cap - S.keep_n < n ? S.keep_cap - S.keep_n : n;
+        memcpy(S.keep + S.keep_n, x, k * sizeof(int16_t));
+        S.keep_n += k;
+    }
+    if (sum > 10737ULL * n) {  // -50 dBFS: 32768^2 x 1e-5 a sample
+        S.u_sum += sum;
+        S.u_n += n;
+    }
+}
+
 static void speak_task(void *arg) {
     (void)arg;
     for (;;) {
@@ -390,7 +437,13 @@ static void speak_task(void *arg) {
         const int64_t heard = next_heard_us();
         const uint64_t sample0 = (uint64_t)S.written * S.block;
         const int16_t *utter = utterance_block(heard);
+        const bool voice = utter && !S.cue;
+        // The mouth and the rim follow the voice as it came: it would fill them at every step once raised and limited.
+        const uint8_t level = utter ? yk_level16(utter, S.block) : 0;
+        if (voice) measure_utterance(utter, S.block);
         const int64_t t0 = now_us();
+        // utter is S.chunk. With no block after a voice (a gap in the stream, a cut-off), yk_loud's delay runs out in it.
+        if ((voice || !utter) && yk_loud_block(S.loud, S.chunk, S.block, voice)) utter = S.chunk;
         xSemaphoreTakeRecursive(S.mix_lock, portMAX_DELAY);
         if (S.live && yk_mix_active(S.mix)) yk_mix_stop(S.mix, 0, S.rate / 100);
         yk_mix_render(S.mix, utter, S.block, sample0, heard, S.mono);
@@ -402,7 +455,7 @@ static void speak_task(void *arg) {
         if (us > S.st.mix_max_us) S.st.mix_max_us = us;
         if ((uint32_t)active > S.st.sfx_max) S.st.sfx_max = (uint32_t)active;
         S.lead = S.state == BUFFERING && !active && !S.hold_amp ? 1 : S.ahead;
-        S.levels[S.written % LEVELS] = utter ? yk_level16(utter, S.block) : 0;
+        S.levels[S.written % LEVELS] = level;
         write_block(S.mono);
     }
 }
@@ -448,15 +501,16 @@ esp_err_t yk_speak_init_cfg(const yk_speak_config_t *cfg) {
     S.packet = heap_caps_malloc(MAX_PACKET, MALLOC_CAP_SPIRAM);
     S.tone = heap_caps_malloc(rate / 5 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     S.mix = heap_caps_calloc(1, sizeof(yk_mix_t), MALLOC_CAP_SPIRAM);
+    S.loud = heap_caps_calloc(1, sizeof(yk_loud_t), MALLOC_CAP_SPIRAM);
     S.packets = xMessageBufferCreateWithCaps(PACKETS, MALLOC_CAP_SPIRAM);
     S.packets_lock = xSemaphoreCreateMutex();
     S.mix_lock = xSemaphoreCreateRecursiveMutex();
     S.reclaim_lock = xSemaphoreCreateMutex();
     if (!S.packets_lock || !S.mix_lock || !S.reclaim_lock) return ESP_ERR_NO_MEM;
-    if (!ring || !S.pcm || !S.chunk || !S.mono || !S.out || !S.packet || !S.tone || !S.mix || !S.packets)
+    if (!ring || !S.pcm || !S.chunk || !S.mono || !S.out || !S.packet || !S.tone || !S.mix || !S.loud || !S.packets)
         return ESP_ERR_NO_MEM;
     yk_ring_init(&S.ring, ring, S.ring_cap);
-    yk_mix_init(S.mix, rate);
+    yk_mix_init(S.mix, rate, board_speaker()->ceiling_dbfs);  // yk_loud gets its settings at the first begin()
     esp_opus_dec_cfg_t oc = ESP_OPUS_DEC_CONFIG_DEFAULT();
     oc.sample_rate = rate;  // libopus decodes any stream straight to this rate
     oc.channel = 1;
@@ -508,7 +562,7 @@ void yk_speak_stop(void) {
     for (int i = 0; i < 60 && S.state != IDLE; i++) vTaskDelay(pdMS_TO_TICKS(5));
 }
 
-static esp_err_t begin(const uint8_t *clip, size_t clip_bytes) {
+static esp_err_t begin(const uint8_t *clip, size_t clip_bytes, bool cue) {
     if (!S.task) return ESP_ERR_INVALID_STATE;
     yk_speak_stop();
     ring_clear();
@@ -521,17 +575,32 @@ static esp_err_t begin(const uint8_t *clip, size_t clip_bytes) {
     S.started = false;
     S.stop = false;
     S.t_begin = now_us();
+    S.cue = cue;
+    if (!cue) {  // a cue leaves the last utterance's measurements and its kept copy alone
+        S.u_sum = 0;
+        S.u_n = 0;
+        S.u_peak = 0;
+        S.keep_n = 0;
+        if (s_loud_pending) {
+            s_loud_pending = false;  // before the volume is read: a change after this is seen at the next utterance
+            if (!s_loud_manual) {
+                const board_speaker_t *b = board_speaker();
+                yk_loud_init(S.loud, S.rate, board_speaker_voice_boost_db(S.volume), b->ceiling_dbfs, b->voice_hp_hz);
+            }
+        }
+        yk_loud_reset(S.loud);
+    }
     S.st.utterances++;
     S.state = BUFFERING;
     xTaskNotifyGive(S.task);
     return ESP_OK;
 }
 
-esp_err_t yk_speak_begin(void) { return begin(NULL, 0); }
+esp_err_t yk_speak_begin(void) { return begin(NULL, 0, false); }
 
 esp_err_t yk_speak_clip(const yk_clip_t *clip) {
     if (!clip || clip->format != YK_CLIP_OPUS || !clip->data || clip->bytes < 3) return ESP_ERR_INVALID_ARG;
-    return begin(clip->data, clip->bytes);
+    return begin(clip->data, clip->bytes, false);
 }
 
 esp_err_t yk_speak_opus_wait(const uint8_t *packet, size_t bytes, int timeout_ms) {
@@ -575,6 +644,14 @@ void yk_speak_end(void) {
     if (!S.task) return;
     S.ended = true;
     xTaskNotifyGive(S.task);
+}
+
+esp_err_t yk_speak_cue_pcm(const int16_t *pcm, size_t samples) {
+    if (!pcm || !samples) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = begin(NULL, 0, true);
+    if (err == ESP_OK) err = yk_speak_pcm(pcm, samples);
+    yk_speak_end();
+    return err;
 }
 
 bool yk_speak_busy(void) { return S.state != IDLE; }
@@ -635,9 +712,7 @@ int yk_speak_latency_ms(void) {
 esp_err_t yk_speak_chime(yk_chime_t kind) {
     if (!S.task) return ESP_ERR_INVALID_STATE;
     const size_t n = yk_chime_synth(kind, (int)S.rate, S.tone, S.rate / 5);
-    esp_err_t err = yk_speak_begin();
-    if (err == ESP_OK) err = yk_speak_pcm(S.tone, n);
-    yk_speak_end();
+    esp_err_t err = yk_speak_cue_pcm(S.tone, n);
     if (err == ESP_OK && !yk_speak_wait(600)) err = ESP_ERR_TIMEOUT;
     return err;
 }
@@ -651,10 +726,13 @@ void yk_speak_sleep(void) {
 
 void yk_speak_volume(int level) {
     S.volume = level < 0 ? 0 : level > 10 ? 10 : level;
-    if (S.open) esp_codec_dev_set_out_vol(S.spk, yk_volume_to_codec(S.volume));
+    s_loud_pending = true;
+    if (S.open) codec_set_volume();
 }
 
 int yk_speak_get_volume(void) { return S.volume; }
+
+int yk_volume_to_codec(int level) { return board_speaker_codec_vol(level); }
 
 // ---------------------------------------------------------------- effects
 
@@ -737,6 +815,8 @@ void yk_speak_stats(yk_speak_stats_t *out) {
     out->mix_us = S.mix_blocks ? (uint32_t)(S.mix_total / S.mix_blocks) : 0;
     out->stack_free = S.task ? uxTaskGetStackHighWaterMark(S.task) : 0;
     if (S.mix) out->limited = S.mix->limited;
+    out->utter_peak_db10 = S.u_peak ? (int16_t)lrint(200 * log10(S.u_peak / 32768.0)) : 0;
+    out->utter_rms_db10 = S.u_n ? (int16_t)lrint(100 * log10((double)S.u_sum / S.u_n / (32768.0 * 32768.0))) : 0;
 }
 
 // ---------------------------------------------------------------- console
@@ -744,15 +824,174 @@ void yk_speak_stats(yk_speak_stats_t *out) {
 static void print_stats(void) {
     yk_speak_stats_t s;
     yk_speak_stats(&s);
+    bool muted = yk_speak_muted(S.volume, S.codec_vol);  // what the next open sets
+    if (S.open) esp_codec_dev_get_out_mute(S.spk, &muted);  // what it is set to
     printf("SPEAK_STAT utterances=%u first_ms=%u warm_ms=%u open_ms=%u packets=%u errors=%u decode_us=%u "
            "decode_max_us=%u underruns=%u played_ms=%u stack_free=%u volume=%d rate=%u block_ms=%u sfx_started=%u "
-           "sfx_dropped=%u sfx_max=%u mix_us=%u mix_max_us=%u late_blocks=%u limited=%u latency_ms=%d\n",
+           "sfx_dropped=%u sfx_max=%u mix_us=%u mix_max_us=%u late_blocks=%u limited=%u latency_ms=%d codec_vol=%d "
+           "utter_peak_db=%.1f utter_rms_db=%.1f loud_limited=%u muted=%d\n",
            (unsigned)s.utterances, (unsigned)s.first_ms, (unsigned)s.warm_ms, (unsigned)s.open_ms, (unsigned)s.packets,
            (unsigned)s.decode_errors, (unsigned)s.decode_us, (unsigned)s.decode_max_us, (unsigned)s.underruns,
            (unsigned)s.played_ms, (unsigned)s.stack_free, S.volume, (unsigned)s.rate, (unsigned)s.block_ms,
            (unsigned)s.sfx_started, (unsigned)s.sfx_dropped, (unsigned)s.sfx_max, (unsigned)s.mix_us,
-           (unsigned)s.mix_max_us, (unsigned)s.late_blocks, (unsigned)s.limited, yk_speak_latency_ms());
+           (unsigned)s.mix_max_us, (unsigned)s.late_blocks, (unsigned)s.limited, yk_speak_latency_ms(), codec_volume(),
+           s.utter_peak_db10 / 10.0, s.utter_rms_db10 / 10.0, S.loud ? (unsigned)S.loud->limited : 0, muted);
 }
+
+#if CONFIG_YAY_DEV
+// What measures the speaker (docs: 放音的响度): a development build's only, whatever else registers `speak`.
+
+/** Base64 of n (<= 57) bytes into out (>= 77). */
+static void b64(const uint8_t *in, size_t n, char *out) {
+    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t o = 0;
+    for (size_t i = 0; i < n; i += 3) {
+        const uint32_t v =
+            (uint32_t)in[i] << 16 | (i + 1 < n ? (uint32_t)in[i + 1] << 8 : 0) | (i + 2 < n ? in[i + 2] : 0);
+        out[o++] = T[v >> 18 & 63];
+        out[o++] = T[v >> 12 & 63];
+        out[o++] = i + 1 < n ? T[v >> 6 & 63] : '=';
+        out[o++] = i + 2 < n ? T[v & 63] : '=';
+    }
+    out[o] = 0;
+}
+
+/** The kept utterance as a mono WAV in the "AW <seq> <base64>" lines tools/yay_dev.py reads (as yk_audio does). */
+static void dump_kept(void) {
+    const uint32_t data = (uint32_t)(S.keep_n * sizeof(int16_t)), rate = S.rate, riff = 36 + data, byte_rate = rate * 2;
+    uint8_t h[44] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0};
+    memcpy(h + 4, &riff, 4);
+    memcpy(h + 24, &rate, 4);
+    memcpy(h + 28, &byte_rate, 4);
+    h[32] = 2;
+    h[34] = 16;
+    memcpy(h + 36, "data", 4);
+    memcpy(h + 40, &data, 4);
+    char line[80];
+    printf("AUDIO_WAV_BEGIN %u %u 1\n", (unsigned)(44 + data), (unsigned)rate);
+    b64(h, 44, line);
+    printf("AW 0 %s\n", line);
+    const uint8_t *bytes = (const uint8_t *)S.keep;
+    for (size_t off = 0; off < data; off += 57) {
+        b64(bytes + off, data - off < 57 ? data - off : 57, line);
+        printf("AW %u %s\n", (unsigned)(off / 57 + 1), line);
+        if ((off / 57) % 128 == 127) vTaskDelay(1);
+    }
+    puts("AUDIO_WAV_END");
+}
+
+typedef struct {
+    float hz, amp;
+    int ms, after_ms;
+} tone_job_t;
+
+static void play_tone(const tone_job_t *j) {
+    const int piece_n = (int)S.rate / 50;
+    int16_t *piece = malloc(piece_n * sizeof(int16_t));
+    if (!piece) return;
+    float a = j->amp * 32767;
+    if (a > 32767) a = 32767;
+    yk_speak_begin();
+    for (int k = 0, i = 0; k < j->ms / 20; k++) {
+        for (int m = 0; m < piece_n; m++, i++)
+            piece[m] = (int16_t)lrintf(a * sinf(2 * (float)M_PI * j->hz * i / S.rate));
+        if (yk_speak_pcm(piece, piece_n) != ESP_OK) break;
+    }
+    yk_speak_end();
+    yk_speak_wait(j->ms + 1000);
+    free(piece);
+}
+
+static void tone_task(void *arg) {
+    tone_job_t *j = arg;
+    vTaskDelay(pdMS_TO_TICKS(j->after_ms));
+    play_tone(j);
+    printf("SPEAK_TONE done hz=%.0f ms=%d\n", j->hz, j->ms);
+    free(j);
+    vTaskDeleteWithCaps(NULL);
+}
+
+/** The speaker's measuring commands; false: not one of them. Sets *ret. */
+static bool measure_cmd(int argc, char **argv, int *ret) {
+    const char *sub = argc > 1 ? argv[1] : "stat";
+    *ret = 0;
+    if (!strcmp(sub, "tone") && argc > 3) {
+        // speak tone <hz> <ms> [dBFS] [after_ms]: a sine (default -12 dBFS), fed in 20 ms pieces as a stream would
+        // be. With after_ms it plays from a task of its own that long from now and the command returns at once, so
+        // `audio rec` can record it. It is an utterance: `speak loud off` first to hear it as given.
+        tone_job_t *j = malloc(sizeof(*j));
+        if (!j) {
+            *ret = 1;
+            return true;
+        }
+        j->hz = (float)atof(argv[2]);
+        j->ms = atoi(argv[3]);
+        j->amp = argc > 4 ? powf(10, (float)atof(argv[4]) / 20) : 0.25f;
+        j->after_ms = argc > 5 ? atoi(argv[5]) : -1;
+        if (j->after_ms < 0) {
+            play_tone(j);
+            free(j);
+            print_stats();
+            return true;
+        }
+        if (xTaskCreatePinnedToCoreWithCaps(tone_task, "speak_tone", 4096, j, 4, NULL, 0, MALLOC_CAP_SPIRAM) !=
+            pdPASS) {
+            free(j);
+            *ret = 1;
+            return true;
+        }
+        printf("SPEAK_TONE in %d ms\n", j->after_ms);
+        return true;
+    }
+    if (!strcmp(sub, "keep")) {
+        // speak keep: from now on the last utterance (up to 15 s, as it arrived) is kept for `speak dump`
+        if (!S.keep) {
+            S.keep_cap = S.rate * 15;
+            S.keep = heap_caps_malloc(S.keep_cap * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        }
+        printf("SPEAK_KEEP %s\n", S.keep ? "on" : "no memory");
+        return true;
+    }
+    if (!strcmp(sub, "dump")) {
+        if (!S.keep || !S.keep_n) {
+            printf("SPEAK_DUMP nothing kept (speak keep, then an utterance)\n");
+            *ret = 1;
+            return true;
+        }
+        dump_kept();
+        return true;
+    }
+    if (!strcmp(sub, "loud") && argc > 2) {
+        // speak loud <boost_db> [ceiling_dbfs] [hp_hz] | off | default: the voice's loudness, from the next utterance,
+        // by hand until `default`, and the ceiling of everything. off: the speaker as it is, nothing done up to 0 dBFS.
+        const board_speaker_t *b = board_speaker();
+        float boost = board_speaker_voice_boost_db(S.volume), ceiling = b->ceiling_dbfs, hp = b->voice_hp_hz;
+        if (!strcmp(argv[2], "off")) boost = 0, ceiling = 0, hp = 0;
+        else if (strcmp(argv[2], "default")) {
+            boost = (float)atof(argv[2]);
+            if (argc > 3) ceiling = (float)atof(argv[3]);
+            if (argc > 4) hp = (float)atof(argv[4]);
+        }
+        yk_speak_stop();
+        yk_loud_init(S.loud, S.rate, boost, ceiling, hp);
+        xSemaphoreTakeRecursive(S.mix_lock, portMAX_DELAY);
+        yk_mix_set_ceiling(S.mix, ceiling);
+        xSemaphoreGiveRecursive(S.mix_lock);
+        s_loud_manual = strcmp(argv[2], "default") != 0;
+        s_loud_pending = !s_loud_manual;
+        printf("SPEAK_LOUD boost_db=%.1f ceiling_dbfs=%.1f hp_hz=%.0f on=%d\n", boost, ceiling, hp, S.loud->on);
+        return true;
+    }
+    if (!strcmp(sub, "codec") && argc > 2) {
+        // speak codec <0-100>|off: the codec's output volume as given (0.5 dB a step, 100 = 0 dB), for measuring
+        S.codec_vol = !strcmp(argv[2], "off") ? -1 : atoi(argv[2]) < 0 ? 0 : atoi(argv[2]) > 100 ? 100 : atoi(argv[2]);
+        if (S.open) codec_set_volume();
+        printf("SPEAK_CODEC %d\n", codec_volume());
+        return true;
+    }
+    return false;
+}
+#endif  // CONFIG_YAY_DEV
 
 typedef struct {
     float phase, inc, env, decay;
@@ -773,24 +1012,10 @@ static bool test_render(float *out, size_t n, const yk_sfx_block_t *blk, void *c
 
 static int speak_cmd(int argc, char **argv) {
     const char *sub = argc > 1 ? argv[1] : "stat";
-    if (!strcmp(sub, "tone") && argc > 3) {
-        // speak tone <hz> <ms>: a sine at -12 dBFS, fed in 20 ms pieces as a stream would be
-        const float hz = (float)atof(argv[2]);
-        const int ms = atoi(argv[3]);
-        const int piece_n = (int)S.rate / 50;
-        int16_t *piece = malloc(piece_n * sizeof(int16_t));
-        if (!piece) return 1;
-        yk_speak_begin();
-        for (int k = 0, i = 0; k < ms / 20; k++) {
-            for (int j = 0; j < piece_n; j++, i++) piece[j] = (int16_t)(8192 * sinf(2 * (float)M_PI * hz * i / S.rate));
-            if (yk_speak_pcm(piece, piece_n) != ESP_OK) break;
-        }
-        yk_speak_end();
-        yk_speak_wait(ms + 1000);
-        free(piece);
-        print_stats();
-        return 0;
-    }
+#if CONFIG_YAY_DEV
+    int ret;
+    if (measure_cmd(argc, argv, &ret)) return ret;
+#endif
     if (!strcmp(sub, "sfx") && argc > 2) {
         // speak sfx <n> [ms]: n decaying sines at once (or one after another every ms), to measure the mix
         static test_voice_t v[YK_SFX_VOICES];
@@ -848,8 +1073,12 @@ static int speak_cmd(int argc, char **argv) {
 esp_err_t yk_speak_register_console(void) {
     const esp_console_cmd_t cmd = {
         .command = "speak",
-        .help = "speak stat | tone <hz> <ms> | sfx <n> [gap_ms] | chime start|end | vol <0-10> | hold 0|1 | clock | "
-                "prepare | stop",
+        .help = "speak stat | sfx <n> [gap_ms] | chime start|end | vol <0-10> | hold 0|1 | clock | prepare | stop"
+#if CONFIG_YAY_DEV
+                " | tone <hz> <ms> [dBFS] [after_ms] | codec <0-100>|off | "
+                "loud <boost_db> [ceiling] [hp_hz]|off|default | keep | dump"
+#endif
+        ,
         .func = speak_cmd};
     return esp_console_cmd_register(&cmd);
 }

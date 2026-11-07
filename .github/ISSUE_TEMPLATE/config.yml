@@ -1,2 +1,7 @@
-# The repository is public: every issue starts from a form that says not to paste accounts, ids or tokens.
+# The repository is public: every issue starts from a form that says not to paste accounts, ids or tokens. The only
+# form is the Request one (request.yml), for the kit itself; apps are made and submitted on the developer platform.
 blank_issues_enabled: false
+contact_links:
+  - name: 建应用、交审核 / Make or submit an app
+    url: https://developer.tikpal.ai
+    about: 立项和提交只在开发者平台上办，这里不收「立项」单、「提交」单。Apps are made and submitted on the developer platform, not in issues here.

@@ -111,6 +111,9 @@ void yk_vc_payload_text(const yk_vc_payload_t *payload, char *out, int size);
 
 // ---- Reading a code from a camera frame (yk_voicecode_scan.c; the apps and host tests, not the firmware) ----
 
+/** Why a frame was not read. The numbers never change (logs, tests and both apps know them), but they are not the
+ *  reader's order: it reads the levels before it looks for the dot, so YK_VC_NO_DOT got further than
+ *  YK_VC_BAD_LEVELS. Which of two got further: yk_vc_status_stage(). */
 typedef enum {
     YK_VC_OK = 0,
     YK_VC_NO_BARS,      // too few bar-shaped marks
@@ -141,6 +144,11 @@ yk_vc_status_t yk_vc_scan(const uint8_t *luma, int width, int height, int stride
 /** A short name for a status, for logs: "ok", "no_bars", "no_centre", "no_dot", "bad_levels", "not_decoded",
  *  "later". */
 const char *yk_vc_status_name(yk_vc_status_t status);
+
+/** How far the reader got, in the order of its steps: 0 no_bars, 1 no_centre, 2 bad_levels, 3 no_dot, 4 not_decoded,
+ *  5 later, 6 ok; -1 for a number that is no status. yk_vc_scan keeps the try (centre, binarisation) that got
+ *  furthest by this, and an app picking the hint for a run of frames should too. */
+int yk_vc_status_stage(yk_vc_status_t status);
 
 #ifdef __cplusplus
 }

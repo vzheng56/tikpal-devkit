@@ -1,12 +1,14 @@
 // The battery (P20). The cell's voltage from the ESP32's own ADC on V_BAT / 2 (GPIO17), which reads on battery as on
 // USB, and external power from USB 5 V / 2 (GPIO18), per the reference schematic. The SW6106 power chip (I2C 0x3C)
-// is read for its status register and as a cross-check: its voltage registers read 0 on battery. It is the power
-// path: the one thing ever written to it is the 5 V charge current, down to its lowest at start
-// (board_charge_limit, docs/delivery/2026-10-31-battery-charge-limit.md).
+// is read for charging and full (0x11) and, on USB, its own voltage and charge current: its voltage registers read 0
+// on battery. It is the power path: the one thing ever written to it is the 5 V charge current, down to its lowest at
+// start (board_charge_limit, docs/delivery/2026-10-31-battery-charge-limit.md). The number shown is smoothed
+// (yk_board_batt_feed, docs/delivery/2026-10-31-battery-display.md).
 #include <stdio.h>
 
 #include "board.h"
 #include "board_priv.h"
+#include "esp_timer.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
@@ -26,7 +28,16 @@ static const char *TAG = "board_power";
 static i2c_master_dev_handle_t s_power;
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_cali_bat, s_cali_bus;
-static SemaphoreHandle_t s_lock;
+static SemaphoreHandle_t s_lock;          // the ADC, and s_batt
+static yk_board_batt_t s_batt;            // the smoothing, from this firmware's start
+static int s_test_mv;                     // board_battery_test
+static bool s_test_no_chip, s_chip_logged;
+
+_Static_assert((int)BOARD_BATTERY_UNKNOWN == (int)YK_BOARD_BATT_UNKNOWN &&
+                   (int)BOARD_BATTERY_STOPPED == (int)YK_BOARD_BATT_STOPPED &&
+                   (int)BOARD_BATTERY_FULL == (int)YK_BOARD_BATT_FULL &&
+                   (int)BOARD_BATTERY_FAULT_NO_RISE == (int)YK_BOARD_BATT_FAULT_NO_RISE,
+               "board.h and yk_board_logic.h name the battery states alike");
 
 static esp_err_t power_dev(void)
 {
@@ -41,6 +52,14 @@ static esp_err_t power_dev(void)
 static esp_err_t power_read(uint8_t reg, uint8_t *value)
 {
     return i2c_master_transmit_receive(s_power, &reg, 1, value, 1, 20);
+}
+
+/* One register, with retries: the touch controller shares the bus. */
+static bool power_get(uint8_t reg, uint8_t *value)
+{
+    for (int i = 0; i < 3; i++)
+        if (power_read(reg, value) == ESP_OK) return true;
+    return false;
 }
 
 static yk_charge_limit_t s_charge = {.before = -1, .wrote = -1, .after = -1, .result = YK_CHARGE_NO_READ};
@@ -82,9 +101,7 @@ esp_err_t board_battery_regs(uint8_t regs[64])
 static int charge_read(void *ctx, uint8_t reg, uint8_t *value)
 {
     (void)ctx;
-    for (int i = 0; i < 3; i++)  // the touch controller shares the bus (not started yet at board_init, but later)
-        if (power_read(reg, value) == ESP_OK) return 0;
-    return -1;
+    return power_get(reg, value) ? 0 : -1;  // retried: the touch controller shares the bus (not yet at board_init)
 }
 
 /* One register written: the only write this chip ever gets (board_charge_limit). */
@@ -149,7 +166,7 @@ static int pin_mv(adc_channel_t ch, adc_cali_handle_t cal, int n)
 
 esp_err_t board_battery(board_battery_t *out)
 {
-    *out = (board_battery_t){.mv = 0, .percent = -1, .status = -1};
+    *out = (board_battery_t){.mv = 0, .percent = -1, .status = -1, .level = -1, .chip_mv = -1, .charge_ma = -1};
     esp_err_t err = adc_start();
     int bat = -1, bus = -1;
     if (err == ESP_OK) {
@@ -160,14 +177,48 @@ esp_err_t board_battery(board_battery_t *out)
     } else {
         ESP_LOGW(TAG, "ADC: %s", esp_err_to_name(err));
     }
-    if (power_dev() == ESP_OK) {
-        uint8_t status = 0;
-        out->status = power_read(0x06, &status) == ESP_OK ? status : -1;
+    out->usb = bus >= 0 && yk_board_vbus_present(bus);
+    if (!s_test_no_chip && power_dev() == ESP_OK) {
+        uint8_t v, lo, hi;
+        if (power_get(0x11, &v)) out->status = v;
+        if (out->usb && power_get(0x14, &lo) && power_get(0x15, &hi)) out->chip_mv = yk_board_battery_mv(lo, hi);
+        if (out->usb && power_get(0x17, &lo) && power_get(0x18, &hi)) out->charge_ma = yk_board_charge_ma(lo, hi);
+        if (!s_chip_logged && power_get(0x3B, &v)) {  // what it charges to: 4.4 V on the boards read so far
+            s_chip_logged = true;
+            printf("YK_BOARD_BATTERY chip full_mv=%d end_ma=%d reg3b=0x%02x\n", yk_board_full_mv(v), yk_board_end_ma(v),
+                   v);
+        }
     }
     if (bat < 0) return ESP_ERR_NOT_FOUND;
-    out->mv = yk_board_vbat_mv(bat);
-    out->usb = bus >= 0 && yk_board_vbus_present(bus);
-    out->charging = out->usb && !yk_board_battery_full(out->mv);
-    out->percent = yk_board_battery_level(out->mv, out->charging);
-    return yk_board_battery_known(out->mv) ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+    out->mv = s_test_mv > 0 ? s_test_mv : yk_board_vbat_mv(bat);
+    if (!yk_board_battery_known(out->mv)) {
+        out->state = out->usb ? BOARD_BATTERY_UNKNOWN : BOARD_BATTERY_DISCHARGING;
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    yk_board_batt_feed(&s_batt, esp_timer_get_time() / 1000, out->mv, out->usb, out->status);
+    out->percent = s_batt.percent;
+    out->level = s_batt.level;
+    out->state = (board_battery_state_t)s_batt.state;
+    out->charging = s_batt.charging;
+    out->low = s_batt.low;
+    out->fault = (board_battery_fault_t)s_batt.fault;
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
+const char *board_battery_state_name(board_battery_state_t state)
+{
+    return yk_board_batt_state_name((yk_board_batt_state_t)state);
+}
+
+const char *board_battery_fault_name(board_battery_fault_t fault)
+{
+    return yk_board_batt_fault_name((yk_board_batt_fault_t)fault);
+}
+
+void board_battery_test(int mv, bool chip)
+{
+    s_test_mv = mv > 0 ? mv : 0;
+    s_test_no_chip = !chip;
 }

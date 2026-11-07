@@ -161,6 +161,13 @@ void yk_talk_mic_cancel(void);
 void yk_talk_mic_discard(void);
 /** 0..100: what the microphones hear (the rim while listening); 0 when closed. */
 uint8_t yk_talk_mic_level(void);
+/** How much of the last stream the voice-activity detection heard as speech, in ms (the preroll included): set
+ *  before its sink.end, so an app can skip sending a recording nobody spoke in (homework-buddy's 问字). */
+int yk_talk_mic_speech_ms(void);
+/** Where the last stream's speech was: from the first to the end of the last frame the voice-activity detection
+ *  heard as speech, in ms from the stream's start (the preroll included). Set before its sink.end, like
+ *  yk_talk_mic_speech_ms(); false when it heard none (homework-buddy trims the silence around it before sending). */
+bool yk_talk_mic_speech_span(int *from_ms, int *to_ms);
 
 // ---------------------------------------------------------------- below the session: playback
 

@@ -101,6 +101,6 @@ int yk_yay_blink_gap_ms(uint32_t *seed);
 
 // ---------------------------------------------------------------- the buddy (0.1.12)
 
-/** The buddy's name for a YK_PREF_BUDDY value (yaykit_board's BOARD_BUDDY_*): 0 Yay, 1 Wow, 2 Aha, anything else
- *  Yay. The same in every language. yk_ui_buddy_name() is this for the device's setting. */
+/** The buddy's name for a YK_PREF_BUDDY value (yaykit_board's BOARD_BUDDY_*): 0 Pip, 3 Mote, 4 Dial, 5 Bloom, anything
+ *  else Pip. The same in every language. yk_ui_buddy_name() is this for the device's setting. */
 const char *yk_buddy_name(int buddy);

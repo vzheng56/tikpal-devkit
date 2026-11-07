@@ -4,7 +4,7 @@
 
 ## 权限：只给清单里写的
 
-每个应用用自己的令牌（`yk_account_token()`，15 分钟，快过期组件自己换），令牌只许给这个应用开通的那些能力，别的一律被拒（`OPERATION_NOT_ALLOWED`）。要哪些能力立项时告诉我们：开通要我们部署一次，可能得等；能力或限额改了，要再开通一次。
+每个应用用自己的令牌（`yk_account_token()`，15 分钟，快过期组件自己换），令牌只许给这个应用开通的那些能力，别的一律被拒（`OPERATION_NOT_ALLOWED`）。要哪些能力，在开发者平台这个应用的「能力和权限」页申请，批了才开通；`app.json` 的 `capabilities` 只能比批的少。
 
 ## 先问 `/me`
 
@@ -30,7 +30,7 @@ if (yk_cloud_me(&me, &code) == ESP_OK && yk_cloud_has("asr")) {   // 开始时�
 | `asr` 语音识别 | `yk_cloud_asr()` | 一段 WAV（16 kHz 单声道，`yk_audio_rec_*` 录）或 Ogg Opus，回文字 |
 | `tts` 语音合成 | `yk_cloud_tts()` | 回 Opus 包，直接交给 `yk_speak_opus()` 放 |
 | `llm.fast` / `llm.smart` 对话 | `yk_cloud_chat()` | 用**模板名加变量**（提示词和模型在服务端，换了不用重刷固件）；简单试验也可以直接给消息 |
-| 场景接口 | `yk_cloud_scene()` | 一个应用专用的一条（比如「拍照查字」），立项时一起定 |
+| 场景接口 | `yk_cloud_scene()` | 一个应用专用的一条（比如「拍照查字」），跟我们一起定 |
 | `data` 小数据 | `yk_cloud_data_get/put/del/list()` | 按键存小块 JSON（进度、偏好），跟着账号走 |
 | `files`、`transcribe` 文件 | `yk_cloud_file_*()` | 登记、分片直传、保存期限、转写（录音类应用） |
 | `records` 记录 | `yk_app_record()` | 不用自己联网：先进圆屏上的发件箱，谁在线谁送 |

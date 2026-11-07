@@ -8,3 +8,10 @@
 # Every project includes this between include(project.cmake) and project().
 idf_build_set_property(COMPILE_OPTIONS "-fmacro-prefix-map=${CMAKE_CURRENT_LIST_DIR}=/yaykit" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-fdebug-prefix-map=${CMAKE_CURRENT_LIST_DIR}=/yaykit" APPEND)
+
+# yaykit_app links yaykit_voicecode (0.1.14), and ESP-IDF only finds components in EXTRA_COMPONENT_DIRS: added here, so
+# that no project has to list it and an app from before keeps its CMakeLists. Not again for one that lists it. Only the
+# projects that use yaykit_app build it: the directory alone (COMPONENTS main espcoredump) pulls nothing in.
+if(NOT "${EXTRA_COMPONENT_DIRS}" MATCHES "/yaykit_voicecode(;|$)")
+    list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/components/yaykit_voicecode")
+endif()

@@ -25,6 +25,8 @@ typedef struct {
 esp_err_t yk_slot_read(int index, yk_slot_t *out);
 /** Adds every slot to a yk-info "slots" array. */
 void yk_slots_to_json(cJSON *array);
+/** One slot as an item of that array; NULL when it cannot be read. */
+cJSON *yk_slot_json(int index);
 /** Boots into an app slot (does not return on success). */
 esp_err_t yk_slot_boot(int index);
 /** Hands the device back to the launcher in `factory` (does not return on success). */

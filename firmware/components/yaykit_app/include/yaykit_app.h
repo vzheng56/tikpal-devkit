@@ -48,8 +48,12 @@ extern "C" {
  *  / yk_app_set_volume(), yk_app_english(), yk_app_keep_screen_on()), and the battery guard of an extension (battery
  *  over-discharge step 2): rebuilt, an extension sleeps at once in yk_app_start() on a battery too low, and from
  *  yk_app_ready() shows 「电量用完了，请充电」 at the threshold and sleeps with the boot partition back on Yay. That is in
- *  the extension's own image: one not rebuilt reads the shared NVS itself and runs on until the brownout, as before. */
-#define YK_API_LEVEL 3
+ *  the extension's own image: one not rebuilt reads the shared NVS itself and runs on until the brownout, as before.
+ *  4 (声波码 0.1, Yay 0.1.14, kit 1.9): an app shows its own 应用码 (components/yaykit_voicecode, yk_vc_show(): its number
+ *  from app.json's voiceCode at build time; devkit docs/voice-code.md); a swipe down from the top edge is the
+ *  system's pull-down (yk_sheet: its 「在手机上打开」 shows the app's page code), never the app's; the app ring holds apps
+ *  only. Built against 3, an app keeps what it had: Yay tells nothing apart. */
+#define YK_API_LEVEL 4
 
 #define YK_APP_HOME_SLUG "yay"
 
@@ -57,7 +61,8 @@ typedef struct {
     const char *slug;     // "party-play"
     const char *version;  // "0.2.0"
     const char *banner;   // "YAYKIT_PARTY_PLAY_READY"
-    bool is_home;         // the Yay main firmware: no app ring of yaykit_app's (Yay has its own)
+    bool is_home;         // the Yay main firmware: no app ring of yaykit_app's (Yay has its own). Only with the slug
+                          // YK_APP_HOME_SLUG: any other app that sets it stays an extension (the ring, the pull-down)
     bool own_double;      // the app takes the double click itself and offers another way back to Yay
     bool quiet;           // the app prints its own banner (apps from before yaykit_app)
     bool talks;           // the app has a conversation of its own (API level 3): a hold is always its, never

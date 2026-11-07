@@ -96,6 +96,17 @@ bool yk_settings_english(const char *locale);
 void yk_settings_merge(int volume, int brightness, int screen_off_s, const char *locale, bool low, bool keep_on,
                        yk_settings_t *out);
 
+/** Who keeps the screen on (BOSS-2 11-02; docs/handoff/2026-11-01-voice-code.md 2.1②): the app's own switch
+ *  (yk_app_keep_screen_on(), a switch, not a count, which the framework never writes) and yaykit_app's own while the
+ *  应用码 the app ring showed is up (cleared however that code goes). Either keeps it on (yk_settings_merge's
+ *  `keep_on`, low battery or not); each is set and cleared by its owner alone. A code the app shows itself
+ *  (yk_vc_show) is the app's to keep on. */
+typedef struct {
+    bool app;   // yk_app_keep_screen_on()
+    bool code;  // the ring's 应用码 is up (YAY_APP screen keep_on_code=)
+} yk_keep_on_t;
+bool yk_keep_on(const yk_keep_on_t *k);
+
 #ifdef __cplusplus
 }
 #endif

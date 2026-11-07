@@ -25,3 +25,11 @@ void yk_token_key(const char *app, char out[11]);
 /** Seconds a kept token can still be used, or 0: the clock is not known yet (before 2025), or it ends within two
  *  minutes (a token is asked for again a minute before its end anyway). */
 int64_t yk_token_left_s(int64_t now_unix, int64_t expires_unix);
+
+/** How far a lookup's POST got before it failed: not open (the request line and headers did not go), part of the
+ *  recording out, or all of it out (then the cloud may be charging). */
+typedef enum { YK_SENT_NONE, YK_SENT_PART, YK_SENT_ALL } yk_sent_t;
+/** Send it all again on a new connection? Only when it went on a kept connection (the server or its proxy may have
+ *  closed it while idle) and before the whole recording was out: after that it never goes twice, so it is never
+ *  paid twice. */
+bool yk_send_again(bool reused, yk_sent_t sent);

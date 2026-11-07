@@ -1,11 +1,11 @@
 # Board support for tikpal-r1, the only place that knows the hardware: power rails, I2C, the SH8601 panel and
 # CST820 touch with the LVGL glue, the PCF85063A clock, ES8311/ES7210 audio on one I2S port (16 or 24 kHz) and
 # the shared Chinese font; the shared preferences (P10), the battery by ADC and fast touch (P20); drawing straight to
-# the panel around LVGL (board_direct.h, the selfie viewfinder). Moved from the
+# the panel around LVGL (board_direct.h, the selfie viewfinder); the speaker's tuning (board_speaker.h). Moved from the
 # Tikpal firmware; README.md says from where and what changed.
 idf_component_register(
     SRCS "board.c" "board_rtc.c" "rtc_regs.c" "lvgl_mem_psram.c" "audio.c" "cjk_font.c" "yk_font_pack.c" "yk_board_logic.c"
-         "board_pref.c" "board_power.c" "board_touch_fast.c" "board_direct.c"
+         "board_pref.c" "board_power.c" "board_touch_fast.c" "board_direct.c" "board_speaker.c"
     INCLUDE_DIRS "include"
     REQUIRES esp_driver_i2c lvgl__lvgl espressif__esp_codec_dev
     PRIV_REQUIRES

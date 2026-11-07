@@ -3,7 +3,9 @@
 // One task owns the speaker and the amplifier (GPIO43; no app switches it). It plays two things at once:
 //  - the utterance: Opus packets (libopus, esp_audio_codec) or PCM into a 2 s PSRAM ring, starting once 120 ms are
 //    buffered (or the utterance has ended), with 10 ms fades. Yay's voice, live (a voice session) or offline (an
-//    Opus clip packed into the app: yk_speak_clip());
+//    Opus clip packed into the app: yk_speak_clip()). It is for speech: yk_speak_opus(), yk_speak_pcm() and
+//    yk_speak_clip() all make the voice louder for this speaker (below). yk_speak_cue_pcm() plays a cue the same way
+//    without that;
 //  - sound effects (yk_sfx_*): up to YK_SFX_VOICES voices mixed every block: short clips (PCM, IMA ADPCM or Opus,
 //    packed into the app) and voices the app renders itself (a callback per block: Party Play's collisions,
 //    Breathe's whole breath synth). While an utterance plays, effects are 6 dB down. Effects can start at a
@@ -15,6 +17,12 @@
 // yk_speak_hold_amp(true) for a game where sounds come any moment. It stays on 3 s after the last sound. The level
 // of what is being heard drives the mouth and the rim. v1 has no echo cancellation: the main firmware does not
 // listen while it speaks.
+//
+// Loudness and the volume: the speaker's tuning belongs to the board (board_speaker.h: the peak every sound stays
+// under, the voice's high-pass, what each volume step does). An app has nothing to set. Speech is high-passed, raised
+// and limited (yk_loud.h) according to the volume step, so do not raise it yourself. Everything else follows the
+// codec's volume alone: music and sound effects go through yk_sfx_* (with `gain` for your own mix), never through the
+// speech calls, which would thin them out and flatten them; cues through yk_speak_cue_pcm().
 //
 // Latency: the default (20 ms blocks, 4 blocks ahead, the board's 8 x 20 ms DMA) puts ~100 ms between a call and
 // the sound. Low latency (yk_speak_config_t.block_ms = 5 and a 4 x 5 ms DMA): ~25 ms, within P13's 50 ms.
@@ -58,10 +66,14 @@ esp_err_t yk_speak_begin(void);
 esp_err_t yk_speak_opus(const uint8_t *packet, size_t bytes);
 /** The same, waiting at most timeout_ms for room (0: not at all; ESP_ERR_TIMEOUT when full). */
 esp_err_t yk_speak_opus_wait(const uint8_t *packet, size_t bytes, int timeout_ms);
-/** Mono PCM at yk_speak_rate(), same rules as yk_speak_opus(). Use one or the other within an utterance. */
+/** Mono PCM of speech at yk_speak_rate(), same rules as yk_speak_opus(). Use one or the other within an utterance. */
 esp_err_t yk_speak_pcm(const int16_t *pcm, size_t samples);
 /** No more audio for this utterance: what is buffered plays out. */
 void yk_speak_end(void);
+/** A short cue (mono PCM at yk_speak_rate(), a beep rather than speech): played like an utterance, so whatever is
+ *  playing stops, but without the voice's loudness: only the volume and the ceiling touch it. Copies it and returns
+ *  without waiting for it to be heard (yk_speak_wait() does); only a cue over the 2 s buffer waits, for room. */
+esp_err_t yk_speak_cue_pcm(const int16_t *pcm, size_t samples);
 /** Stops now (10 ms fade); returns once the speaker is quiet. */
 void yk_speak_stop(void);
 /** The same without waiting: the speaker fades out within about 100 ms (what the I2S buffer still holds) while the
@@ -90,7 +102,7 @@ uint8_t yk_speak_level(void);
 /** The short cue before the microphone opens or after it closes. Cuts off what is playing; returns once heard. */
 esp_err_t yk_speak_chime(yk_chime_t kind);
 
-/** Volume 0..10 (0 = muted). Default: the device's shared volume, board_pref_volume() (P10), read at init.
+/** Volume 0..10 (0 = muted outright: nothing is heard, cues included). Default: the device's shared volume, board_pref_volume() (P10), read at init.
  *  Sets the speaker only; to keep a change for every firmware, also board_pref_set_volume(). */
 /** Deep sleep (the battery's, P25), called last before it: the amplifier (GPIO43) off and held off through the
  *  sleep. A digital pad: the S3 lets go of it at the wake by itself. Nothing when the speaker never started. */
@@ -200,14 +212,17 @@ typedef struct {
     uint32_t rate, block_ms;
     uint32_t sfx_started, sfx_dropped;  // dropped: no free voice, the group's gap, a live session
     uint32_t sfx_max;        // most voices at once
-    uint32_t mix_us, mix_max_us;  // mixing one block (all voices, limiter), average and worst
+    uint32_t mix_us, mix_max_us;  // the voice's loudness and mixing one block (all voices, limiter), average and worst
     uint32_t late_blocks;    // blocks written after the speaker had run dry (a gap was heard)
-    uint32_t limited;        // blocks the limiter turned down (the mix went over -3 dBFS)
+    uint32_t limited;        // blocks the limiter turned down (the mix went over the board's ceiling)
+    // The last utterance as it arrived, before the volume: its loudest sample and the RMS of its sounding blocks
+    // (blocks above -50 dBFS), in dBFS x 10. 0 until an utterance has sounded.
+    int16_t utter_peak_db10, utter_rms_db10;
 } yk_speak_stats_t;
 void yk_speak_stats(yk_speak_stats_t *out);
 
-/** `speak stat | tone <hz> <ms> | chime start|end | vol <0-10> | prepare | stop | sfx <n> <ms>` (sfx: n voices of
- *  test tones at once, to measure the mix). */
+/** `speak stat | chime start|end | vol <0-10> | prepare | stop | sfx <n> <ms>` (sfx: n voices of test tones at once,
+ *  to measure the mix); with CONFIG_YAY_DEV also `tone`, `codec`, `loud`, `keep` and `dump`, to measure the speaker. */
 esp_err_t yk_speak_register_console(void);
 
 #ifdef __cplusplus

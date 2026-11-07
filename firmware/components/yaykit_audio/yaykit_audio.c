@@ -488,9 +488,16 @@ static int audio_cmd(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(sub, "rec") && argc > 2) {
-        // audio rec <ms> [raw|plain|nsonly]: raw = the 4 TDM slots; plain = no models; nsonly = no voice model
+        // audio rec <ms> [raw|plain|nsonly] [mic_gain_db]: raw = the 4 TDM slots; plain = no models; nsonly = no
+        // voice model; mic_gain_db (development builds) = the ES7210's gain (default 30; 0.1 for the lowest, to
+        // record the speaker)
         const int ms = atoi(argv[2]);
         const char *how = argc > 3 ? argv[3] : "";
+#if CONFIG_YAY_DEV
+        const float gain = argc > 4 ? (float)atof(argv[4]) : 0;
+#else
+        const float gain = 0;
+#endif
         if (ms <= 0 || ms > 10000 || A.run) return 1;
         A.rec_raw = !strcmp(how, "raw");
         A.rec_cap = (size_t)(A.rec_raw ? I2S_RATE : YK_AUDIO_RATE) * ms / 1000 * (A.rec_raw ? SLOTS : 1);
@@ -499,7 +506,8 @@ static int audio_cmd(int argc, char **argv) {
         A.rec_n = 0;
         const yk_audio_config_t cfg = {.mode = YK_AUDIO_PUSH_TO_TALK,
                                        .noise_suppression = strcmp(how, "plain") != 0,
-                                       .voice_activity = strcmp(how, "plain") != 0 && strcmp(how, "nsonly") != 0};
+                                       .voice_activity = strcmp(how, "plain") != 0 && strcmp(how, "nsonly") != 0,
+                                       .mic_gain_db = gain};
         yk_audio_start(&cfg);
         vTaskDelay(pdMS_TO_TICKS(ms + 100));
         yk_audio_stop();
@@ -545,7 +553,11 @@ static int audio_cmd(int argc, char **argv) {
         A.rec = NULL;
         return 0;
     }
+#if CONFIG_YAY_DEV
+    printf("audio stat | rec <ms> [raw|plain|nsonly] [mic_gain_db] | opus <complexity> [bitrate]\n");
+#else
     printf("audio stat | rec <ms> [raw|plain|nsonly] | opus <complexity> [bitrate]\n");
+#endif
     return 1;
 }
 

@@ -62,3 +62,5 @@ void yk_settings_merge(int volume, int brightness, int screen_off_s, const char 
     out->screen_off_s = keep_on ? 0 : low ? YK_POWER_SCREEN_OFF_LOW_S : screen_off_s < 0 ? 0 : screen_off_s;
     out->english = yk_settings_english(locale);
 }
+
+bool yk_keep_on(const yk_keep_on_t *k) { return k->app || k->code; }

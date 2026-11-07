@@ -165,6 +165,17 @@ static void test_sse_pump(void) {
     CHECK(count == 1 && reads == 3);
 }
 
+static void test_send_again(void) {
+    // 问字 on the kept connection (5.5): a connection the server closed while idle fails before the recording is out,
+    // and then the whole lookup goes again on a new one, once.
+    CHECK(yk_send_again(true, YK_SENT_NONE));   // the kept one was gone: the request line did not go
+    CHECK(yk_send_again(true, YK_SENT_PART));   // it broke part way through the recording
+    CHECK(!yk_send_again(true, YK_SENT_ALL));   // all of it went: the cloud may be charging, never twice
+    CHECK(!yk_send_again(false, YK_SENT_NONE)); // a new connection that fails: NETWORK, as before
+    CHECK(!yk_send_again(false, YK_SENT_PART));
+    CHECK(!yk_send_again(false, YK_SENT_ALL));
+}
+
 static void test_token(void) {
     char a[11], b[11];
     yk_token_key("yay", a);
@@ -211,6 +222,7 @@ int main(void) {
     test_messages();
     test_sse();
     test_sse_pump();
+    test_send_again();
     printf("yaykit_cloud host tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

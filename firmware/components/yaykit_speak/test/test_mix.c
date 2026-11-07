@@ -21,6 +21,9 @@ static int failures, checks;
         }                                                                  \
     } while (0)
 
+#define CEILING_DBFS (-2.0f)  // tikpal-r1 (board_speaker.h)
+#define CEILING 0.79433f
+
 static yk_mix_t M;  // ~6 KB, not on the stack
 
 static void test_adpcm(void) {
@@ -68,11 +71,11 @@ static yk_clip_t pcm_clip(int16_t level, uint32_t n) {
 }
 
 static void test_passthrough(void) {
-    // With no effects the utterance is copied bit for bit (the main firmware's voice is unchanged by the mixer).
-    yk_mix_init(&M, 16000);
+    // With no effects an utterance under the ceiling is copied bit for bit (yk_loud keeps the voice there).
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     int16_t u[320], out[320];
     for (int i = 0; i < 320; i++) u[i] = (int16_t)(i * 97 - 15000);
-    u[7] = 32767, u[8] = -32768;
+    u[7] = 26000, u[8] = -26000;
     CHECK(yk_mix_render(&M, u, 320, 0, 0, out) == 0);
     CHECK(!memcmp(u, out, sizeof(u)));
     CHECK(yk_mix_render(&M, NULL, 320, 320, 0, out) == 0);
@@ -81,9 +84,28 @@ static void test_passthrough(void) {
     CHECK(nz == 0);
 }
 
+static void test_ceiling(void) {
+    // A cue has no yk_loud in front of it: over the ceiling, alone, it is held there, and everything else passes.
+    yk_mix_init(&M, 16000, CEILING_DBFS);
+    int16_t u[320], out[320];
+    for (int i = 0; i < 320; i++) u[i] = (int16_t)(i % 2 ? 32767 : -32768);
+    yk_mix_render(&M, u, 320, 0, 0, out);
+    int peak = 0;
+    for (int i = 0; i < 320; i++) peak = abs(out[i]) > peak ? abs(out[i]) : peak;
+    CHECK(peak <= (int)(CEILING * 32768) + 1 && peak > 25000);
+    CHECK(M.limited == 1);
+    // `speak loud off` measures with the ceiling at 0 dBFS: full scale passes as it is.
+    yk_mix_init(&M, 16000, 0);
+    CHECK(yk_mix_render(&M, u, 320, 0, 0, out) == 0 && !memcmp(u, out, sizeof(u)) && M.limited == 0);
+    // Changed later, and never above full scale.
+    yk_mix_init(&M, 16000, CEILING_DBFS);
+    yk_mix_set_ceiling(&M, 6);
+    CHECK(M.ceiling == 1);
+}
+
 static void test_schedule(void) {
     // A clip placed at a future sample starts exactly there, even mid-block.
-    yk_mix_init(&M, 24000);
+    yk_mix_init(&M, 24000, CEILING_DBFS);
     yk_clip_t c = pcm_clip(8000, 100);
     const int id = yk_mix_add(&M, &c, NULL, NULL, NULL, 1000 + 37, 1000);
     CHECK(id > 0);
@@ -102,7 +124,7 @@ static void test_schedule(void) {
 }
 
 static void test_group_gap_and_voices(void) {
-    yk_mix_init(&M, 16000);
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     yk_clip_t c = pcm_clip(1000, 2000);
     const yk_sfx_opts_t hit = {.group = 3, .min_gap_ms = 18};
     // 18 ms at 16 kHz = 288 samples: a second hit 200 samples later is dropped, 300 later plays.
@@ -126,7 +148,7 @@ static void test_group_gap_and_voices(void) {
 }
 
 static void test_duck_and_limiter(void) {
-    yk_mix_init(&M, 16000);
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     yk_clip_t c = pcm_clip(10000, 2400);
     const yk_sfx_opts_t loop = {.loop = true};
     const int id = yk_mix_add(&M, &c, NULL, NULL, &loop, 0, 0);
@@ -148,8 +170,8 @@ static void test_duck_and_limiter(void) {
     yk_mix_add(&M, &c, NULL, NULL, &nd, 0, 0);
     for (int b = 0; b < 3; b++) yk_mix_render(&M, u, 320, 2560 + 320 * b, 0, out);
     CHECK(out[319] == 10000);
-    // Four loud voices: the sum would be 1.22 of full scale; the limiter holds it at -3 dBFS, no wrap.
-    yk_mix_init(&M, 16000);
+    // Four loud voices: the sum would be 1.22 of full scale; the limiter holds it at the ceiling, no wrap.
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     yk_clip_t loud = pcm_clip(10000, 2400);
     for (int i = 0; i < 4; i++) yk_mix_add(&M, &loud, NULL, NULL, &loop, 0, 0);
     int peak = 0;
@@ -157,12 +179,12 @@ static void test_duck_and_limiter(void) {
         yk_mix_render(&M, NULL, 320, 320 * b, 0, out);
         for (int i = 0; i < 320; i++) peak = abs(out[i]) > peak ? abs(out[i]) : peak;
     }
-    CHECK(peak <= (int)(YK_MIX_CEILING * 32768) + 1 && peak > 22000);
+    CHECK(peak <= (int)(CEILING * 32768) + 1 && peak > 25000);
     CHECK(M.limited > 0);
 }
 
 static void test_fade_and_gain(void) {
-    yk_mix_init(&M, 16000);
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     yk_clip_t c = pcm_clip(16000, 2400);
     const int id = yk_mix_add(&M, &c, NULL, NULL, NULL, 0, 0);
     int16_t out[320];
@@ -199,7 +221,7 @@ static bool synth(float *out, size_t n, const yk_sfx_block_t *blk, void *ctx) {
 }
 
 static void test_synth_voice(void) {
-    yk_mix_init(&M, 24000);
+    yk_mix_init(&M, 24000, CEILING_DBFS);
     synth_ctx_t s = {.blocks_left = 3};
     // Starts at sample 130 of the block that begins at 120, heard at 1 s: the callback is told its first sample is
     // 130, heard 10 samples (416 us) after the block.
@@ -216,7 +238,7 @@ static void test_synth_voice(void) {
 
 static void test_pitch(void) {
     // A ramp clip at twice the speed covers it in half the samples; at half speed in twice as many.
-    yk_mix_init(&M, 16000);
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     for (int i = 0; i < 200; i++) clip_pcm[i] = (int16_t)(i * 100);
     yk_clip_t c = {.format = YK_CLIP_PCM16, .data = (const uint8_t *)clip_pcm, .bytes = 400, .samples = 200};
     const yk_sfx_opts_t fast = {.pitch = 2};
@@ -227,7 +249,7 @@ static void test_pitch(void) {
     int last = 0;
     for (int i = 0; i < 480; i++) if (out[i]) last = i;
     CHECK(last >= 99 && last <= 100);
-    yk_mix_init(&M, 16000);
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     const yk_sfx_opts_t slow = {.pitch = 0.5f};
     yk_mix_add(&M, &c, NULL, NULL, &slow, 0, 0);
     yk_mix_render(&M, NULL, 480, 0, 0, out);
@@ -246,7 +268,7 @@ static void test_adpcm_voice(void) {
     const size_t bytes = yk_adpcm_encode(pcm, N, enc);
     yk_adpcm_decode(enc, bytes, N, ref, N);
     yk_clip_t c = {.format = YK_CLIP_IMA_ADPCM, .data = enc, .bytes = bytes, .samples = N};
-    yk_mix_init(&M, 16000);
+    yk_mix_init(&M, 16000, CEILING_DBFS);
     CHECK(yk_mix_add(&M, &c, NULL, NULL, NULL, 0, 0) > 0);
     int16_t out[320];
     int same = 0;
@@ -259,7 +281,7 @@ static void test_adpcm_voice(void) {
 
 static void test_many_hits(void) {
     // Party Play's dice: 100 hits in quick succession never exceed the voices, never clip, never NaN.
-    yk_mix_init(&M, 24000);
+    yk_mix_init(&M, 24000, CEILING_DBFS);
     yk_clip_t c = pcm_clip(20000, 1200);
     const yk_sfx_opts_t hit = {.group = 1, .min_gap_ms = 18, .gain = 0.8f};
     int16_t out[120];
@@ -271,12 +293,13 @@ static void test_many_hits(void) {
         CHECK(yk_mix_active(&M) <= YK_SFX_VOICES);
         for (int i = 0; i < 120; i++) peak = abs(out[i]) > peak ? abs(out[i]) : peak;
     }
-    CHECK(started > 100 && peak <= (int)(YK_MIX_CEILING * 32768) + 1);
+    CHECK(started > 100 && peak <= (int)(CEILING * 32768) + 1);
 }
 
 int main(void) {
     test_adpcm();
     test_passthrough();
+    test_ceiling();
     test_schedule();
     test_group_gap_and_voices();
     test_duck_and_limiter();

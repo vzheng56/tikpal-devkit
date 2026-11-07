@@ -14,6 +14,8 @@ int yk_home_slot(const char *slot0_slug, const char *slot0_state) {
     return -1;  // empty, invalid (rolled back), aborted
 }
 
+bool yk_app_is_home(const char *slug, bool is_home) { return is_home && slug && !strcmp(slug, "yay"); }  // YK_APP_HOME_SLUG
+
 bool yk_recovery_forward(bool recovery_flag, const char *slot0_slug, const char *slot0_state) {
     return !recovery_flag && yk_home_slot(slot0_slug, slot0_state) == 0;
 }
@@ -302,14 +304,24 @@ yk_keys_do_t yk_keys_route(yk_keys_t *k, int type, int64_t at_ms, bool own_doubl
         if (type == KEY_TAP || type == KEY_DOUBLE || (type == KEY_UP && k->held)) k->eat = k->held = false;
         return YK_KEYS_EAT;
     }
-    if (k->ring || k->ask) {
+    if (k->ring || k->ask || k->code || k->sheet) {
         if (type != KEY_DOWN) return YK_KEYS_EAT;  // the end of the press that asked
         k->eat = true;
         k->held = false;
+        if (k->sheet) {
+            k->sheet = false;
+            k->closed_ms = at_ms;  // a double click to close it opens no ring
+            return YK_KEYS_SHEET_CLOSE;
+        }
         if (k->ring) {
             k->ring = false;
             k->closed_ms = at_ms;
             return YK_KEYS_RING_CLOSE;
+        }
+        if (k->code) {
+            k->code = false;
+            k->closed_ms = at_ms;  // a double click to hide it opens no ring
+            return YK_KEYS_CODE_CLOSE;
         }
         k->ask = false;
         return YK_KEYS_ASK_CLOSE;
@@ -324,14 +336,37 @@ yk_keys_do_t yk_keys_route(yk_keys_t *k, int type, int64_t at_ms, bool own_doubl
 }
 
 bool yk_keys_ask(yk_keys_t *k, bool used, bool talks) {
-    if (used || talks || k->ring || k->ask || k->eat) return false;
+    if (used || talks || k->ring || k->ask || k->code || k->sheet || k->eat) return false;
     k->ask = true;
     return true;
 }
 
 void yk_keys_closed(yk_keys_t *k) { k->ring = k->ask = false; }
 
-bool yk_keys_idle(const yk_keys_t *k) { return !k->ring && !k->ask && !k->eat; }
+void yk_keys_code(yk_keys_t *k, bool on) { k->code = on; }
+
+bool yk_keys_idle(const yk_keys_t *k) { return !k->ring && !k->ask && !k->code && !k->sheet && !k->eat; }
+
+bool yk_keys_sheet_open(yk_keys_t *k) {
+    if (!yk_keys_idle(k)) return false;
+    k->sheet = true;
+    return true;
+}
+
+void yk_keys_sheet_closed(yk_keys_t *k) { k->sheet = false; }
+
+void yk_pull_start(yk_pull_t *p, int x, int y, int edge) {
+    *p = (yk_pull_t){.x0 = (int16_t)x, .y0 = (int16_t)y, .armed = y >= 0 && y < edge};
+}
+
+bool yk_pull_move(yk_pull_t *p, int x, int y, int pull) {
+    if (!p->armed || p->pulled) return false;
+    const int dx = x - p->x0, dy = y - p->y0;
+    if (dy > p->dy_max) p->dy_max = (int16_t)dy;
+    if (dy < pull || dy <= (dx < 0 ? -dx : dx)) return false;
+    p->pulled = true;
+    return true;
+}
 
 // ---------------------------------------------------------------- the main firmware's update (yk_app_update.h)
 

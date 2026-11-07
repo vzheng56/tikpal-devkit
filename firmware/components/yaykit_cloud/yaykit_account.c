@@ -400,6 +400,11 @@ void yk_account_nickname(char *out, size_t size) {
     xSemaphoreGive(lock);
 }
 
+int yk_account_status(char *out, size_t size) {
+    if (out && size) yk_account_nickname(out, size);
+    return (int)state;
+}
+
 void yk_account_locale(char *out, size_t size) {
     xSemaphoreTake(lock, portMAX_DELAY);
     snprintf(out, size, "%s", locale);
@@ -473,10 +478,19 @@ void yk_account_unbound_by_server(void) {
     forget();
 }
 
+static bool token_fresh(void) { return token[0] && esp_timer_get_time() < token_expires_us - 60LL * 1000000; }
+
+bool yk_account_token_cached(void) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const bool cached = state == YK_ACCOUNT_BOUND && have_key && token_fresh();
+    xSemaphoreGive(lock);
+    return cached;
+}
+
 esp_err_t yk_account_token(char *out, size_t size, const char **code) {
     xSemaphoreTake(lock, portMAX_DELAY);
     bool bound = state == YK_ACCOUNT_BOUND && have_key;
-    bool fresh = token[0] && esp_timer_get_time() < token_expires_us - 60LL * 1000000;
+    bool fresh = token_fresh();
     if (bound && fresh && strlen(token) < size) strcpy(out, token);
     xSemaphoreGive(lock);
     if (!bound) {

@@ -27,10 +27,23 @@ esp_err_t yk_cloud_me(yk_cloud_me_t *out, const char **code);
  *  comes only with hello.ok (it changes the screen and the lists with it), reading /me for its time zone. */
 esp_err_t yk_cloud_me_ex(yk_cloud_me_t *out, bool keep_owner, const char **code);
 
-/** POST /device/v1/hanzi/lookup with a 16-bit mono WAV (at most 8 s). Calls `on_event` for each event as it
- *  arrives; ESP_OK means the stream completed (an "error" event may still have reported a failure). */
+/** POST /device/v1/hanzi/lookup with a 16-bit mono WAV (at most the manifest's maxSeconds). Calls `on_event` for
+ *  each event as it arrives; ESP_OK means the stream completed (an "error" event may still have reported a failure).
+ *  Sends on the connection yk_cloud_hanzi_warm() kept, when there is one (and again on a new one if that turns out
+ *  closed before the recording was out); prints YK_CLOUD hanzi conn=reused|new … */
 esp_err_t yk_cloud_hanzi_lookup(const uint8_t *wav, size_t len, yk_cloud_event_fn on_event, void *ctx,
                                 const char **code);
+/** 问字 sooner (docs/delivery/2026-10-24-homework-buddy-step1.md 5.5): while the child still speaks, the token, TCP
+ *  and TLS of the lookup's connection, with a GET /device/v1/me (it fills *out as yk_cloud_me() does) on a client
+ *  kept for the next yk_cloud_hanzi_lookup() of the same task, unless the server asks to close it. One at a time;
+ *  kept 30 s at most. */
+esp_err_t yk_cloud_hanzi_warm(yk_cloud_me_t *out, const char **code);
+/** Closes the kept connection, sending nothing (a recording that is not sent). Nothing when there is none. */
+void yk_cloud_hanzi_cool(void);
+/** The text lookup (hanzi.v3): the same endpoint with {"text": text} as JSON (the service trims it and keeps 40
+ *  characters), no recognition, the same events; for words someone already said (Homework Buddy opened by Yay with
+ *  the child's question). */
+esp_err_t yk_cloud_hanzi_text(const char *text, yk_cloud_event_fn on_event, void *ctx, const char **code);
 
 // ---- Level 2: the device API v1 ----
 
@@ -102,6 +115,15 @@ esp_err_t yk_cloud_inbox(const char *since, yk_cloud_inbox_fn on_item, void *ctx
                          const char **code);
 /** POST /device/v1/status with a report ({firmware:{slug,version}, battery, wifi, storage, slots}). */
 esp_err_t yk_cloud_status(const cJSON *report, const char **code);
+
+/** Whether the cloud got through lately, for the system pull-down's 「连不上服务器」 (docs/delivery/2026-11-02-system-
+ *  pulldown.md 8): every HTTPS connection yaykit_cloud opens (the API, the account's tokens, file parts, downloads)
+ *  counts, the last one wins. A failure is a connection that never opened (no answer, DNS, TLS); any answer counts as
+ *  through, an error status too. */
+typedef enum { YK_CLOUD_REACH_UNKNOWN, YK_CLOUD_REACH_OK, YK_CLOUD_REACH_FAILED } yk_cloud_reach_t;
+/** The last connection's outcome, a yk_cloud_reach_t as an int (plain, so that yaykit_app can link it weakly);
+ *  UNKNOWN before any since the start. */
+int yk_cloud_reach(void);
 /** GET /device/v1/apps?layout=&lang= (the main firmware's app ring, P23): the store's stable, signed releases for this
  *  board, as the API's body ({"items":[{slug,name,icon,version,size,sha256,url,signature,minYay,...}]}) in `*json`
  *  (PSRAM; free() it). `layout` NULL: yaykit-v1; `lang` the owner's language (yk_account_locale), asked for as "zh" or

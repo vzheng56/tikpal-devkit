@@ -71,7 +71,7 @@ esp_err_t yk_link_register_console(void);
 
 /** Stable per device, not reversible to the MAC: yk_ + first 12 hex of SHA-256(base MAC + "yaykit"). */
 const char *yk_link_device_id(void);
-/** The yk-info document. Caller frees with cJSON_free(). */
+/** The yk-info document, in PSRAM when there is some (#1239). Caller frees with cJSON_free() (or free()). */
 char *yk_link_info_json(void);
 
 /** Starts advertising YK-xxxx with a fresh pairing code. Takes a moment: the SRP verifier is derived here. */

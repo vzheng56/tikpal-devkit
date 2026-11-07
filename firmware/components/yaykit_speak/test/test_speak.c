@@ -1,4 +1,4 @@
-// Host tests for yk_speak_dsp: the playback ring, fades, level, cue tones, volume.
+// Host tests for yk_speak_dsp: the playback ring, fades, level, cue tones.
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,6 +44,55 @@ static void test_ring(void) {
     r.head = r.tail = (size_t)-3;
     CHECK(yk_ring_write(&r, a, 6) == 6 && yk_ring_avail(&r) == 6);
     CHECK(yk_ring_read(&r, out, 6) == 6 && out[0] == 1 && out[5] == 6);
+    CHECK(yk_ring_cap_fixed() == 0);  // every cap so far a power of two
+}
+
+/** Pushes `total` counting samples through a ring of `cap` in uneven bites (as the microphones' 20 ms frames meet
+ *  the encoder's 60 ms packets), and says whether every one came out where it went in. */
+static bool ring_in_order(size_t cap, size_t total) {
+    static int16_t buf[40000], in[512], out[2048];
+    yk_ring_t r;
+    yk_ring_init(&r, buf, cap);
+    size_t wrote = 0, read = 0;
+    bool ok = true;
+    while (read < total) {
+        size_t n = 320 + (wrote % 7) * 13;  // 320..398 at a time
+        if (n > total - wrote) n = total - wrote;
+        for (size_t i = 0; i < n; i++) in[i] = (int16_t)(wrote + i);
+        wrote += yk_ring_write(&r, in, n);
+        if (yk_ring_avail(&r) >= 960 || wrote == total) {
+            const size_t got = yk_ring_read(&r, out, 960);
+            for (size_t i = 0; i < got; i++) ok = ok && out[i] == (int16_t)(read + i);
+            read += got;
+        }
+    }
+    return ok;
+}
+
+static void test_ring_cap(void) {
+    CHECK(YK_RING_POW2(32768) && YK_RING_POW2(8) && YK_RING_POW2(1));
+    CHECK(!YK_RING_POW2(32000) && !YK_RING_POW2(0) && !YK_RING_POW2(24));
+    // A power of two: as it always was, every sample in place.
+    CHECK(ring_in_order(32768, 200000));
+    CHECK(yk_ring_cap_fixed() == 0);
+    // 32000 (录音卡 0.1.0): taken down to 16384, said, and in order.
+    int16_t buf[32000];
+    yk_ring_t r;
+    yk_ring_init(&r, buf, 32000);
+    CHECK(r.cap == 16384 && yk_ring_space(&r) == 16384);
+    CHECK(yk_ring_cap_fixed() == 1);
+    CHECK(ring_in_order(32000, 200000));
+    CHECK(yk_ring_cap_fixed() == 2);
+    // What 32000 did before the guard: positions & 31999 land in 256-sample blocks out of order.
+    size_t clash = 0;
+    for (size_t i = 0; i < 32000; i++) clash += (i & 31999) != i;
+    CHECK(clash > 0);
+    // The smallest cases.
+    yk_ring_init(&r, buf, 3);
+    CHECK(r.cap == 2);
+    yk_ring_init(&r, buf, 0);
+    CHECK(r.cap == 0 && yk_ring_space(&r) == 0);
+    CHECK(yk_ring_cap_fixed() == 4);
 }
 
 static void test_fade(void) {
@@ -90,26 +139,25 @@ static void test_chime(void) {
     CHECK(n == 2240);  // two 70 ms notes
     int16_t peak = 0;
     for (size_t i = 0; i < n; i++) peak = (int16_t)(x[i] > peak ? x[i] : -x[i] > peak ? -x[i] : peak);
-    CHECK(peak > 4000 && peak <= 8192);  // quiet: -12 dBFS at most (about -15 after the attack)
-    CHECK(x[0] == 0);                    // starts from silence (5 ms attack)
+    CHECK(peak > 20000 && peak <= 26029);  // under the board's -2 dBFS by itself, so it passes the mixer as it is
+    CHECK(x[0] == 0);                      // starts from silence (5 ms attack)
     CHECK(fabsf(peak_hz(x, 1120, 16000) - 659) < 10 && fabsf(peak_hz(x + 1120, 1120, 16000) - 880) < 10);  // rising
     yk_chime_synth(YK_CHIME_END, 16000, x, 4000);
     CHECK(fabsf(peak_hz(x, 1120, 16000) - 880) < 10 && fabsf(peak_hz(x + 1120, 1120, 16000) - 659) < 10);  // falling
     CHECK(yk_chime_synth(YK_CHIME_START, 16000, x, 1000) == 1000);  // cut to fit
-    // Each note decays to near silence before the next starts: no click between them.
+    // Each note decays to near silence and ends on it: no click between them, none at the end.
     yk_chime_synth(YK_CHIME_START, 16000, x, 4000);
     int16_t tail = 0;
     for (size_t i = 1100; i < 1120; i++) tail = (int16_t)(x[i] > tail ? x[i] : -x[i] > tail ? -x[i] : tail);
-    CHECK(tail < 200);
+    CHECK(tail < 300);
+    CHECK(x[1119] == 0 && x[2239] == 0);
 }
 
-static void test_volume(void) {
-    CHECK(yk_volume_to_codec(0) == 0);
-    CHECK(yk_volume_to_codec(-3) == 0);
-    CHECK(yk_volume_to_codec(1) == 63);
-    CHECK(yk_volume_to_codec(10) == 92);
-    CHECK(yk_volume_to_codec(14) == 92);
-    for (int v = 1; v < 10; v++) CHECK(yk_volume_to_codec(v + 1) > yk_volume_to_codec(v));
+static void test_muted(void) {
+    CHECK(yk_speak_muted(0, -1));                                  // step 0: silent, not just -50 dB
+    for (int v = 1; v <= 10; v++) CHECK(!yk_speak_muted(v, -1));   // every other step sounds
+    CHECK(!yk_speak_muted(0, 0) && !yk_speak_muted(0, 90));        // `speak codec` is as given, 0 too
+    CHECK(!yk_speak_muted(6, 90));
 }
 
 static void test_reclaim(void) {
@@ -122,10 +170,11 @@ static void test_reclaim(void) {
 
 int main(void) {
     test_ring();
+    test_ring_cap();
     test_fade();
     test_level();
     test_chime();
-    test_volume();
+    test_muted();
     test_reclaim();
     printf("yaykit_speak host tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

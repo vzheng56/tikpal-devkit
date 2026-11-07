@@ -235,6 +235,150 @@ static void test_hit(void) {
         }
 }
 
+/** Gestures doc 7: a swipe on the ring closes it towards the finger; letting go on an app (or on the app in use) is
+ *  not a tap. Taps on an app, the middle and the paper are as before. */
+static void test_touch(void) {
+    const int w5[5] = {64, 64, 64, 64, 64};
+    yk_apps_layout_t L;
+    yk_apps_layout(5, w5, 24, 61, &L);
+    // A tap: on an app, the middle, the paper.
+    for (int i = 0; i < 5; i++) {
+        yk_apps_touch_t t = {0};
+        yk_apps_touch_press(&t);
+        const yk_apps_go_t go = yk_apps_touch_click(&t, &L, L.sat[i].cx, L.sat[i].cy);
+        CHECK(go.kind == YK_APPS_GO_TAP && go.hit == i + 1);
+        // the ring is closing: a second click (another finger, a late event) does nothing
+        CHECK(yk_apps_touch_click(&t, &L, L.sat[i].cx, L.sat[i].cy).kind == YK_APPS_GO_NONE);
+    }
+    {
+        yk_apps_touch_t t = {0};
+        yk_apps_touch_press(&t);
+        const yk_apps_go_t go = yk_apps_touch_click(&t, &L, YK_CX, YK_CY);
+        CHECK(go.kind == YK_APPS_GO_TAP && go.hit == 0);
+    }
+    {
+        yk_apps_touch_t t = {0};
+        yk_apps_touch_press(&t);
+        const yk_apps_go_t go = yk_apps_touch_click(&t, &L, 20, 20);
+        CHECK(go.kind == YK_APPS_GO_TAP && go.hit == -1);
+    }
+    // A swipe each way, letting go on every app and on the middle: it goes away towards the finger, nothing tapped.
+    const int ways[4][2] = {{1, 0}, {-1, 0}, {0, -1}, {0, 1}};
+    for (int w = 0; w < 4; w++)
+        for (int i = 0; i <= 5; i++) {
+            yk_apps_touch_t t = {0};
+            yk_apps_touch_press(&t);
+            const yk_apps_go_t go = yk_apps_touch_swipe(&t, ways[w][0], ways[w][1]);
+            CHECK(go.kind == YK_APPS_GO_AWAY && go.dx == ways[w][0] && go.dy == ways[w][1]);
+            const int x = i < 5 ? L.sat[i].cx : YK_CX, y = i < 5 ? L.sat[i].cy : YK_CY;
+            CHECK(yk_apps_touch_click(&t, &L, x, y).kind == YK_APPS_GO_NONE);
+            CHECK(yk_apps_touch_swipe(&t, 1, 0).kind == YK_APPS_GO_NONE);  // one swipe, one close
+        }
+    // A swipe is a swipe however LVGL measured it (the way is only ever one of four).
+    {
+        yk_apps_touch_t t = {0};
+        yk_apps_touch_press(&t);
+        CHECK(yk_apps_touch_swipe(&t, 0, 0).kind == YK_APPS_GO_NONE);
+        const yk_apps_go_t go = yk_apps_touch_swipe(&t, -3, 0);
+        CHECK(go.kind == YK_APPS_GO_AWAY && go.dx == -1 && go.dy == 0);
+    }
+    // Closing some other way (8 s, the side key, yk_apps_tap): neither a tap nor a swipe counts any more.
+    {
+        yk_apps_touch_t t = {0};
+        yk_apps_touch_press(&t);
+        yk_apps_touch_closing(&t);
+        CHECK(yk_apps_touch_click(&t, &L, L.sat[0].cx, L.sat[0].cy).kind == YK_APPS_GO_NONE);
+        CHECK(yk_apps_touch_swipe(&t, 0, 1).kind == YK_APPS_GO_NONE);
+    }
+    // The motion: 200 ms that way, full size, clear at the end; the other axis stays.
+    yk_apps_pose_t p[YK_APPS_MAX + 1];
+    CHECK(!yk_apps_frame_away(&L, 0, 1, 0, p));
+    CHECK(p[0].cx == YK_CX && p[0].cy == YK_CY && p[0].opa == 255 && p[0].scale == 256);
+    for (int i = 1; i <= 5; i++) CHECK(p[i].cx == L.sat[i - 1].cx && p[i].cy == L.sat[i - 1].cy && p[i].opa == 255);
+    CHECK(!yk_apps_frame_away(&L, YK_APPS_AWAY_MS / 2, 1, 0, p));
+    for (int i = 1; i <= 5; i++)
+        CHECK(p[i].cx > L.sat[i - 1].cx && p[i].cx < L.sat[i - 1].cx + YK_APPS_AWAY_PX && p[i].cy == L.sat[i - 1].cy &&
+              p[i].opa > 0 && p[i].opa < 255 && p[i].scale == 256);
+    CHECK(yk_apps_frame_away(&L, YK_APPS_AWAY_MS, 1, 0, p));
+    CHECK(p[0].cx == YK_CX + YK_APPS_AWAY_PX && p[0].opa == 0);
+    for (int i = 1; i <= 5; i++)
+        CHECK(p[i].cx == L.sat[i - 1].cx + YK_APPS_AWAY_PX && p[i].opa == 0 && p[i].scale == 256);
+    CHECK(yk_apps_frame_away(&L, YK_APPS_AWAY_MS, 0, -1, p));
+    CHECK(p[0].cx == YK_CX && p[0].cy == YK_CY - YK_APPS_AWAY_PX);
+    for (int i = 1; i <= 5; i++) CHECK(p[i].cx == L.sat[i - 1].cx && p[i].cy == L.sat[i - 1].cy - YK_APPS_AWAY_PX);
+    CHECK(yk_apps_frame_away(&L, YK_APPS_AWAY_MS, -1, 0, p) && p[0].cx == YK_CX - YK_APPS_AWAY_PX);
+    CHECK(yk_apps_frame_away(&L, YK_APPS_AWAY_MS, 0, 1, p) && p[0].cy == YK_CY + YK_APPS_AWAY_PX);
+}
+
+/** The phone mark (voice-code handoff 2.1②): on the disc's upper right, in the safe circle at the places the app in
+ *  use can take, apart from the badges, the names, the middle's label and the other places; a touch on it is its
+ *  place's, and no touch hits two things. */
+static void test_phone_mark(void) {
+    _Static_assert(offsetof(yk_apps_item_t, phone) > offsetof(yk_apps_item_t, update), "phone is added last");
+    const yk_apps_item_t plain = {.slug = "breathe", .installed = true};  // as an extension built before makes them
+    CHECK(!plain.phone);
+    int x, y;
+    float r, edge;
+    yk_apps_phone_mark(233, 105, 1.0f, &x, &y, &r, &edge);
+    CHECK(x == 233 + YK_APPS_PHONE_D && y == 105 - YK_APPS_PHONE_D && r == YK_APPS_PHONE_R && edge > r);
+    const int w[YK_APPS_MAX] = {96, 96, 96, 96, 96, 96};
+    for (int six = 0; six < 2; six++)
+        for (int k = 1; k <= (six ? 1 : 5); k++) {
+            yk_apps_layout_t L;
+            if (six) {
+                yk_apps_item_t items[6] = {{.slug = "a"}, {.slug = "b"}, {.slug = "c"}, {.slug = "d"},
+                                           {.slug = YK_APPS_MORE}, {.slug = YK_APPS_SETTINGS}};
+                int slots[YK_APPS_MAX];
+                yk_apps_item_slots(items, 6, slots);
+                yk_apps_layout_at(6, slots, w, 24, 96, &L);
+            } else {
+                yk_apps_layout(k, w, 24, 96, &L);
+            }
+            // The app in use is in a slot, and yk_apps_pick_ring() puts the (at most two) apps in a slot first: the mark
+            // is on one of the first two places. Both with a mark at once is the hardest case.
+            const int napps = L.n < 2 ? L.n : 2;
+            for (int i = 0; i < napps; i++) L.sat[i].phone = true;
+            for (int i = 0; i < napps; i++) {
+                const int cx = L.sat[i].cx, cy = L.sat[i].cy;
+                yk_apps_phone_mark(cx, cy, 1.0f, &x, &y, &r, &edge);
+                const int e = (int)ceilf(edge);
+                CHECK(corner_in(x + e, y - e, YK_R_CONTENT) && corner_in(x - e, y - e, YK_R_CONTENT) &&
+                      corner_in(x + e, y + e, YK_R_CONTENT));
+                CHECK(hypot(x - (cx + YK_APPS_BADGE_D), y - (cy + YK_APPS_BADGE_D)) > edge + YK_APPS_BADGE_R);
+                const yk_box_t mark = {(int16_t)(x - e), (int16_t)(y - e), (int16_t)(2 * e), (int16_t)(2 * e)};
+                for (int j = 0; j < L.n; j++) CHECK(!meet(&mark, &L.sat[j].name));
+                CHECK(!meet(&mark, &L.label));
+                for (int j = 0; j < L.n; j++)
+                    if (j != i) CHECK(hypot(x - L.sat[j].cx, y - L.sat[j].cy) > edge + YK_APPS_SAT_R + 8);
+                // a touch on the mark, even at its edge, is its place's
+                CHECK(yk_apps_hit(&L, x, y) == i + 1);
+                CHECK(yk_apps_hit(&L, x + e, y - e / 2) == i + 1);
+            }
+            // No touch hits two things, the marks' targets included.
+            for (int py = 0; py < 466; py += 2)
+                for (int px = 0; px < 466; px += 2) {
+                    int hits = 0;
+                    for (int i = 0; i < L.n; i++) {
+                        const int dx = px - L.sat[i].cx, dy = py - L.sat[i].cy;
+                        bool on = dx * dx + dy * dy <= YK_APPS_HIT_R * YK_APPS_HIT_R;
+                        if (L.sat[i].phone) {
+                            yk_apps_phone_mark(L.sat[i].cx, L.sat[i].cy, 1.0f, &x, &y, &r, &edge);
+                            const int R = (int)ceilf(edge) + 2, ex = px - x, ey = py - y;
+                            on |= ex * ex + ey * ey <= R * R;
+                        }
+                        hits += on;
+                    }
+                    const int dx = px - YK_CX, dy = py - YK_CY;
+                    hits += dx * dx + dy * dy <= YK_APPS_CENTER_HIT_R * YK_APPS_CENTER_HIT_R;
+                    if (hits > 1) {
+                        CHECK(hits <= 1);
+                        py = 466;
+                        break;
+                    }
+                }
+        }
+}
+
 static yk_catalog_t demo_catalog(void) {
     yk_catalog_t c = {.count = 6, .written_ms = 1792549233000LL, .lang = "zh", .seq = 7};
     const char *slugs[] = {"language-buddy", "breathe", "party-play", "homework-buddy", "translator", "yay"};
@@ -272,37 +416,42 @@ static void test_pick(void) {
 }
 
 /** The ring with 「更多」 (app-ecosystem.md 4.5): at most 4 apps, those in a slot, then those in the package cache,
- *  then the catalog's; 「更多」, always, then 「设置」 (settings-u.md 5) last: the 6-place ring. */
+ *  then the catalog's; 「更多」, always, last. Apps only since 0.1.14 (system-pulldown.md 2): no 「设置」 (0.1.6 to 0.1.13
+ *  put it after 「更多」, settings-u.md 5), so the 5-place ring again. */
 static void test_pick_ring(void) {
     yk_catalog_t cat = demo_catalog();
     yk_apps_item_t out[YK_APPS_MAX];
     const yk_apps_slot_t inst[] = {{"party-play", 100}, {"yay", 999}, {"breathe", 200}};
-    const char *const cached[] = {"homework-buddy", "breathe", "yay", "+more", ""};
-    int n = yk_apps_pick_ring(inst, 3, cached, 5, &cat, out, YK_APPS_MAX);
-    CHECK(n == 6);
+    const char *const cached[] = {"homework-buddy", "breathe", "yay", "+more", "+settings", ""};
+    int n = yk_apps_pick_ring(inst, 3, cached, 6, &cat, out, YK_APPS_MAX);
+    CHECK(n == 5);
     CHECK(!strcmp(out[0].slug, "breathe") && out[0].installed && !out[0].cached && !strcmp(out[0].name, "呼吸之间"));
     CHECK(!strcmp(out[1].slug, "party-play") && out[1].installed);
     CHECK(!strcmp(out[2].slug, "homework-buddy") && !out[2].installed && out[2].cached && out[2].name);
     CHECK(!strcmp(out[3].slug, "language-buddy") && !out[3].installed && !out[3].cached);  // the catalog's first
     CHECK(!strcmp(out[4].slug, YK_APPS_MORE) && !out[4].installed && !out[4].cached && !out[4].name);
-    CHECK(!strcmp(out[5].slug, YK_APPS_SETTINGS) && !out[5].installed && !out[5].cached && !out[5].name);
-    // Nothing anywhere (a new device, never online): 「更多」 and 「设置」.
+    for (int i = 0; i < n; i++) CHECK(strcmp(out[i].slug, YK_APPS_SETTINGS));  // not even from the cache's list
+    // Nothing anywhere (a new device, never online): 「更多」 alone.
     n = yk_apps_pick_ring(NULL, 0, NULL, 0, NULL, out, YK_APPS_MAX);
-    CHECK(n == 2 && !strcmp(out[0].slug, YK_APPS_MORE) && !strcmp(out[1].slug, YK_APPS_SETTINGS));
+    CHECK(n == 1 && !strcmp(out[0].slug, YK_APPS_MORE));
     // Only what is on the device, no catalog: names left to the ring.
     n = yk_apps_pick_ring(inst, 3, cached, 2, NULL, out, YK_APPS_MAX);
-    CHECK(n == 5 && !strcmp(out[2].slug, "homework-buddy") && out[2].cached && !out[2].name && !strcmp(out[3].slug, YK_APPS_MORE));
-    // A limit counts 「更多」 and 「设置」; 「更多」 alone when only one fits.
-    n = yk_apps_pick_ring(inst, 3, cached, 5, &cat, out, 3);
-    CHECK(n == 3 && !strcmp(out[0].slug, "breathe") && !strcmp(out[1].slug, YK_APPS_MORE) && !strcmp(out[2].slug, YK_APPS_SETTINGS));
-    n = yk_apps_pick_ring(inst, 3, cached, 5, &cat, out, 1);
+    CHECK(n == 4 && !strcmp(out[2].slug, "homework-buddy") && out[2].cached && !out[2].name && !strcmp(out[3].slug, YK_APPS_MORE));
+    // A limit counts 「更多」; 「更多」 alone when only one fits.
+    n = yk_apps_pick_ring(inst, 3, cached, 6, &cat, out, 3);
+    CHECK(n == 3 && !strcmp(out[0].slug, "breathe") && !strcmp(out[1].slug, "party-play") && !strcmp(out[2].slug, YK_APPS_MORE));
+    n = yk_apps_pick_ring(inst, 3, cached, 6, &cat, out, 1);
     CHECK(n == 1 && !strcmp(out[0].slug, YK_APPS_MORE));
     CHECK(yk_apps_pick_ring(inst, 3, NULL, 0, NULL, out, 0) == 0);
-    // Places: the 6-place ring, the apps from the top, 「更多」 lower left, 「设置」 upper left; rings without 「设置」 as
-    // before.
+    // Places: the 5-place ring, the apps from the top, 「更多」 upper left. Items that end with 「设置」 (given by hand: no
+    // ring picks it now) still get the 6-place ring, the apps from the top, 「更多」 lower left, 「设置」 upper left.
     int slots[YK_APPS_MAX];
-    n = yk_apps_pick_ring(inst, 3, cached, 5, &cat, out, YK_APPS_MAX);
+    n = yk_apps_pick_ring(inst, 3, cached, 6, &cat, out, YK_APPS_MAX);
     yk_apps_item_slots(out, n, slots);
+    CHECK(slots[0] == 0 && slots[1] == 1 && slots[2] == 2 && slots[3] == 3 && slots[4] == YK_APPS_MORE_PLACE);
+    const yk_apps_item_t with_settings[] = {{.slug = "a"}, {.slug = "b"}, {.slug = "c"}, {.slug = "d"},
+                                            {.slug = YK_APPS_MORE}, {.slug = YK_APPS_SETTINGS}};
+    yk_apps_item_slots(with_settings, 6, slots);
     CHECK(slots[0] == YK_APPS_SIX && slots[1] == YK_APPS_SIX + 1 && slots[2] == YK_APPS_SIX + 2 && slots[3] == YK_APPS_SIX + 3);
     CHECK(slots[4] == YK_APPS_MORE_PLACE6 && slots[5] == YK_APPS_SETTINGS_PLACE);
     yk_apps_item_slots(out, 2, slots);  // the first two alone: no 「更多」 among them
@@ -452,18 +601,18 @@ static void test_text(void) {
     CHECK(c[0] == 0);
 }
 
-// 「回到 Yay 说？」 with the buddy's name (0.1.12, YK_PREF_BUDDY): Yay until the main firmware sets another.
+// 「回到 Pip 说？」 with the buddy's name (0.1.12, YK_PREF_BUDDY): Pip until the main firmware sets another.
 static void test_ask_text(void) {
     char ask[48];
-    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(0), false, ask, sizeof(ask)), "回到 Yay 说？"));
-    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(0), true, ask, sizeof(ask)), "Talk in Yay?"));
-    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(1), true, ask, sizeof(ask)), "Talk in Wow?"));
-    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(2), false, ask, sizeof(ask)), "回到 Aha 说？"));
-    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(7), false, ask, sizeof(ask)), "回到 Yay 说？"));  // unknown: Yay
-    CHECK(!strcmp(yk_apps_ask_text(NULL, true, ask, sizeof(ask)), "Talk in Yay?"));
-    CHECK(!strcmp(yk_apps_ask_text("", false, ask, sizeof(ask)), "回到 Yay 说？"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(0), false, ask, sizeof(ask)), "回到 Pip 说？"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(0), true, ask, sizeof(ask)), "Talk in Pip?"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(4), true, ask, sizeof(ask)), "Talk in Dial?"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(5), false, ask, sizeof(ask)), "回到 Bloom 说？"));
+    CHECK(!strcmp(yk_apps_ask_text(yk_buddy_name(7), false, ask, sizeof(ask)), "回到 Pip 说？"));  // unknown: Pip
+    CHECK(!strcmp(yk_apps_ask_text(NULL, true, ask, sizeof(ask)), "Talk in Pip?"));
+    CHECK(!strcmp(yk_apps_ask_text("", false, ask, sizeof(ask)), "回到 Pip 说？"));
     // Every buddy's line, both languages, on the card (290 px at 22: Han a full em, the rest 9/16).
-    for (int b = 0; b < 3; b++)
+    for (int b = 0; b < 6; b++)
         for (int en = 0; en < 2; en++) {
             yk_apps_ask_text(yk_buddy_name(b), en, ask, sizeof(ask));
             int w = 0, len;
@@ -739,7 +888,7 @@ static void test_update_dot(void) {
     const int n = yk_apps_pick_ring(inst, 2, NULL, 0, &cat, out, YK_APPS_MAX);
     bool any = false;
     for (int i = 0; i < n; i++) any |= out[i].update;
-    CHECK(n == 4 && !any);
+    CHECK(n == 3 && !any);
     // Where it goes: on the disc's edge at 45 degrees, upper right; scaled with the disc.
     int x, y;
     float r, edge;
@@ -748,6 +897,23 @@ static void test_update_dot(void) {
     CHECK(fabs(hypot(x - 233, y - 91) - YK_APPS_SAT_R) < 2);
     yk_apps_update_dot(233, 233, 100.0f / (2 * YK_APPS_SAT_R), &x, &y, &r, &edge);  // 「我的应用」's middle one (100 px)
     CHECK(fabs(hypot(x - 233, y - 233) - 50) < 2 && r > YK_APPS_UPDATE_R);
+    // The middle's (0.1.14: Tikpal itself has a newer version): the same dot on the middle disc's edge, upper right; at
+    // full size it meets neither the label under the middle nor any app's disc or name on any ring.
+    yk_apps_home_dot(YK_CX, YK_CY, 1.0f, &x, &y, &r, &edge);
+    CHECK(r == YK_APPS_UPDATE_R && edge > r && x > YK_CX && y < YK_CY);
+    CHECK(fabs(hypot(x - YK_CX, y - YK_CY) - YK_APPS_CENTER_R) < 2);
+    for (int k = 1; k <= 5; k++) {
+        const int w5[YK_APPS_MAX] = {96, 96, 96, 96, 96, 96};
+        yk_apps_layout_t L;
+        yk_apps_layout(k, w5, 24, YK_APPS_LABEL_MAX_W, &L);
+        const int e = (int)ceilf(edge);
+        const yk_box_t dot = {(int16_t)(x - e), (int16_t)(y - e), (int16_t)(2 * e), (int16_t)(2 * e)};
+        CHECK(!meet(&dot, &L.label));
+        for (int i = 0; i < L.n; i++) {
+            CHECK(hypot(x - L.sat[i].cx, y - L.sat[i].cy) > edge + YK_APPS_SAT_R + YK_APPS_RING_W);
+            CHECK(!meet(&dot, &L.sat[i].name));
+        }
+    }
     // Every ring: 1-5 places at r 142, and the 6 at r 128 (with 「更多」 and 「设置」).
     const int w[YK_APPS_MAX] = {96, 96, 96, 96, 96, 96};
     for (int six = 0; six < 2; six++)
@@ -785,6 +951,8 @@ int main(void) {
     test_update_dot();
     test_motion();
     test_hit();
+    test_touch();
+    test_phone_mark();
     test_pick();
     test_pick_ring();
     test_text();

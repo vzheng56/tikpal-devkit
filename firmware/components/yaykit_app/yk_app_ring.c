@@ -1,10 +1,19 @@
 // The app ring and 「回到 Yay 说？」 in an extension (P23; device-controls.md 1.2, 1.3, 4). yaykit_app takes the
 // double click and opens yaykit_ui's ring over the app: a tap on the middle goes home, on another app opens it, on an
 // app not on the device goes home with {"then":"install"} (only Yay installs), on 「更多」 (the fifth place,
-// app-ecosystem.md 4.5) goes home with {"then":"more"}: Yay opens 「我的应用」; on 「设置」 (the last place since 0.1.6)
-// with {"then":"settings"}: Yay opens its settings. A hold the app did not use, in an app
+// app-ecosystem.md 4.5) goes home with {"then":"more"}: Yay opens 「我的应用」. (「设置」, the last place from 0.1.6 to
+// 0.1.13, went home with {"then":"settings"}; since 0.1.14 the ring holds apps only, system-pulldown.md 2.) A hold the
+// app did not use, in an app
 // with no conversation of its own, asks 「回到 Yay 说？」. Any press takes the hint arrow away (P24: yk_hint, the
 // app's own APPS hint included), before the app hears of it.
+//
+// 「在手机上打开」 (docs/handoff/2026-11-01-voice-code.md 2.1②): an app whose app.json has voiceCode, built with
+// yaykit_voicecode, can show its page code (action 0, value 0) full screen through yk_vc_show_ring():
+// yk_app_ring_show_code(). Since 0.1.14 the ring only switches apps (docs/delivery/2026-11-02-system-pulldown.md 8:
+// no phone mark on the app's own place, a tap there does nothing); the way in is the system pull-down's button. While
+// that code is up the key is ours (a press hides it, all of that press goes nowhere) and the screen stays on
+// (yk_app_keep_screen_on_code, apart from the app's own switch); a tap or a swipe on it, or 60 s, hide it too.
+// yaykit_voicecode is linked weakly (every firmware has it since 0.1.14): without a number there is no code to show.
 //
 // The key task only decides (yk_keys_route, pure, host tested) and takes the key while ours (yk_key_grab). A small
 // task of ours waits for the board lock and hands the drawing to the LVGL task (lv_async_call: measuring the names
@@ -16,6 +25,7 @@
 #include <string.h>
 
 #include "board.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -32,9 +42,17 @@
 
 static const char *TAG = "yk_ring";
 
+// The 应用码 (yaykit_voicecode): in every firmware since 0.1.14 (yaykit_app requires it), the references left weak.
+esp_err_t yk_vc_show_ring(void (*hidden)(int why)) __attribute__((weak));
+void yk_vc_hide(void) __attribute__((weak));
+uint32_t yk_vc_app_number(void) __attribute__((weak));
+
 #define REPORT_MS 500  // the opening's numbers, once its motion (~300 ms) is done
 
-enum { J_RING_OPEN, J_RING_CLOSE, J_ASK_OPEN, J_ASK_CLOSE, J_TAPPED, J_ASKED, J_HINT_HIDE };
+enum {
+    J_RING_OPEN, J_RING_CLOSE, J_ASK_OPEN, J_ASK_CLOSE, J_TAPPED, J_ASKED, J_HINT_HIDE, J_CODE_SHOW, J_CODE_CLOSE,
+    J_SHEET_ATTACH, J_SHEET_CLOSE,  // the system pull-down (yk_app_sheet.c): its edge once ready; a press closed it
+};
 typedef struct {
     uint8_t what;
     char slug[32];  // J_TAPPED, J_ASKED: what was tapped ("" nothing)
@@ -43,11 +61,13 @@ typedef struct {
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static yk_keys_t s_keys;  // under s_mux
 static bool s_active, s_talks, s_own_double;
+static bool s_own_code;  // this app has a 应用码 to show (yk_vc_show_ring linked, voiceCode built in)
 static bool s_home_on_double;  // no room for our task: the double click goes straight home, as before level 3
 static const char *s_slug;  // this app's
 static yk_app_key_fn s_app_fn;
 static void *s_app_ctx;
 static QueueHandle_t s_jobs;
+static TaskHandle_t s_task;  // ours (its stack's low-water mark goes in YAY_RING drawn)
 static volatile bool s_leaving;  // restarting into another firmware: the key does nothing more
 static int64_t s_key_ms;         // the double click that opened the ring (YAY_RING lines)
 static int64_t s_key_down_ms;    // the press that took a hint away (YAY_HINT lines)
@@ -87,6 +107,24 @@ static void release_if_idle(void) {
     if (idle && !s_leaving) yk_key_grab(NULL, NULL);
 }
 
+// ---------------------------------------------------------------- the system pull-down (yk_app_sheet.c), its key
+
+bool yk_app_ring_sheet_opening(void) {
+    if (!s_active || s_leaving) return false;
+    taskENTER_CRITICAL(&s_mux);
+    const bool ok = yk_keys_sheet_open(&s_keys);
+    taskEXIT_CRITICAL(&s_mux);
+    if (ok) yk_key_grab(key, NULL);  // a press closes it, and all of that press is ours
+    return ok;
+}
+
+void yk_app_ring_sheet_closed(void) {
+    taskENTER_CRITICAL(&s_mux);
+    yk_keys_sheet_closed(&s_keys);
+    taskEXIT_CRITICAL(&s_mux);
+    release_if_idle();
+}
+
 static void closed_by_itself(void) {
     taskENTER_CRITICAL(&s_mux);
     yk_keys_closed(&s_keys);
@@ -120,9 +158,11 @@ static void on_refr(lv_event_t *e) {
 static void report(lv_timer_t *t) {
     yk_apps_stats_t st;
     yk_apps_stats(&st);
-    printf("YAY_RING drawn from=%s open_ms=%d frames=%d since_key_ms=%lld internal=%u internal_min=%u\n", s_slug,
-           st.open_ms, st.frames, (long long)(now_ms() - s_key_ms), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    printf("YAY_RING drawn from=%s open_ms=%d frames=%d since_key_ms=%lld internal=%u internal_min=%u ring_stack_free=%u\n",
+           s_slug, st.open_ms, st.frames, (long long)(now_ms() - s_key_ms),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+           s_task ? (unsigned)uxTaskGetStackHighWaterMark(s_task) : 0);
     lv_timer_delete(t);
 }
 
@@ -185,6 +225,7 @@ static void hint_hide_async(void *arg) {
 
 static void leaving_async(void *arg) {
     (void)arg;
+    yk_app_sheet_close("leaving");
     yk_apps_close(false);
     yk_apps_ask_close();
     yk_apps_leaving(s_leave_slug, s_leave_name[0] ? s_leave_name : NULL);
@@ -193,6 +234,16 @@ static void leaving_async(void *arg) {
 static void leaving_clear_async(void *arg) {
     (void)arg;
     yk_apps_leaving_clear();
+}
+
+static void sheet_attach_async(void *arg) {
+    (void)arg;
+    yk_app_sheet_attach(s_slug);
+}
+
+static void sheet_close_async(void *arg) {
+    (void)arg;
+    yk_app_sheet_close("key");
 }
 
 // ---------------------------------------------------------------- our task
@@ -255,6 +306,55 @@ static void left_not(esp_err_t err) {
     release_if_idle();
 }
 
+/** The ring's 应用码 went (a press of ours, a tap or a swipe on it, 60 s, the app's own code in its place), holding
+ *  board_lock(): the key and the screen are the app's again. */
+static void code_hidden(int why) {
+    taskENTER_CRITICAL(&s_mux);
+    yk_keys_code(&s_keys, false);
+    taskEXIT_CRITICAL(&s_mux);
+    yk_app_keep_screen_on_code(false);
+    printf("YAY_RING code hidden from=%s why=%d\n", s_slug, why);
+    release_if_idle();
+}
+
+/** In the LVGL task (lock held): the code's objects are made here, not on our small stack; unless a press hid it
+ *  before it came. */
+static void code_show_async(void *arg) {
+    (void)arg;
+    taskENTER_CRITICAL(&s_mux);
+    const bool want = s_keys.code;
+    taskEXIT_CRITICAL(&s_mux);
+    if (!want || s_leaving) return;
+    const esp_err_t err = yk_vc_show_ring(code_hidden);
+    printf("YAY_RING code from=%s app=%u err=%s\n", s_slug, (unsigned)yk_vc_app_number(), esp_err_to_name(err));
+    if (err != ESP_OK) code_hidden(-1);
+}
+
+static void code_hide_async(void *arg) {
+    (void)arg;
+    yk_vc_hide();  // (code_hidden follows, if it was up)
+}
+
+bool yk_app_ring_has_code(void) { return s_active && s_own_code; }
+
+void yk_app_ring_show_code(void) {
+    if (yk_app_ring_has_code() && !s_leaving) post(J_CODE_SHOW, NULL);  // our task waits for the lock, not the caller
+}
+
+/** Our page code (yk_app_ring_show_code, in our task): the key ours and the screen on while it is up. */
+static void show_code(void) {
+    if (s_leaving) return;
+    taskENTER_CRITICAL(&s_mux);
+    const bool up = s_keys.code;
+    yk_keys_code(&s_keys, true);
+    taskEXIT_CRITICAL(&s_mux);
+    if (up) return;
+    yk_key_grab(key, NULL);
+    yk_app_keep_screen_on_code(true);
+    printf("YAY_RING code asked from=%s ring_stack_free=%u\n", s_slug, (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    if (!ui(code_show_async)) code_hidden(-1);
+}
+
 static void tapped(const char *slug) {
     const ring_app_t *a = NULL;
     for (int i = 0; i < s_n; i++)
@@ -307,6 +407,10 @@ static void task(void *arg) {
         case J_TAPPED: tapped(j.slug); break;
         case J_ASKED: asked(j.slug); break;
         case J_HINT_HIDE: ui(hint_hide_async); break;
+        case J_CODE_SHOW: show_code(); break;
+        case J_SHEET_ATTACH: ui(sheet_attach_async); break;
+        case J_SHEET_CLOSE: ui(sheet_close_async); break;
+        case J_CODE_CLOSE: ui(code_hide_async); break;
         }
     }
 }
@@ -355,6 +459,8 @@ static void key(const yk_key_event_t *ev, void *ctx) {
         break;
     case YK_KEYS_RING_CLOSE: post(J_RING_CLOSE, NULL); break;
     case YK_KEYS_ASK_CLOSE: post(J_ASK_CLOSE, NULL); break;
+    case YK_KEYS_CODE_CLOSE: post(J_CODE_CLOSE, NULL); break;
+    case YK_KEYS_SHEET_CLOSE: post(J_SHEET_CLOSE, NULL); break;
     case YK_KEYS_EAT: break;
     }
     release_if_idle();
@@ -376,6 +482,10 @@ int yk_app_ring_dev_tap(const char *what) {
     return open ? 0 : 1;
 }
 
+void yk_app_ring_ready(void) {
+    if (s_active) post(J_SHEET_ATTACH, NULL);
+}
+
 void yk_app_ring_on_key(yk_app_key_fn fn, void *ctx) {
     s_app_ctx = ctx;
     s_app_fn = fn;
@@ -387,9 +497,12 @@ void yk_app_ring_start(const char *slug, bool talks, bool own_double, bool activ
     s_own_double = own_double;
     yk_keys_init(&s_keys);
     if (!active) return;
+    s_own_code = yk_vc_show_ring && yk_vc_hide && yk_vc_app_number && yk_vc_app_number() != 0;
     s_jobs = xQueueCreate(6, sizeof(job_t));  // a hint to take away as well as the ring or the card
-    // 3 KB: the board lock, the slots and the catalog (into PSRAM), and leaving (its own task does the work).
-    if (!s_jobs || xTaskCreate(task, "yk_ring", 3072, NULL, 5, NULL) != pdPASS) {
+    // The board lock, the slots and the catalog (into PSRAM), leaving (its own task does the work) and the 应用码's
+    // handover (its objects are made in the LVGL task). 4 KB since the 应用码 (11-02): at 3 KB the one-shot device test
+    // saw 456-696 bytes left, under the release report's 768.
+    if (!s_jobs || xTaskCreate(task, "yk_ring", 4096, NULL, 5, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "no room: the double click goes straight home");
         s_home_on_double = true;
         return;

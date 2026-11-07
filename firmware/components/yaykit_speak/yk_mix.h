@@ -1,5 +1,5 @@
 // The effects mixer of yaykit_speak (P13), pure C (host tested with test/run.sh): voices placed to the sample on
-// the speaker's clock, pitched clips, gain ramps, the 6 dB duck under an utterance, a -3 dBFS limiter.
+// the speaker's clock, pitched clips, gain ramps, the 6 dB duck under an utterance, a limiter at the board's ceiling.
 // Single-threaded: the device side calls it under its own mutex (yaykit_speak.c); synth callbacks run inside
 // yk_mix_render().
 #pragma once
@@ -13,7 +13,6 @@
 
 #define YK_MIX_MAX_BLOCK 480        // samples: 20 ms at 24 kHz
 #define YK_MIX_DUCK 0.5012f         // -6 dB
-#define YK_MIX_CEILING 0.7079f      // -3 dBFS: the small speaker's headroom (round-screen spec 10)
 #define YK_MIX_GROUPS 256
 
 typedef struct {
@@ -42,12 +41,16 @@ typedef struct {
     uint64_t group_at[YK_MIX_GROUPS];  // speaker sample + 1 of the group's last start (0 = never)
     float duck;      // the effects' gain now: 1, or YK_MIX_DUCK under an utterance (ramped)
     float lim_gain;  // the limiter's gain now
+    float ceiling;   // the limiter's ceiling, linear
     float mix[YK_MIX_MAX_BLOCK], voice[YK_MIX_MAX_BLOCK];
     // statistics
     uint32_t started, dropped, max_active, limited;
 } yk_mix_t;
 
-void yk_mix_init(yk_mix_t *m, uint32_t rate);
+/** ceiling_dbfs: the peak nothing passes (board_speaker()->ceiling_dbfs on the device). */
+void yk_mix_init(yk_mix_t *m, uint32_t rate, float ceiling_dbfs);
+/** The same ceiling, changed later (`speak loud`); at most 0 dBFS. */
+void yk_mix_set_ceiling(yk_mix_t *m, float ceiling_dbfs);
 
 /** Adds a clip (clip != NULL) or a synth voice (render != NULL) that begins at speaker sample `start`; `now` is the
  *  first sample of the next block to be rendered (a start before it plays at once). Returns its id (> 0) or
@@ -62,6 +65,7 @@ bool yk_mix_playing(const yk_mix_t *m, int id);
 int yk_mix_active(const yk_mix_t *m);
 
 /** Mixes one block of n (<= YK_MIX_MAX_BLOCK) samples: the utterance (`utter`, NULL when none is playing) at full
- *  level, the voices ducked under it, the limiter, to int16 `out`. sample0 / heard_us0: the block's first sample
+ *  level, the voices ducked under it, the limiter, to int16 `out` (an utterance alone, under the ceiling, passes as
+ *  it is). sample0 / heard_us0: the block's first sample
  *  on the speaker's clock and when it is heard. Returns the voices that played in it. */
 int yk_mix_render(yk_mix_t *m, const int16_t *utter, size_t n, uint64_t sample0, int64_t heard_us0, int16_t *out);
