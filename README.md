@@ -13,6 +13,25 @@
 
 许可：保留所有权利，只许查看，只许用来给 Tikpal 开发应用，见 [LICENSE](LICENSE)。开发者协议还是草稿，见 [DEVELOPER-TERMS.md](DEVELOPER-TERMS.md)。
 
+<!-- tikpal-plugin -->
+## Tikpal 开发者插件
+
+装上以后，你的 AI 自己在开发者平台上建应用、交审、等结果、改退回：skill 教它流程，MCP 给它工具；第一次用时浏览器会打开，核对码跟 AI 说的一样，点「允许」就登录好了，不用建令牌、贴令牌。
+
+Claude Code：
+
+```bash
+claude plugin marketplace add vzheng56/tikpal-devkit
+claude plugin install tikpal@tikpal
+```
+
+装完在 Claude Code 里输入 `/reload-plugins`（或者重开 Claude Code）。
+
+其他 AI（Codex、Cursor 等）：看 [developer.tikpal.ai/start.md](https://developer.tikpal.ai/start.md) 第 0 节。
+
+这一版插件和 `./kit login` 各登录一次；开发包 1.10 起合成一份。
+<!-- /tikpal-plugin -->
+
 ## 从零到第一次写进圆屏
 
 要一台 Mac（Linux 也行）、一台测试圆屏（装着 Tikpal 主固件，正式版就行）和一根 USB-C 线。

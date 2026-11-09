@@ -1,0 +1,12 @@
+{
+  "name": "tikpal",
+  "version": "0.1.0",
+  "description": "Tikpal 开发者插件：教 AI 走 Tikpal Voice 应用从建应用到上架的流程（skill），并给它开发者平台的工具（MCP，第一次用时在浏览器里点「允许」登录）。Make and ship Tikpal Voice apps with your AI: a skill for the way from a new app to the store, and the developer platform's tools (MCP), signed in by clicking Allow in the browser the first time.",
+  "author": {
+    "name": "Tikpal",
+    "url": "https://developer.tikpal.ai"
+  },
+  "homepage": "https://developer.tikpal.ai",
+  "repository": "https://github.com/vzheng56/tikpal-devkit",
+  "keywords": ["tikpal", "tikpal-voice", "developer", "mcp", "esp32"]
+}

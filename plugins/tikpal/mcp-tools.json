@@ -1,0 +1,797 @@
+{
+  "tools": [
+    {
+      "name": "whoami",
+      "description": "Which developer this token is, what it may do, which apps it may touch, and when it runs out. Takes nothing. Use it first: a tool this token may not use is not listed. Signed in with the Tikpal developer plugin, a sign-in that runs out is asked for again by the plugin itself (the developer clicks Allow); a token the developer made on the website, they make a new one there. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_apps",
+      "description": "The developer's apps this token may touch. Use get_app for where one is and what is next. Takes nothing. Gives each app's slug, number, store state (draft, published, archived), the versions out and its capabilities. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_app",
+      "description": "Where an app is in plain words, what is next and who does it, and the text written for you about it. Takes slug, and lang (zh or en) for the words. Gives `status` (draft, checking, ai_review, held, device, signing, preview, stable, returned, withdrawn, unlisted), `now` and `next` in plain words, `yours` (whether the next step is the developer's), `eta` in minutes, the latest submission (its id, state, how many findings), what is released, and `forAI`. Returned or held: get_findings with submission.id. While it is the review's turn (yours false): checking and ai_review take minutes, so wait for them with wait_for_change rather than looking again yourself; held, device and signing are Tikpal's queue and can take a day or two, which is not stuck, so look half an hour or more apart and do not submit again or withdraw. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "lang": {
+            "type": "string",
+            "enum": [
+              "zh",
+              "en"
+            ]
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "wait_for_change",
+      "description": "Wait, up to 45 seconds a call, for an app's status to change: use it after submitting and while it is checking or ai_review, instead of looking again and again yourself. Takes slug, since (the status you last saw, from get_app or the last wait_for_change), round (1 the first time, then the one its say gives) and lang (zh or en). Looks at the status every few seconds and comes back as soon as it changes, or after 45 seconds; at once when there is nothing to wait for: the developer's turn (draft, returned, withdrawn, stable), Tikpal's queue (held, device, signing: a day or two, which is not stuck) or out (preview, unlisted). Gives changed, waitedSeconds, round, stop, say (what to do next: do it) and status, as get_app gives it. While stop is false, call it again as say tells; after 10 rounds without a change it says to stop and tell the developer. Each look counts toward the token's 60 calls a minute. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "since": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "checking",
+              "ai_review",
+              "held",
+              "device",
+              "signing",
+              "preview",
+              "stable",
+              "returned",
+              "withdrawn",
+              "unlisted"
+            ]
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "lang": {
+            "type": "string",
+            "enum": [
+              "zh",
+              "en"
+            ]
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "create_app",
+      "description": "Make an app: it gets its number (for app.json's voiceCode) at once. Takes slug (2–24 lowercase letters, digits and single dashes, starting with a letter; never changed), name and tagline in zh and en, the cloud and hardware capabilities it needs, audience (everyone, or kids: for children, on a parent's account) and miniapp (whether it has a phone mini app). Gives the app with its number: write it into app.json's voiceCode. SLUG_TAKEN or SLUG_RESERVED: pick another slug. Capabilities a person reviews wait for Tikpal (list_capabilities). Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "name": {
+            "type": "object",
+            "properties": {
+              "zh": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "en": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              }
+            },
+            "required": [
+              "zh",
+              "en"
+            ],
+            "additionalProperties": false
+          },
+          "tagline": {
+            "type": "object",
+            "properties": {
+              "zh": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "en": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
+            "required": [
+              "zh",
+              "en"
+            ],
+            "additionalProperties": false
+          },
+          "cloud": {
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "records",
+                "data",
+                "files",
+                "asr",
+                "tts",
+                "llm",
+                "transcribe",
+                "hanzi.lookup",
+                "voice.session",
+                "deliver"
+              ]
+            }
+          },
+          "hardware": {
+            "maxItems": 5,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "microphone",
+                "speaker",
+                "motion",
+                "tf_card",
+                "bluetooth"
+              ]
+            }
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "everyone",
+              "kids"
+            ]
+          },
+          "miniapp": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "tagline",
+          "cloud",
+          "hardware",
+          "audience",
+          "miniapp"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_app",
+      "description": "Change an app's settings: whether it has a mini app. Takes slug and miniapp (true or false). Saying false is refused while a version of its mini app is out (MINIAPP_RELEASED) or one is in review (MINIAPP_IN_REVIEW). Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "miniapp": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug",
+          "miniapp"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_store_listing",
+      "description": "The store listing draft and what it still needs before a submission. Takes slug. Gives the draft (texts per language: name, tagline, description, requirements; category; ageRating; privacy; icon and screenshot ids), when it was saved, `missing` (what to fill before submitting: in zh and en the name, tagline, description and requirements, the icon, at least one screenshot; ja and es-419 are optional, their name and tagline together) and what the store shows now. All of it is the developer's to provide: Tikpal fills in none of it, and submitting is refused while `missing` is not empty (STORE_INCOMPLETE). Read it before update_store_listing, which replaces the whole draft. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_store_listing",
+      "description": "Save the store listing draft (the whole of it); it is reviewed with the next version. Takes slug and the whole draft, as get_store_listing gives it with your changes: what is left out is dropped. Write what the developer gives or agrees to: the listing is the developer's own, Tikpal makes none of it. The store changes only once the next version passes review. Upload pictures first (upload_image) and put their ids in icon and screenshots. Gives the saved draft and what is still missing. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "draft": {
+            "type": "object",
+            "properties": {
+              "texts": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "enum": [
+                    "zh",
+                    "en",
+                    "ja",
+                    "es-419"
+                  ]
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "default": "",
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "tagline": {
+                      "default": "",
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "description": {
+                      "default": "",
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "requirements": {
+                      "default": "",
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "focus",
+                  "audio",
+                  "play",
+                  "tools"
+                ]
+              },
+              "ageRating": {
+                "type": "string",
+                "enum": [
+                  "4+",
+                  "9+",
+                  "12+",
+                  "17+"
+                ]
+              },
+              "privacy": {
+                "type": "object",
+                "properties": {
+                  "collects": {
+                    "maxItems": 5,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "string",
+                          "enum": [
+                            "voice",
+                            "text",
+                            "photos",
+                            "location",
+                            "usage"
+                          ]
+                        },
+                        "why": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        }
+                      },
+                      "required": [
+                        "data",
+                        "why"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "collects"
+                ],
+                "additionalProperties": false
+              },
+              "icon": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "screenshots": {
+                "maxItems": 5,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            },
+            "required": [
+              "texts",
+              "category",
+              "ageRating",
+              "privacy",
+              "icon",
+              "screenshots"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "slug",
+          "draft"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "upload_image",
+      "description": "Upload the icon (512×512) or a screenshot (466×466) as a PNG; put its id in the draft. Takes slug, role (icon: 512×512; screenshot: 466×466, from ./kit snap, at most 5) and the PNG in base64 (at most 1 MB). The pictures are the developer's own: Tikpal draws none of them, and the small icon Tikpal Voice shows is made from the 512×512 one. Gives its id. MEDIA_INVALID: not a PNG of that size. MEDIA_LIMIT: save the draft first (it drops the pictures it does not name). Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "icon",
+              "screenshot"
+            ]
+          },
+          "pngBase64": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1500000
+          }
+        },
+        "required": [
+          "slug",
+          "role",
+          "pngBase64"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_capabilities",
+      "description": "The capabilities the app asked for, and whether each is approved. Takes slug. Gives the app: in `capabilities`, each one's kind, name, status (approved, pending, rejected) and why it was turned down. app.json may use approved ones only. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "request_capability",
+      "description": "Ask for a capability; Tikpal decides the ones a person reviews. Takes slug, kind (cloud, hardware, audience, phone), name, and purpose (needed for phone: what it is for, shown to users). AI, recording, children's and what spends users' points wait for a person, usually a working day; the rest are approved at once. CAPABILITY_ALREADY_ASKED: see list_capabilities. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "cloud",
+              "hardware",
+              "audience",
+              "phone"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "slug",
+          "kind",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "create_upload",
+      "description": "Get an address to upload a package to, and the command that does it; then submit_version with its uploadId. Build the package first: in the app's folder `./kit submit` (kit 1.9, without `./kit login`) or `./kit submit --no-upload` (a kit with `./kit login`) writes <slug>-<version>.tikpal. Takes slug, its size in bytes and its SHA-256 (hex: `shasum -a 256 <file>`). Gives uploadId, an address good for 15 minutes and `command`: set TIKPAL_PACKAGE to the package's path first, in the same shell (`TIKPAL_PACKAGE=./muyu-0.1.5.tikpal; <command>`), then submit_version with the uploadId. At most 10 uploads an hour. With the kit signed in (`./kit login`), `./kit submit` does all of it. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "size": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 31457280
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "slug",
+          "size",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "submit_version",
+      "description": "Submit the uploaded package for review. Takes slug, uploadId (create_upload's, after its command ran) and notes: what this version does, shown to users (at most 500 characters, in the developer's language). Gives the submission (queued). Then wait for the review with wait_for_change, and follow get_app's forAI. UPLOAD_MISSING: the package did not arrive, or its size or SHA-256 differ: run the command again. UPLOAD_EXPIRED: create_upload again. SUBMISSION_OPEN: one is in review already: wait, or withdraw_submission. STORE_INCOMPLETE: the store listing is incomplete (`missing`): the developer provides what is missing, then update_store_listing and submit again. PACKAGE_INVALID: fix every problem it lists, build and upload again. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "uploadId": {
+            "type": "string",
+            "pattern": "^upl_[0-9a-z]{16}$"
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "slug",
+          "uploadId",
+          "notes"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "withdraw_submission",
+      "description": "Withdraw a submission still in review, to send a fixed one. Takes slug and the submission's id, while it is in review. Then submit a fixed one. Do not withdraw one only because it is slow: held, device and signing can take a day or two. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^sub_[0-9a-z]{16}$"
+          }
+        },
+        "required": [
+          "slug",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_submission",
+      "description": "A submission's progress, step by step. Takes slug and the submission's id. Gives its state, what the package holds and each check (step, state, start, finish). The flagged problems in full, with file, line and how to fix: get_findings. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^sub_[0-9a-z]{16}$"
+          }
+        },
+        "required": [
+          "slug",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_findings",
+      "description": "Every flagged problem of a submission: file, line, the rule, why and how to fix. Takes the submission's id, and lang (zh or en). Gives every flagged problem: rule, level (block: must be fixed; suggest: may be), who found it (machine, ai, device, person), file and line, the line quoted, why and how to fix. Fix every block, build, and submit a new version. This alone says why a version was returned or held. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^sub_[0-9a-z]{16}$"
+          },
+          "lang": {
+            "type": "string",
+            "enum": [
+              "zh",
+              "en"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_testers",
+      "description": "The test accounts, and the mini app's versions out. Takes slug. Gives the test accounts (by email) who get its preview, its mini app's versions with their channel and rollout, and whether it may roll out stable itself. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "set_testers",
+      "description": "Make the test accounts these emails. Takes slug and the whole list of emails (at most 20; empty removes them all). Reads the list as it is (so the token needs apps.read too), then adds and removes accounts one by one until it is this list; gives the result. Whoever signs in with one of these emails gets the preview. TESTERS_NOT_SAVED: try again. APP_UNLISTED: the app is off the store. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "emails": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email",
+              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+            }
+          }
+        },
+        "required": [
+          "slug",
+          "emails"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_stats",
+      "description": "The last 7 days' release numbers. Takes slug. Gives the last 7 days: round screens with it, failed updates, points users spent. A number behind fewer than 5 people says hidden; null: no source for it yet. Never one user's. Why a version was returned or held: read get_findings, never guess.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 24,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

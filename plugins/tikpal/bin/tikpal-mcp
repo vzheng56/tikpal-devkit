@@ -1,0 +1,773 @@
+#!/usr/bin/env python3
+"""tikpal-mcp: the Tikpal developer plugin's MCP server on this computer, for the developer's own AI.
+
+  tikpal-mcp            MCP over stdin and stdout (the plugin's .mcp.json starts it)
+  tikpal-mcp status     who this computer is signed in as, and until when (never the token)
+  tikpal-mcp logout     sign this computer out: the platform forgets the token, and so does this computer
+
+Every request goes on to the platform's own MCP, POST {site}/mcp (stateless JSON-RPC), with the developer's token.
+With no token yet, or one the platform no longer takes, the first tool call signs the computer in the way `./kit login`
+does: a code from /v1/developer/cli/start, the system browser opened at {site}/cli?code=…, the developer allows it, and
+the token (ykd_…) asked for every `interval` seconds is kept in ~/.tikpal/developer.json (or $TIKPAL_HOME), the
+directory 0700 and the file 0600, written whole or not at all, in `./kit login`'s form ({url, token, expiresAt, name}).
+The call waits for it about 40 seconds; not allowed by then, it tells the AI what to tell the developer, and the next
+call goes on once the developer has allowed it. One sign-in at a time. Until then tools/list gives every tool from
+../mcp-tools.json; tools/list never opens the browser.
+
+The token is used here and only here: never printed, never written to stderr, never in anything the AI is given or in
+an error's words. No request follows a redirect (a 3xx is an error), so it never goes anywhere but the site.
+
+The site is https://developer.tikpal.ai, or TIKPAL_DEVELOPER_URL: https, or plain http on this computer only.
+TIKPAL_NO_BROWSER=1 leaves the browser shut (the address is given to the AI instead). Standard library only; macOS's
+own python3 (3.9) runs it.
+"""
+import datetime
+import http.client
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DEFAULT_URL = "https://developer.tikpal.ai"
+LOCAL = ("localhost", "127.0.0.1", "[::1]", "::1")
+# The MCP versions spoken here, newest first: a client asking for another is answered with the newest (the platform's).
+PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
+PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# wait_for_change waits up to 45 seconds on the platform's side
+CALL_TIMEOUT = 70
+# initialize only asks the platform for its instructions: the client is not kept waiting long for them
+INIT_TIMEOUT = 10
+LOGIN_TIMEOUT = 20
+
+
+def login_wait():
+    """How long a tool call waits for the developer to allow the sign-in (TIKPAL_LOGIN_WAIT, for tests)."""
+    try:
+        return max(0.0, float(os.environ.get("TIKPAL_LOGIN_WAIT") or 40))
+    except ValueError:
+        return 40.0
+
+
+def plugin_version():
+    try:
+        with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            return str(json.load(f).get("version") or "0")
+    except (OSError, ValueError, AttributeError):
+        return "0"
+
+
+def chinese():
+    return os.environ.get("LANG", "").lower().startswith("zh")
+
+
+def say(zh, en):
+    return zh if chinese() else en
+
+
+# ---------------------------------------------------------------- the site and the token
+
+
+def secure(url):
+    """Whether an address may be sent a token: https, or plain http on this computer only."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+    return bool(host) and (parts.scheme == "https" or (parts.scheme == "http" and host in LOCAL))
+
+
+def site_of(raw):
+    """The site's origin, or ValueError: https, or plain http on this computer only (a token never goes in the clear)."""
+    if not secure(raw):
+        raise ValueError(raw)
+    url = urllib.parse.urlsplit(raw)
+    return f"{url.scheme}://{url.netloc}"
+
+
+def token_file():
+    home = os.environ.get("TIKPAL_HOME") or os.path.join(os.path.expanduser("~"), ".tikpal")
+    return os.path.join(home, "developer.json")
+
+
+# Every token this process has held: none of them may leave in anything written out.
+SECRETS = set()
+FILE_LOCK = threading.Lock()
+
+
+def read_kept():
+    try:
+        with open(token_file(), encoding="utf-8") as f:
+            kept = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(kept, dict) or not isinstance(kept.get("token"), str) or not kept["token"]:
+        return None
+    SECRETS.add(kept["token"])
+    return kept
+
+
+def expired(kept, now=None):
+    try:
+        at = datetime.datetime.fromisoformat(str(kept["expiresAt"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=datetime.timezone.utc)
+    return at <= (now or datetime.datetime.now(datetime.timezone.utc))
+
+
+def signed_in(site):
+    """The sign-in kept for `site`, if it has not run out; None otherwise."""
+    kept = read_kept()
+    if not kept or kept.get("url") != site or expired(kept):
+        return None
+    return kept
+
+
+def keep(signed):
+    """Written whole or not at all: a file of its own (0600) first, then put in place; the directory 0700."""
+    SECRETS.add(signed["token"])
+    path = token_file()
+    home = os.path.dirname(path)
+    with FILE_LOCK:
+        os.makedirs(home, mode=0o700, exist_ok=True)
+        os.chmod(home, 0o700)
+        nxt = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            fd = os.open(nxt, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(signed, ensure_ascii=False, indent=2) + "\n")
+            os.chmod(nxt, 0o600)
+            os.replace(nxt, path)
+        except BaseException:
+            try:
+                os.remove(nxt)
+            except OSError:
+                pass
+            raise
+
+
+def forget(token):
+    """The kept sign-in is dropped, if it is still this token (another may have been kept since)."""
+    with FILE_LOCK:
+        kept = read_kept()
+        if kept and kept.get("token") == token:
+            try:
+                os.remove(token_file())
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------- talking to the platform
+
+
+class Failure(Exception):
+    """No answer to use: OFFLINE, REDIRECTED, HTTP_<status>, or the platform's own error code and what it said."""
+
+    def __init__(self, code, status=0, said=None):
+        super().__init__(code)
+        self.code, self.status, self.said = code, status, said
+
+
+class Unauthorized(Exception):
+    """The platform does not take the token (HTTP 401): run out, signed out on the site, or taken back."""
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is answered as it is (an HTTPError), never followed: following it would send Authorization along."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def request(url, body, method="POST", token=None, headers=None, timeout=LOGIN_TIMEOUT):
+    """One request, never following a redirect: (status, content type, the bytes answered), or Failure("OFFLINE")."""
+    if token and not secure(url):
+        raise Failure("INSECURE_URL")
+    sent = dict(headers or {})
+    if token:
+        sent["Authorization"] = "Bearer " + token
+    data = None
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        sent["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=sent)
+    try:
+        with OPENER.open(req, timeout=timeout) as response:
+            return response.status, response.headers.get("Content-Type") or "", response.read()
+    except urllib.error.HTTPError as e:
+        try:
+            text = e.read()
+        except (OSError, http.client.HTTPException):
+            text = b""
+        return e.code, (e.headers.get("Content-Type") if e.headers else "") or "", text
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError):
+        raise Failure("OFFLINE") from None
+
+
+def platform(site, path, body=None, method="POST", token=None):
+    """One of the platform's /v1/developer/* routes: its JSON answer, or Failure with its error code."""
+    status, _, text = request(site + path, body, method, token)
+    try:
+        answer = json.loads(text) if text else {}
+    except ValueError:
+        answer = None
+    if 200 <= status < 300:
+        if not isinstance(answer, dict):
+            raise Failure(f"HTTP_{status}", status)
+        return answer
+    if 300 <= status < 400:
+        raise Failure("REDIRECTED", status)
+    error = answer.get("error") if isinstance(answer, dict) else None
+    error = error if isinstance(error, dict) else {}
+    code = error.get("code") if isinstance(error.get("code"), str) else ("RATE_LIMIT" if status == 429 else f"HTTP_{status}")
+    said = error.get("message") if isinstance(error.get("message"), str) else None
+    raise Failure(code, status, said and said[:300])
+
+
+def read_rpc(content_type, text, rpc_id):
+    """The JSON-RPC answer in a body: JSON, or (should the platform ever stream) the event that answers `rpc_id`."""
+    try:
+        if content_type.lower().startswith("text/event-stream"):
+            for event in re.split(r"\r?\n\r?\n", text.decode("utf-8")):
+                data = "\n".join(line[5:].lstrip() for line in event.splitlines() if line.startswith("data:"))
+                if data:
+                    answer = json.loads(data)
+                    if isinstance(answer, dict) and answer.get("id") == rpc_id and ("result" in answer or "error" in answer):
+                        return answer
+            return None
+        return json.loads(text)
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+class Session:
+    """What initialize settled: the version every forwarded request names."""
+
+    protocol = PROTOCOLS[0]
+
+
+def mcp(site, signed, message, timeout=CALL_TIMEOUT):
+    """The platform MCP's answer to one JSON-RPC request, as the developer; Unauthorized on HTTP 401, else Failure."""
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": Session.protocol,
+        "Accept-Language": "zh-CN" if chinese() else "en",
+    }
+    status, content_type, text = request(site + "/mcp", message, "POST", signed["token"], headers, timeout)
+    if status == 401:
+        raise Unauthorized()
+    if 300 <= status < 400:
+        raise Failure("REDIRECTED", status)
+    answer = read_rpc(content_type, text, message.get("id"))
+    if isinstance(answer, dict) and ("result" in answer or "error" in answer):
+        answer["id"] = message.get("id")
+        return answer
+    raise Failure(f"HTTP_{status}", status)
+
+
+def failure_words(site, e):
+    """A Failure, for the AI to act on or tell the developer."""
+    if e.code == "OFFLINE":
+        return say(f"连不上 Tikpal 开发者平台（{site}）：看看网络，过一会儿再调一次。", f"Cannot reach the Tikpal developer platform ({site}): check the network and call again in a while.")
+    if e.code == "REDIRECTED":
+        return say(
+            "开发者平台让这里转去别的地址，这里不跟（免得把登录带去别处）：核对 TIKPAL_DEVELOPER_URL。",
+            "The developer platform sent this elsewhere, which is not followed here (the sign-in would go along): check TIKPAL_DEVELOPER_URL.",
+        )
+    if e.code == "RATE_LIMIT":
+        return say("调得太频繁了：过一分钟再试。", "Too many calls: wait a minute and try again.")
+    if e.status >= 500:
+        return say(f"Tikpal 开发者平台暂时出了问题（HTTP {e.status}）：过一会儿再试；一直这样就告诉开发者。", f"Something went wrong at Tikpal (HTTP {e.status}): try again in a while; if it keeps failing, tell the developer.")
+    said = f"：{e.said}" if e.said else ""
+    return say(f"开发者平台回了 {e.code}{said}", f"The developer platform answered {e.code}{': ' + e.said if e.said else ''}")
+
+
+# ---------------------------------------------------------------- signing in
+
+
+def computer_name():
+    host = (socket.gethostname() or "").strip()
+    if host.endswith(".local"):
+        host = host[: -len(".local")]
+    return f"{host[:55] or 'computer'} · AI"
+
+
+def open_browser(url):
+    """The system browser at `url`, its output kept off stdout (the MCP's); False when it could not be opened."""
+    if os.environ.get("TIKPAL_NO_BROWSER"):
+        return False
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(url)  # noqa: the platform's own
+            return True
+        command = ["/usr/bin/open", url] if sys.platform == "darwin" else ["xdg-open", url]
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+class Attempt:
+    """One sign-in: the page the developer allows it on, and how it ended (signed, or failure)."""
+
+    def __init__(self, site, page, code, until, opened):
+        self.site, self.page, self.code, self.until, self.opened = site, page, code, until, opened
+        self.done = threading.Event()
+        self.signed = None
+        self.failure = None
+        self.reported = False
+
+    def waiting_words(self):
+        minutes = max(1, round((self.until - time.monotonic()) / 60))
+        if self.opened:
+            return say(
+                f"这台电脑还没登录 Tikpal 开发者平台。浏览器已经打开 {self.page}：请开发者用自己的开发者账号登录，核对码 {self.code}"
+                f"（页面要再输一遍码就输这个），点「允许」（{minutes} 分钟内有效）。点完再调一次这个工具。"
+                "浏览器没弹出来，就请开发者自己打开这个网址。不要叫开发者去建令牌、贴令牌。",
+                f"This computer is not signed in to the Tikpal developer platform yet. The browser has opened {self.page}: ask the developer to "
+                f"sign in with their own developer account, check the code {self.code} (type it if the page asks for it again) and click "
+                f"Allow (good for {minutes} minutes). Then call this tool again. If no browser window appeared, ask the developer to open "
+                "that address. Never ask the developer to make or paste a token.",
+            )
+        return say(
+            f"这台电脑还没登录 Tikpal 开发者平台。请开发者在浏览器里打开 {self.page}，用自己的开发者账号登录，核对码 {self.code}"
+            f"（页面要再输一遍码就输这个），点「允许」（{minutes} 分钟内有效）。点完再调一次这个工具。不要叫开发者去建令牌、贴令牌。",
+            f"This computer is not signed in to the Tikpal developer platform yet. Ask the developer to open {self.page} in the browser, "
+            f"sign in with their own developer account, check the code {self.code} (type it if the page asks for it again) and click "
+            f"Allow (good for {minutes} minutes). Then call this tool again. Never ask the developer to make or paste a token.",
+        )
+
+    def failure_words(self):
+        e = self.failure
+        if e.code == "CLI_DENIED":
+            return say(
+                "开发者在网页上没有允许，这台电脑没登录。要登录就再调一次这个工具，会重新打开浏览器。",
+                "The developer did not allow it on the page, so this computer is not signed in. To sign in, call this tool again: the browser opens anew.",
+            )
+        if e.code == "CLI_EXPIRED":
+            return say(
+                "登录的码过期了（几分钟内没点「允许」）。再调一次这个工具，会重新打开浏览器。",
+                "The sign-in code ran out (Allow was not clicked within minutes). Call this tool again: the browser opens anew.",
+            )
+        return say(
+            f"登录没成：{failure_words(self.site, e)}。再调一次这个工具会重新发起登录。",
+            f"The sign-in did not work: {failure_words(self.site, e)}. Calling this tool again starts it anew.",
+        )
+
+
+class Login:
+    """One sign-in at a time, whoever asks for it."""
+
+    def __init__(self, notify):
+        self.lock = threading.Lock()
+        self.attempt = None
+        self.notify = notify
+
+    def ensure(self, site, wait):
+        """A sign-in for `site` (its dict), or what to tell the AI (words). Waits up to `wait` seconds for it."""
+        until = time.monotonic() + wait
+        with self.lock:
+            attempt = self.attempt
+            if attempt and attempt.done.is_set():
+                self.attempt = None
+                # how the last one ended, said once (a denial or a code run out), before the next one starts
+                if attempt.failure and not attempt.reported:
+                    attempt.reported = True
+                    return attempt.failure_words()
+                attempt = None
+            if attempt is None:
+                try:
+                    attempt = self.start(site)
+                except Failure as e:
+                    return say(
+                        f"没法登录 Tikpal 开发者平台：{failure_words(site, e)}",
+                        f"Cannot sign in to the Tikpal developer platform: {failure_words(site, e)}",
+                    )
+                self.attempt = attempt
+        while not attempt.done.wait(max(0.0, min(1.0, until - time.monotonic()))):
+            # signed in meanwhile by another of this computer's AIs: take that
+            other = signed_in(site)
+            if other:
+                return other
+            if time.monotonic() >= until:
+                return attempt.waiting_words()
+        if attempt.signed:
+            return attempt.signed
+        with self.lock:
+            attempt.reported = True
+            if self.attempt is attempt:
+                self.attempt = None
+        return attempt.failure_words()
+
+    def start(self, site):
+        before = read_kept()
+        asked = platform(site, "/v1/developer/cli/start", {"name": computer_name()})
+        try:
+            code, device, expires = str(asked["userCode"]), str(asked["deviceCode"]), int(asked["expiresIn"])
+            interval = max(0.2, float(asked.get("interval") or 5))
+        except (KeyError, TypeError, ValueError):
+            raise Failure("BAD_ANSWER") from None
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,32}", code):
+            raise Failure("BAD_ANSWER")
+        page = f"{site}/cli?code={urllib.parse.quote(code)}"
+        attempt = Attempt(site, page, code, time.monotonic() + expires, open_browser(page))
+        threading.Thread(target=self.poll, args=(attempt, device, interval, before), daemon=True).start()
+        return attempt
+
+    def poll(self, attempt, device, interval, before):
+        """Every `interval` seconds until it is allowed, refused or runs out; the token kept, the old one taken back."""
+        site = attempt.site
+        try:
+            while time.monotonic() < attempt.until:
+                time.sleep(interval)
+                # signed in meanwhile by another of this computer's AIs: that one is used, this code left to run out
+                other = signed_in(site)
+                if other:
+                    attempt.signed = other
+                    self.notify("notifications/tools/list_changed")
+                    self.notify("notifications/resources/list_changed")
+                    return
+                try:
+                    issued = platform(site, "/v1/developer/cli/token", {"deviceCode": device})
+                except Failure as e:
+                    # not allowed yet, asked too soon, or the network or the platform in trouble: wait and ask again
+                    if e.code in ("CLI_PENDING", "RATE_LIMIT", "OFFLINE") or e.status >= 500:
+                        continue
+                    attempt.failure = e
+                    return
+                try:
+                    signed = {"url": site, "token": str(issued["token"]), "expiresAt": str(issued["expiresAt"]), "name": str(issued["developer"]["name"])}
+                except (KeyError, TypeError):
+                    attempt.failure = Failure("BAD_ANSWER")
+                    return
+                keep(signed)
+                # the sign-in this one replaces is signed out on the platform too, so no token is left behind working
+                if before and before.get("url") == site and before.get("token") != signed["token"] and not expired(before):
+                    try:
+                        platform(site, "/v1/developer/cli/me", method="DELETE", token=before["token"])
+                    except Failure:
+                        pass
+                attempt.signed = signed
+                self.notify("notifications/tools/list_changed")
+                self.notify("notifications/resources/list_changed")
+                return
+            attempt.failure = Failure("CLI_EXPIRED")
+        except Exception as e:  # never left hanging: the waiting call hears it
+            attempt.failure = Failure(type(e).__name__)
+        finally:
+            attempt.done.set()
+
+
+# ---------------------------------------------------------------- the MCP server
+
+
+class Server:
+    def __init__(self):
+        self.out_lock = threading.Lock()
+        self.version = plugin_version()
+        raw = os.environ.get("TIKPAL_DEVELOPER_URL") or DEFAULT_URL
+        try:
+            self.site, self.bad_site = site_of(raw), None
+        except ValueError:
+            self.site, self.bad_site = None, raw
+        self.login = Login(lambda method: self.send({"jsonrpc": "2.0", "method": method}))
+        self.catalogue = None
+
+    # --- writing
+
+    def send(self, message):
+        line = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+        line = scrub(line)
+        with self.out_lock:
+            try:
+                sys.stdout.buffer.write(line.encode("utf-8") + b"\n")
+                sys.stdout.buffer.flush()
+            except (OSError, ValueError):
+                os._exit(0)
+
+    @staticmethod
+    def result(rpc_id, result):
+        return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
+
+    @staticmethod
+    def error(rpc_id, code, message):
+        return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
+
+    @staticmethod
+    def tool_error(rpc_id, text):
+        return {"jsonrpc": "2.0", "id": rpc_id, "result": {"content": [{"type": "text", "text": text}], "isError": True}}
+
+    # --- what the AI is told
+
+    def bad_site_words(self):
+        return say(
+            f"TIKPAL_DEVELOPER_URL 不对：{self.bad_site}（要 https；http 只许本机 localhost）。改好再重新加载插件。",
+            f"TIKPAL_DEVELOPER_URL is not right: {self.bad_site} (it must be https; plain http only on this computer, localhost). Fix it and reload the plugin.",
+        )
+
+    def local_instructions(self):
+        if not self.site:
+            return self.bad_site_words()
+        return (
+            "Tikpal developer platform: make and ship apps for Tikpal Voice, as the developer. This computer is not signed in yet: "
+            f"the first tool you call opens the browser at {self.site}/cli for the developer to sign in with their own developer "
+            "account and click Allow (允许). When a tool says so, tell the developer what it says, and call the tool again once they "
+            "have allowed it. Never ask the developer to make, copy or paste a token. Start with whoami. "
+            f"The whole way, step by step: {self.site}/start.en.md (中文: {self.site}/start.md)."
+        )
+
+    def tools_catalogue(self):
+        if self.catalogue is None:
+            with open(os.path.join(PLUGIN, "mcp-tools.json"), encoding="utf-8") as f:
+                listed = json.load(f)
+            self.catalogue = {"tools": list(listed["tools"])}
+        return self.catalogue
+
+    # --- the platform, as the developer
+
+    def relay(self, message, timeout=CALL_TIMEOUT):
+        """The platform's answer to `message`; None when this computer is not signed in (a 401 forgets the token)."""
+        tried = set()
+        while True:
+            signed = signed_in(self.site) if self.site else None
+            if not signed or signed["token"] in tried:
+                return None
+            tried.add(signed["token"])
+            try:
+                return mcp(self.site, signed, message, timeout)
+            except Unauthorized:
+                forget(signed["token"])
+
+    @staticmethod
+    def rpc(message):
+        out = {"jsonrpc": "2.0", "id": message["id"], "method": message["method"]}
+        if "params" in message:
+            out["params"] = message["params"]
+        return out
+
+    # --- the methods
+
+    def initialize(self, message):
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        asked = params.get("protocolVersion")
+        Session.protocol = asked if asked in PROTOCOLS else PROTOCOLS[0]
+        instructions = None
+        try:
+            forwarded = dict(params, protocolVersion=Session.protocol)
+            answer = self.relay({"jsonrpc": "2.0", "id": message["id"], "method": "initialize", "params": forwarded}, INIT_TIMEOUT)
+            if answer and isinstance(answer.get("result"), dict) and isinstance(answer["result"].get("instructions"), str):
+                instructions = answer["result"]["instructions"]
+        except Failure:
+            pass
+        return self.result(message["id"], {
+            "protocolVersion": Session.protocol,
+            "capabilities": {"tools": {"listChanged": True}, "resources": {"listChanged": True}},
+            "serverInfo": {"name": "tikpal", "version": self.version},
+            "instructions": instructions or self.local_instructions(),
+        })
+
+    def tools_list(self, message):
+        try:
+            answer = self.relay(self.rpc(message))
+        except Failure:
+            answer = None  # the platform out of reach: every tool, and a call says why it cannot go on
+        # an error from the platform (the agreement changed, a limit, trouble there) lists every tool too: a call then
+        # answers what is wrong and what to do, where an empty list would leave the AI with nothing to go on
+        if answer and isinstance(answer.get("result"), dict):
+            return answer
+        try:
+            return self.result(message["id"], self.tools_catalogue())
+        except (OSError, ValueError, KeyError, TypeError):
+            return self.error(message["id"], -32603, say("插件的 mcp-tools.json 读不了：重新装一次插件。", "The plugin's mcp-tools.json cannot be read: install the plugin again."))
+
+    def tools_call(self, message):
+        rpc_id = message["id"]
+        if not self.site:
+            return self.tool_error(rpc_id, self.bad_site_words())
+        signed_now = False
+        tried = set()
+        while True:
+            signed = signed_in(self.site)
+            if not signed:
+                if signed_now:
+                    break
+                got = self.login.ensure(self.site, login_wait())
+                if isinstance(got, str):
+                    return self.tool_error(rpc_id, got)
+                signed, signed_now = got, True
+            if signed["token"] in tried:
+                break
+            tried.add(signed["token"])
+            try:
+                return mcp(self.site, signed, self.rpc(message))
+            except Unauthorized:
+                forget(signed["token"])
+            except Failure as e:
+                return self.tool_error(rpc_id, failure_words(self.site, e))
+        return self.tool_error(rpc_id, say(
+            "Tikpal 开发者平台不认这台电脑刚拿到的登录。再调一次这个工具会重新发起登录；还这样就告诉开发者。",
+            "The Tikpal developer platform does not take the sign-in this computer was just given. Calling this tool again starts a new one; if it keeps happening, tell the developer.",
+        ))
+
+    def resources_list(self, message):
+        try:
+            answer = self.relay(self.rpc(message))
+        except Failure:
+            answer = None
+        return answer or self.result(message["id"], {"resources": []})
+
+    def resources_read(self, message):
+        try:
+            answer = self.relay(self.rpc(message))
+        except Failure as e:
+            return self.error(message["id"], -32603, failure_words(self.site, e))
+        return answer or self.error(message["id"], -32001, say(
+            "这台电脑还没登录 Tikpal 开发者平台：先调 whoami 工具登录（会打开浏览器请开发者点「允许」），再读。",
+            "This computer is not signed in to the Tikpal developer platform yet: call the whoami tool first (it opens the browser for the developer to click Allow), then read this again.",
+        ))
+
+    def other(self, message):
+        try:
+            answer = self.relay(self.rpc(message))
+        except Failure as e:
+            return self.error(message["id"], -32603, failure_words(self.site, e))
+        return answer or self.error(message["id"], -32601, f"No method {str(message['method'])[:60]}")
+
+    def answer(self, message):
+        rpc_id, method = message.get("id"), message.get("method")
+        # a notification (no id), or the client's answer to something (no method): nothing to say back
+        if rpc_id is None or not isinstance(method, str):
+            return None
+        if method == "initialize":
+            return self.initialize(message)
+        if method == "ping":
+            return self.result(rpc_id, {})
+        if method == "tools/list":
+            return self.tools_list(message)
+        if method == "tools/call":
+            return self.tools_call(message)
+        if method == "resources/list":
+            return self.resources_list(message)
+        if method == "resources/read":
+            return self.resources_read(message)
+        return self.other(message)
+
+    def handle(self, message):
+        try:
+            reply = self.answer(message)
+        except Exception as e:  # its kind only: never what it said, which could carry anything
+            reply = self.error(message.get("id"), -32603, f"tikpal-mcp: {type(e).__name__}")
+        if reply is not None:
+            self.send(reply)
+
+    def serve(self):
+        """One thread a request (the client may send them together); stdin's end is the end."""
+        stdin = sys.stdin.buffer
+        while True:
+            line = stdin.readline()
+            if not line:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except ValueError:
+                self.send(self.error(None, -32700, "Not JSON"))
+                continue
+            if not isinstance(message, dict):
+                self.send(self.error(None, -32600, "Not a JSON-RPC 2.0 request (one at a time, no batches)"))
+                continue
+            threading.Thread(target=self.handle, args=(message,), daemon=True).start()
+        try:
+            sys.stdout.flush()
+        finally:
+            os._exit(0)
+
+
+TOKEN_SHAPE = re.compile(r"ykd_[A-Za-z0-9_-]{16,}")
+
+
+def scrub(text):
+    """Whatever is written out, without a token in it: every one this process held, and anything shaped like one."""
+    for secret in list(SECRETS):
+        if secret:
+            text = text.replace(secret, "[token]")
+    return TOKEN_SHAPE.sub("[token]", text)
+
+
+def quiet_hook(args):
+    """A thread's uncaught error: its kind only, on stderr."""
+    sys.stderr.write(f"tikpal-mcp: {args.exc_type.__name__}\n")
+
+
+# ---------------------------------------------------------------- the commands
+
+
+def status(site):
+    kept = read_kept()
+    if not kept:
+        print(say("这台电脑没登录 Tikpal 开发者平台（第一次用插件的工具时会打开浏览器登录）", "This computer is not signed in to the Tikpal developer platform (the plugin's first tool call opens the browser to sign in)"))
+        return 1
+    if kept.get("url") != site:
+        print(say(f"这台电脑登录的是 {kept.get('url')}，不是 {site}", f"This computer is signed in to {kept.get('url')}, not {site}"))
+        return 1
+    until = str(kept.get("expiresAt", ""))[:10]
+    if expired(kept):
+        print(say(f"登录过期了（{until}）：下次用工具时会重新打开浏览器登录", f"The sign-in ran out ({until}): the next tool call opens the browser to sign in again"))
+        return 1
+    print(say(f"已登录：{kept.get('name', '')}（{site}，{until} 到期）", f"Signed in: {kept.get('name', '')} ({site}, until {until})"))
+    return 0
+
+
+def logout(site):
+    """The platform forgets the token, and so does this computer. One kept for another site is left as it is."""
+    kept = read_kept()
+    if not kept:
+        print(say("本来就没登录", "Not signed in"))
+        return 0
+    if kept.get("url") != site:
+        print(say(f"这台电脑登录的是 {kept.get('url')}，没动它；要退出那个就设 TIKPAL_DEVELOPER_URL={kept.get('url')} 再来", f"This computer is signed in to {kept.get('url')}, left as it is; to sign out of that one, set TIKPAL_DEVELOPER_URL={kept.get('url')} and run this again"))
+        return 1
+    if not expired(kept):
+        try:
+            platform(site, "/v1/developer/cli/me", method="DELETE", token=kept["token"])
+        except Failure:
+            pass
+    forget(kept["token"])
+    print(say(f"退出了（{kept.get('name', '')}）", f"Signed out ({kept.get('name', '')})"))
+    return 0
+
+
+def main(argv):
+    threading.excepthook = quiet_hook
+    command = argv[1] if len(argv) > 1 else None
+    if command is None:
+        Server().serve()
+        return 0
+    if command not in ("status", "logout"):
+        print("\n".join(line.strip() for line in __doc__.strip().splitlines()[2:5]))
+        return 2
+    raw = os.environ.get("TIKPAL_DEVELOPER_URL") or DEFAULT_URL
+    try:
+        site = site_of(raw)
+    except ValueError:
+        print(say(f"TIKPAL_DEVELOPER_URL 不对：{raw}（要 https；http 只许本机 localhost）", f"TIKPAL_DEVELOPER_URL is not right: {raw} (it must be https; plain http only on this computer, localhost)"))
+        return 2
+    return status(site) if command == "status" else logout(site)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
