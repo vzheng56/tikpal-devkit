@@ -143,7 +143,10 @@ jobs:
           done
           [ -f /build/logs/build.txt ] && cp /build/logs/build.txt /build/out/build-log.txt
           (cd /build/out && find . -type f | sed 's|^\./||' | sort >/build/out-files)
-          tar -C /build/out -cf /build/rebuild.tar -T /build/out-files
+          # compressed before it is sealed: sealed, nothing compresses it (GitHub's zip neither); the ELF and map shrink
+          # about 10 times with xz, and the review machine's line downloads at ~50 KB/s (62 MB took ~21 minutes, 11-10).
+          # The machine's tarfile reads xz as it reads a plain tar.
+          XZ_OPT=-6T0 tar -C /build/out -cJf /build/rebuild.tar -T /build/out-files
           bash /build/seal/seal.sh /build/rebuild.tar /build/sealed/rebuild.sealed
           echo "build: sealed ($(wc -l </build/out-files) files)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
