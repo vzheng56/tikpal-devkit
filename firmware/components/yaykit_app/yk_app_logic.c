@@ -14,7 +14,9 @@ int yk_home_slot(const char *slot0_slug, const char *slot0_state) {
     return -1;  // empty, invalid (rolled back), aborted
 }
 
-bool yk_app_is_home(const char *slug, bool is_home) { return is_home && slug && !strcmp(slug, "yay"); }  // YK_APP_HOME_SLUG
+bool yk_app_is_home(const char *slug, bool is_home, int slot) {
+    return is_home && slot == 0 && slug && !strcmp(slug, "yay");  // YK_APP_HOME_SLUG
+}
 
 bool yk_recovery_forward(bool recovery_flag, const char *slot0_slug, const char *slot0_state) {
     return !recovery_flag && yk_home_slot(slot0_slug, slot0_state) == 0;
@@ -298,16 +300,27 @@ void yk_keys_init(yk_keys_t *k) {
 }
 
 yk_keys_do_t yk_keys_route(yk_keys_t *k, int type, int64_t at_ms, bool own_double) {
+    // The app had this press's DOWN: its UP is the app's whatever came up since (the 应用码 from the pull-down's button
+    // as the key went down), or the app would think the key held. Not 「回到主屏幕说？」: this press's HOLD asked it.
+    if (type == KEY_UP && k->app_down) {
+        k->app_down = false;
+        if (!k->ask) return YK_KEYS_APP;
+    }
     if (k->eat) {
         // The press that closed the ring or the card: its hold, release, tap or double click are no one else's.
         if (type == KEY_HOLD) k->held = true;
         if (type == KEY_TAP || type == KEY_DOUBLE || (type == KEY_UP && k->held)) k->eat = k->held = false;
         return YK_KEYS_EAT;
     }
-    if (k->ring || k->ask || k->code || k->sheet) {
+    if (k->ring || k->ask || k->code || k->sheet || k->grant) {
         if (type != KEY_DOWN) return YK_KEYS_EAT;  // the end of the press that asked
         k->eat = true;
         k->held = false;
+        if (k->grant) {  // over everything (LVGL's top layer): the first to go
+            k->grant = false;
+            k->closed_ms = at_ms;  // a double click to let it go opens no ring
+            return YK_KEYS_GRANT_CLOSE;
+        }
         if (k->sheet) {
             k->sheet = false;
             k->closed_ms = at_ms;  // a double click to close it opens no ring
@@ -332,11 +345,12 @@ yk_keys_do_t yk_keys_route(yk_keys_t *k, int type, int64_t at_ms, bool own_doubl
         k->ring = true;
         return YK_KEYS_RING_OPEN;
     }
+    if (type == KEY_DOWN) k->app_down = true;
     return YK_KEYS_APP;
 }
 
 bool yk_keys_ask(yk_keys_t *k, bool used, bool talks) {
-    if (used || talks || k->ring || k->ask || k->code || k->sheet || k->eat) return false;
+    if (used || talks || k->ring || k->ask || k->code || k->sheet || k->grant || k->eat) return false;
     k->ask = true;
     return true;
 }
@@ -345,10 +359,18 @@ void yk_keys_closed(yk_keys_t *k) { k->ring = k->ask = false; }
 
 void yk_keys_code(yk_keys_t *k, bool on) { k->code = on; }
 
-bool yk_keys_idle(const yk_keys_t *k) { return !k->ring && !k->ask && !k->code && !k->sheet && !k->eat; }
+bool yk_keys_idle(const yk_keys_t *k) { return !k->ring && !k->ask && !k->code && !k->sheet && !k->grant && !k->eat; }
+
+bool yk_keys_grant_open(yk_keys_t *k) {
+    if (!yk_keys_idle(k)) return false;
+    k->grant = true;
+    return true;
+}
+
+void yk_keys_grant_closed(yk_keys_t *k) { k->grant = false; }
 
 bool yk_keys_sheet_open(yk_keys_t *k) {
-    if (!yk_keys_idle(k)) return false;
+    if (!yk_keys_idle(k) || k->app_down) return false;  // the key down in the app: its press first
     k->sheet = true;
     return true;
 }
@@ -367,6 +389,76 @@ bool yk_pull_move(yk_pull_t *p, int x, int y, int pull) {
     p->pulled = true;
     return true;
 }
+
+void yk_dtap_init(yk_dtap_t *d) { memset(d, 0, sizeof(*d)); }
+
+void yk_dtap_forget(yk_dtap_t *d) { yk_dtap_init(d); }
+
+/** The press right after the first's, its finger down within the window of the first's release (the clock wraps:
+ *  unsigned), and near where the first went down. */
+static bool dtap_pairs(const yk_dtap_tap_t *f, int x, int y, uint32_t down_ms, uint32_t press) {
+    const int dx = x - f->x, dy = y - f->y;
+    return press == f->press + 1 && (uint32_t)(down_ms - f->up_ms) <= YK_DTAP_MS &&
+           dx * dx + dy * dy <= YK_DTAP_PX * YK_DTAP_PX;
+}
+
+/** The wait ends: true when a held tap's clicks are the app's (not the paper's). */
+static bool dtap_end(yk_dtap_t *d) {
+    const bool give = d->armed && !d->eat;
+    d->armed = d->eat = d->second = false;
+    return give;
+}
+
+bool yk_dtap_press(yk_dtap_t *d, int x, int y, uint32_t down_ms, uint32_t press) {
+    d->second = false;
+    if (!d->armed) return false;
+    if (!dtap_pairs(&d->first, x, y, down_ms, press)) return dtap_end(d);
+    d->second = true;  // it may be the second: wait for its release
+    d->second_ms = down_ms;
+    return false;
+}
+
+yk_dtap_do_t yk_dtap_route(yk_dtap_t *d, yk_keys_t *k, bool on, const yk_dtap_tap_t *tap, bool *give) {
+    *give = false;
+    if (!on) {
+        yk_dtap_init(d);
+        return YK_DTAP_APP;
+    }
+    const bool second = d->armed && dtap_pairs(&d->first, tap->x, tap->y, tap->down_ms, tap->press);
+    // Something of the system's up or under way, or the app's press of the key going on: no half of a double, and a
+    // held one goes now. A tap on the ring's paper (the ring's own: it closes the ring) may be the first of one whose
+    // second is nobody's.
+    if (!yk_keys_idle(k) || k->app_down) {
+        *give = dtap_end(d);
+        if (tap->paper && k->ring) {
+            d->armed = d->eat = true;
+            d->first = *tap;
+        }
+        return YK_DTAP_APP;
+    }
+    if (second) {
+        const bool eat = d->eat;
+        dtap_end(d);  // its held clicks nobody's; a third is a first again
+        if (eat) return YK_DTAP_EAT;
+        k->ring = true;
+        return YK_DTAP_RING;
+    }
+    *give = dtap_end(d);  // (yk_dtap_press gave it already when this press came down)
+    d->armed = true;
+    d->first = *tap;
+    return YK_DTAP_HOLD;
+}
+
+bool yk_dtap_other(yk_dtap_t *d) { return dtap_end(d); }
+
+bool yk_dtap_tick(yk_dtap_t *d, uint32_t now_ms) {
+    if (!d->armed) return false;
+    const bool wait = d->second ? (uint32_t)(now_ms - d->second_ms) < YK_DTAP_SECOND_MS
+                                : (uint32_t)(now_ms - d->first.up_ms) <= YK_DTAP_MS;
+    return wait ? false : dtap_end(d);
+}
+
+bool yk_dtap_waiting(const yk_dtap_t *d) { return d->armed; }
 
 // ---------------------------------------------------------------- the main firmware's update (yk_app_update.h)
 

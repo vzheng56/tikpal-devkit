@@ -1,7 +1,8 @@
 // 生成的，别手改：packages/contracts/src/developer.ts 里开发包用得到的那些（scripts/sync.ts KEPT），别的不进公开包。改那份，再跑 pnpm miniapp:sync。
 /**
  * The kit's sign-in to developer.tikpal.ai (tikpal-miniapp login, preview): the developer allows a code on the site,
- * the kit gets a token that only puts a 小程序 up as the developer's own dev version and lists its versions.
+ * the kit gets the developer's token, which puts a 小程序 up as the developer's own dev version and lists its versions
+ * among what a developer token may do (never stable, nor the site's own: tokens, the agreement, the account).
  */
 import { z } from "zod";
 
@@ -19,10 +20,12 @@ export const INVITE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
  * `./kit miniapp login` (and `./kit miniapp preview` the first time) signs the kit in as the developer, the way a TV
  * does: the kit asks for a code (cli/start), shows it with developer.tikpal.ai/cli, and asks every `interval` seconds
  * (cli/token) until the developer, signed in on the site, allows it (cli/approve), or the code runs out. The token
- * (`Authorization: Bearer ykd_…`) does only what the kit does: put a 小程序 up as the developer's dev version and list
- * its versions (miniapps.ts MINIAPP_UPLOAD_PATH, POST and GET), and say whose it is (cli/me); every other route refuses
- * it, and those routes still ask Yaykit whose app it is. The platform keeps only its SHA-256; the developer sees each
- * computer signed in and can sign it out (cli/tokens), and deleting the account ends them all.
+ * (`Authorization: Bearer ykd_…`) is the developer's, with every scope a token made on the site has by default (the
+ * Tikpal developer plugin signs in the same way and shares it): it puts a 小程序 up as the developer's dev version and
+ * lists its versions (miniapps.ts MINIAPP_UPLOAD_PATH, POST and GET), says whose it is (cli/me), and calls the developer
+ * routes a token may; never the site's own (tokens, the agreement, the account), and stable never goes out by it. The
+ * platform keeps only its SHA-256; the developer sees each computer signed in and can sign it out (cli/tokens), and
+ * deleting the account ends them all.
  */
 export const DEVELOPER_CLI = {
   /** How long a code waits to be allowed. */
@@ -33,7 +36,7 @@ export const DEVELOPER_CLI = {
   tokenDays: 30,
   /** Computers signed in at once, per developer; signing in another ends the oldest. */
   tokensMax: 10,
-  /** What a token may do. */
+  /** What the first version's token may do; tokens given then keep it. A kit signing in now gets every scope. */
   scopes: ["miniapp.dev"],
 } as const;
 /** The code the developer types or opens: eight of INVITE_ALPHABET as XXXX-XXXX; typed leniently. */

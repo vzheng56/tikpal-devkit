@@ -14,6 +14,7 @@
 #include "yk_apps_logic.h"
 #include "yk_round.h"
 #include "yk_ui_priv.h"
+#include "yk_accent.h"
 
 static const char *TAG = "yk_hint";
 
@@ -121,7 +122,7 @@ static void arrow_draw(lv_event_t *e) {
     lv_draw_line_dsc_t d;
     lv_draw_line_dsc_init(&d);
     d.width = YK_HINT_STROKE;
-    d.color = lv_color_hex(YK_CORAL);
+    d.color = lv_color_hex(yk_accent());  // it points at the talk key: the talk button's colour (0.1.19 4.7)
     d.opa = lv_obj_get_style_opa_recursive(o, LV_PART_MAIN);
     d.round_start = d.round_end = 1;
     d.p1.x = s.g.a1_x + dx, d.p1.y = s.g.a1_y + dy;
@@ -167,7 +168,7 @@ static void expire(lv_timer_t *t) {
 
 static int glyph_w(uint32_t cp, void *ctx) { return lv_font_get_glyph_width((const lv_font_t *)ctx, cp, 0); }
 
-bool yk_hint_show(lv_obj_t *parent, yk_hint_kind_t kind, const char *text) {
+static bool show(lv_obj_t *parent, yk_hint_kind_t kind, const char *text, bool stay) {
     if (!parent || kind >= YK_HINT_KIND_COUNT || yk_apps_is_open()) return false;
     yk_hint_hide();
     load();
@@ -223,6 +224,7 @@ bool yk_hint_show(lv_obj_t *parent, yk_hint_kind_t kind, const char *text) {
     lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
     lv_anim_set_exec_cb(&a, nudge_exec);
     lv_anim_start(&a);
+    if (stay) return true;  // nothing counted, no time of its own
     s.timer = lv_timer_create(expire, YK_HINT_SHOW_MS, NULL);
 
     taskENTER_CRITICAL(&s_mux);
@@ -233,6 +235,10 @@ bool yk_hint_show(lv_obj_t *parent, yk_hint_kind_t kind, const char *text) {
     if (changed) save(&was, &now);
     return true;
 }
+
+bool yk_hint_show(lv_obj_t *parent, yk_hint_kind_t kind, const char *text) { return show(parent, kind, text, false); }
+
+bool yk_hint_show_stay(lv_obj_t *parent, const char *text) { return text && show(parent, YK_HINT_TALK, text, true); }
 
 void yk_hint_hide(void) {
     // on_delete clears the pointers and the timer

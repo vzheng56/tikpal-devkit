@@ -9,7 +9,7 @@
 
 原名 Yaykit 开发包（`vzheng56/yaykit-devkit`），旧地址会自动跳到这里，已经建好的应用不用改。
 
-每次 Tikpal 主固件发版，这里就出一版开发包；文档和工具有改动时也会单独出一版（`devkit.json` 写着版本、对应的主固件版本和接口级别）。你的应用钉住一个版本，我们这边后来怎么改，都不会突然把它弄坏。每一版的组件改了什么，见[应用开发指南的更新记录](docs/app-guide.md#更新记录)（1.9 对应 Tikpal 主固件 0.1.14，换过来要把 `minYay` 改成 0.1.14）。
+每次 Tikpal 主固件发版，这里就出一版开发包；文档和工具有改动时也会单独出一版（`devkit.json` 写着版本、对应的主固件版本和接口级别）。你的应用钉住一个版本，我们这边后来怎么改，都不会突然把它弄坏。每一版的组件改了什么，见[应用开发指南的更新记录](docs/app-guide.md#更新记录)（1.11 对应 Tikpal 主固件 0.1.22，换过来要把 `minYay` 改成 0.1.22、`apiLevel` 改成 6）。
 
 许可：保留所有权利，只许查看，只许用来给 Tikpal 开发应用，见 [LICENSE](LICENSE)。开发者协议还是草稿，见 [DEVELOPER-TERMS.md](DEVELOPER-TERMS.md)。
 
@@ -29,7 +29,7 @@ claude plugin install tikpal@tikpal
 
 其他 AI（Codex、Cursor 等）：看 [developer.tikpal.ai/start.md](https://developer.tikpal.ai/start.md) 第 0 节。
 
-这一版插件和 `./kit login` 各登录一次；开发包 1.10 起合成一份。
+插件和 `./kit login` 各登录一次。
 <!-- /tikpal-plugin -->
 
 ## 从零到第一次写进圆屏
@@ -82,7 +82,7 @@ cd my-timer
 | `firmware/_template/` | 应用模板：一个能跑的计数器，带 `app.json` 和主机测试；`kit new` 从它起步 |
 | `firmware/partitions/` | 圆屏的分区表（yaykit-v1） |
 | `firmware/tools/yay_dev.py` | 写进圆屏、看日志、截图、看内存（`kit` 用它） |
-| `tools/` | `./kit check` 的检查（`check_app.py`）；`./kit submit` 打提交包（`submit_app.py`）；比两份镜像是不是同一份代码（`compare_images.py`：Mac 和 Linux 编的只差 ELF 哈希和两处校验）；审核重编时把产物封给 Tikpal 的审核机（`seal_artifact.py`，`Rebuild` 工作流用） |
+| `tools/` | `./kit check` 的检查（`check_app.py`）；`./kit submit` 打提交包、登录了就交审（`submit_app.py`）；`./kit login`、`logout`、`status`、`mcp` 跟开发者平台打交道（`developer.py`）；比两份镜像是不是同一份代码（`compare_images.py`：Mac 和 Linux 编的只差 ELF 哈希和两处校验）；审核重编时把产物封给 Tikpal 的审核机（`seal_artifact.py`，`Rebuild` 工作流用） |
 | `review/` | 审核用的系统函数名单（`symbols.json`）：平台的机器审照它查你的固件调了什么，你本地也能照它看；审核机的公钥（`rebuild-seal.pub`）：这个仓库是公开的，重编你的应用留下的产物（源码清单、ELF、编译输出）只封给审核机看 |
 | `config/` | 编译设置：应用仓库用的（`app.defaults`），提交用的那份（`release.defaults`） |
 | `app/` | `kit new` 放进新应用仓库的几个文件 |

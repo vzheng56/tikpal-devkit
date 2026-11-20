@@ -226,7 +226,7 @@ void yk_app_input(void) {
 static void on_key(const yk_key_event_t *ev, void *ctx) {
     (void)ctx;
     yk_app_input();
-    yk_app_ring_key(ev);  // the app ring (P23), the app's own key (yk_app_on_key) and 「回到 Yay 说？」
+    yk_app_ring_key(ev);  // the app ring (P23), the app's own key (yk_app_on_key) and 「回到主屏幕说？」
 }
 
 esp_err_t yk_app_on_key(yk_app_key_fn fn, void *ctx) {
@@ -308,12 +308,13 @@ esp_err_t yk_app_start(const yk_app_config_t *cfg) {
     if (s_started) return ESP_OK;
     if (!cfg || !cfg->slug || !cfg->version) return ESP_ERR_INVALID_ARG;
     s_cfg = *cfg;
-    s_cfg.is_home = yk_app_is_home(cfg->slug, cfg->is_home);  // here only: everything below reads s_cfg
-    if (cfg->is_home && !s_cfg.is_home) ESP_LOGW(TAG, "%s is not the main firmware: is_home ignored", cfg->slug);
+    const int slot = running_slot();
+    s_cfg.is_home = yk_app_is_home(cfg->slug, cfg->is_home, slot);  // here only: everything below reads s_cfg
+    if (cfg->is_home && !s_cfg.is_home)
+        ESP_LOGW(TAG, "%s in slot %d is not the main firmware: is_home ignored", cfg->slug, slot + 1);
     if (cfg->banner) snprintf(s_banner, sizeof(s_banner), "%s", cfg->banner);
     else yk_banner_name(s_banner, sizeof(s_banner), cfg->slug);
     s_started = true;
-    const int slot = running_slot();
     if (slot >= 0) guard_boot();  // an app built into factory has nowhere to go back to
     // The shared settings read; an extension looks at the battery before anything draws power (the board, the radio),
     // and sleeps here when it is too low (0.1.13, yk_app_power.h). After the crash loop guard: it counts this too.
@@ -329,7 +330,7 @@ esp_err_t yk_app_start(const yk_app_config_t *cfg) {
     // The hint arrow's counts, and which app this is (P24: an extension's first time shows APPS).
     yk_hint_init(s_cfg.slug);
     // The app ring in an extension; in Yay (its own) and the recovery (nothing to go to) the key is only passed on.
-    yk_app_ring_start(s_cfg.slug, s_cfg.talks, s_cfg.own_double, !s_cfg.is_home && slot >= 0);
+    yk_app_ring_start(s_cfg.slug, s_cfg.talks, s_cfg.own_double, s_cfg.double_tap_ring, !s_cfg.is_home && slot >= 0);
     esp_err_t err = yk_key_subscribe(on_key, NULL);
     if (err != ESP_OK) ESP_LOGW(TAG, "side key not started: no app ring");
     ESP_LOGI(TAG, "%s %s (api %d, slot %d)", s_cfg.slug, s_cfg.version, YK_API_LEVEL, slot + 1);
@@ -462,9 +463,15 @@ static void leave_task(void *arg) {
     vTaskDelete(NULL);
 }
 
+// yaykit_haptic's stop (the vibration motor on GPIO46, a strapping pin), weak: only a firmware with the component has
+// it. Every way out stops the motor first, before the app's wrap-up and its restart (docs/delivery/2026-11-13-本事和规矩-
+// 振动和姿态.md 3).
+void yk_haptic_stop(void) __attribute__((weak));
+
 /** The app's wrap-up (yk_app_on_leave) before a restart into other firmware: YK_APP_LEAVE_MS at most (or its
- *  yk_app_on_leave_ms), once. */
+ *  yk_app_on_leave_ms), once. The vibration stops first, wrap-up or not. */
 static void run_leave(const char *to) {
+    if (yk_haptic_stop) yk_haptic_stop();
     if (!s_leave.fn || s_leave.left || (!s_leave.done && !(s_leave.done = xSemaphoreCreateBinary()))) return;
     s_leave.left = true;
     const int64_t t0 = esp_timer_get_time();
@@ -690,6 +697,11 @@ esp_err_t yk_app_recovery(void) {
     return in_leave_task(&j);
 }
 
+// The firmware's own step before it opens an app: Yay's waits for this connection's check of the app's shared-folders
+// grant (yay/main/yay_folders.c, Yay 0.1.19 开发文档 3.1 step 3; 5 s at most). Before the guard: it may take that long.
+// Weak: an extension has none.
+void yk_app_before_open(const char *slug) __attribute__((weak));
+
 static esp_err_t do_open(const leave_job_t *job) {
     const int slot = job->slot;
     const char *slug = job->slug, *intent = job->intent, *params_json = job->params_json;
@@ -702,6 +714,7 @@ static esp_err_t do_open(const leave_job_t *job) {
     esp_err_t err = n < 0 ? ESP_ERR_INVALID_SIZE : sys_write("launch", json, NULL, NULL);
     free(json);
     if (err != ESP_OK) return err;
+    if (yk_app_before_open) yk_app_before_open(slug);
     printf("YAY_APP open slot=%d slug=%s intent=%s\n", slot + 1, slug, intent ? intent : "");
     leave_guard(true);
     run_leave(slug);
@@ -754,6 +767,8 @@ esp_err_t yk_app_boot_home_next(const char **home) {
 }
 
 bool yk_app_is_extension(void) { return s_started && !s_cfg.is_home && running_slot() > 0; }
+
+bool yk_app_loose_taps(void) { return s_cfg.loose_taps; }
 
 bool yk_app_should_forward(void) {
     uint8_t flag = 0;
@@ -827,7 +842,14 @@ static int app_cmd(int argc, char **argv) {
 
 // ---------------------------------------------------------------- development commands
 
-#define DEV_MAX 30  // the main firmware registers 26
+// Yay's development build registers 37 (11-09: at 30 its last one, `yay dump`, was left out; 11-13 `yay folders` the
+// 36th, `yay library` the 37th); other builds register none of Yay's, so only development builds get the bigger table (12 bytes of internal
+// RAM each), with room for a few more.
+#if CONFIG_YAY_DEV
+#define DEV_MAX 40
+#else
+#define DEV_MAX 30
+#endif
 static struct {
     const char *name, *help;
     yk_app_dev_fn fn;
@@ -889,6 +911,9 @@ static int yay_cmd(int argc, char **argv) {
     }
 #if CONFIG_YAY_DEV
     // Development only from here: release builds keep the acceptance commands above (CONFIG_YAY_ACCEPT).
+    // A press whose release edge is lost (the pin left alone): down for ms (0: its DOWN only), then no edge; yaykit_key's
+    // level readings must end it, an UP 25 ms later (11-01: down, hold and never an up left 口语陪练 listening).
+    if (!strcmp(sub, "noup")) return yk_key_simulate_lost_up(argc > 2 ? atoi(argv[2]) : 0) == ESP_OK ? 0 : 1;
     if (!strcmp(sub, "ring") && argc > 2) {
         const int r = yk_app_ring_dev_tap(argv[2]);  // an extension's ring; in Yay its own `yay ring` (below)
         if (r >= 0) return r;
@@ -936,7 +961,7 @@ static int yay_cmd(int argc, char **argv) {
     }
     for (int i = 0; i < DEV_MAX; i++)
         if (s_dev[i].name && !strcmp(s_dev[i].name, sub)) return s_dev[i].fn(argc - 1, argv + 1);
-    printf("yay tap | double | hold <ms> | say <s> [text] | records [drop <seq>] | ring <slug>|yay|paper"
+    printf("yay tap | double | hold <ms> | say <s> [text] | records [drop <seq>] | noup [ms] | ring <slug>|yay|paper"
            " | finger <x0> <y0> [<x1> <y1> [ms]] | launch <slug> [json] | crash [boots] | record <kind> [json]");
     if (yk_app_is_extension())
         printf(" | power [<pct> [usb]|off|next <pct> [usb]|look <s>|sleep] | sheet [open|close|edge <px>|pull <px>]");

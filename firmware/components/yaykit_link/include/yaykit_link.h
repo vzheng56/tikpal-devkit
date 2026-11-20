@@ -71,12 +71,18 @@ esp_err_t yk_link_register_console(void);
 
 /** Stable per device, not reversible to the MAC: yk_ + first 12 hex of SHA-256(base MAC + "yaykit"). */
 const char *yk_link_device_id(void);
+/** The system's, when the device leaves its account or is claimed (yaykit_account.c): forgets every link key of the
+ *  unpaired mode and its address (yk_link_keep.h, NVS yk_link_keys). Nothing when none was ever kept. */
+void yk_link_keys_forget(void);
 /** The yk-info document, in PSRAM when there is some (#1239). Caller frees with cJSON_free() (or free()). */
 char *yk_link_info_json(void);
 
 /** Starts advertising YK-xxxx with a fresh pairing code. Takes a moment: the SRP verifier is derived here. */
 esp_err_t yk_link_ble_start(void);
 esp_err_t yk_link_ble_stop(void);
+/** The core NimBLE's host task runs on. yk_link_ble_stop() from a task pinned here stops in place; from anywhere else it
+ *  makes a 4 KB stop task on this core, beside the caller's stack, while Bluetooth still holds its internal RAM. */
+int yk_link_ble_core(void);
 /** While held, the link does not stop by itself after idle_seconds without a request: a screen showing the pairing
  *  code holds it, as the phone may take a while to get to it (Rejoin, 10-21: 36 s to type the code). Released, the
  *  idle time counts again from then. */

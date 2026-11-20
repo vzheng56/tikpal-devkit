@@ -1,8 +1,10 @@
 #include "yaykit_cloud.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -721,11 +723,91 @@ esp_err_t yk_cloud_updates(const char *slug, const char *version, const char *la
     return err;
 }
 
-esp_err_t yk_cloud_get(const char *url, uint8_t *buf, size_t size, size_t *len, int timeout_ms, const char **code) {
+esp_err_t yk_cloud_resources(const char *slug, const char *version, const char *layout, char **json, const char **code) {
+    *json = NULL;
+    if (!query_safe(slug) || !query_safe(version) || (layout && !query_safe(layout))) {
+        *code = "BAD_REQUEST";
+        return ESP_ERR_INVALID_ARG;
+    }
+    char path[160];
+    snprintf(path, sizeof(path), "/device/v1/resources?slug=%s&version=%s&layout=%s", slug, version,
+             layout ? layout : "yaykit-v1");
+    yk_http_response_t res;
+    const esp_err_t err = call(HTTP_METHOD_GET, path, NULL, NULL, 0, 15000, &res, code);
+    if (err != ESP_OK && res.status == 404) *code = "NOT_FOUND";  // a device service from before this request
+    if (err == ESP_OK) {
+        *json = res.body;  // the caller's now
+        res.body = NULL;
+    }
+    yk_http_free(&res);
+    return err;
+}
+
+esp_err_t yk_cloud_figures(char **json, const char **code) {
+    *json = NULL;
+    yk_http_response_t res;
+    const esp_err_t err = call(HTTP_METHOD_GET, "/device/v1/figures", NULL, NULL, 0, 15000, &res, code);
+    if (err != ESP_OK && res.status == 404) *code = "NOT_FOUND";  // a device service from before this request
+    if (err == ESP_OK) {
+        *json = res.body;  // the caller's now
+        res.body = NULL;
+    }
+    yk_http_free(&res);
+    return err;
+}
+
+esp_err_t yk_cloud_library(const char *lang, char **json, const char **code) {
+    *json = NULL;
+    const size_t n = lang ? strlen(lang) : 0;
+    bool ok = n >= 2 && n <= 15;
+    for (size_t i = 0; ok && i < n; i++) ok = isalnum((unsigned char)lang[i]) || lang[i] == '-';
+    if (!ok) {
+        *code = "BAD_REQUEST";
+        return ESP_ERR_INVALID_ARG;
+    }
+    char path[48];
+    snprintf(path, sizeof(path), "/device/v1/library?lang=%s", lang);
+    yk_http_response_t res;
+    const esp_err_t err = call(HTTP_METHOD_GET, path, NULL, NULL, 0, 15000, &res, code);
+    if (err != ESP_OK && res.status == 404) *code = "NOT_FOUND";  // a device service from before this request
+    if (err == ESP_OK) {
+        *json = res.body;  // the caller's now
+        res.body = NULL;
+    }
+    yk_http_free(&res);
+    return err;
+}
+
+esp_err_t yk_cloud_prepare(const char *yay, const char *layout, char **json, const char **code) {
+    *json = NULL;
+    if (!query_safe(yay) || (layout && !query_safe(layout))) {
+        *code = "BAD_REQUEST";
+        return ESP_ERR_INVALID_ARG;
+    }
+    char path[120];
+    snprintf(path, sizeof(path), "/device/v1/prepare?yay=%s&layout=%s", yay, layout ? layout : "yaykit-v1");
+    yk_http_response_t res;
+    const esp_err_t err = call(HTTP_METHOD_GET, path, NULL, NULL, 0, 15000, &res, code);
+    if (err == ESP_OK) {
+        *json = res.body;  // the caller's now
+        res.body = NULL;
+    }
+    yk_http_free(&res);
+    return err;
+}
+
+#define GET_STEP 4096  // yk_cloud_get_while: how much it reads between two looks at go_on
+
+esp_err_t yk_cloud_get_while(const char *url, uint8_t *buf, size_t size, size_t *len, int timeout_ms,
+                             bool (*go_on)(void *ctx), void *ctx, const char **code) {
     *len = 0;
     if (!url || strncmp(url, "https://", 8) || !buf) {
         *code = "BAD_URL";
         return ESP_ERR_INVALID_ARG;
+    }
+    if (go_on && !go_on(ctx)) {  // told already: no connection for nothing
+        *code = "STOPPED";
+        return ESP_ERR_INVALID_STATE;
     }
     if (yk_http_prepare(code) != ESP_OK) return ESP_FAIL;
     const esp_http_client_config_t cfg = {
@@ -733,8 +815,8 @@ esp_err_t yk_cloud_get(const char *url, uint8_t *buf, size_t size, size_t *len, 
         .method = HTTP_METHOD_GET,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = timeout_ms,
-        .buffer_size = 2048,
-        .buffer_size_tx = 1024,
+        .buffer_size = YK_HTTP_BUFFER(2048),
+        .buffer_size_tx = YK_HTTP_BUFFER(1024),
         .keep_alive_enable = false,
         .event_handler = yk_http_on_event,
     };
@@ -753,9 +835,17 @@ esp_err_t yk_cloud_get(const char *url, uint8_t *buf, size_t size, size_t *len, 
         err = ESP_FAIL;
     } else {
         int n = 0;
-        while (*len < size && (n = esp_http_client_read(c, (char *)buf + *len, (int)(size - *len))) > 0) *len += (size_t)n;
+        bool stopped = false;
+        while (*len < size && !(stopped = go_on && !go_on(ctx))) {
+            const size_t left = size - *len, step = go_on && left > GET_STEP ? GET_STEP : left;
+            if ((n = esp_http_client_read(c, (char *)buf + *len, (int)step)) <= 0) break;
+            *len += (size_t)n;
+        }
         char more;
-        if (n < 0) {
+        if (stopped) {
+            *code = "STOPPED";
+            err = ESP_ERR_INVALID_STATE;
+        } else if (n < 0) {
             *code = "NETWORK";
             err = ESP_FAIL;
         } else if (*len == size && esp_http_client_read(c, &more, 1) > 0) {
@@ -769,11 +859,108 @@ esp_err_t yk_cloud_get(const char *url, uint8_t *buf, size_t size, size_t *len, 
     return err;
 }
 
-esp_err_t yk_cloud_status(const cJSON *report, const char **code) {
-    char *json = cJSON_PrintUnformatted(report);
+/** yk_cloud_get_to's answer to a Range: where its Content-Range starts (a response header: only the event sees it). */
+typedef struct {
+    bool ranged;
+    unsigned long long start;
+} get_to_range_t;
+
+static esp_err_t get_to_on_event(esp_http_client_event_t *e) {
+    get_to_range_t *r = e->user_data;
+    if (e->event_id == HTTP_EVENT_ON_HEADER && r && e->header_key && e->header_value &&
+        !strcasecmp(e->header_key, "Content-Range"))
+        r->ranged = sscanf(e->header_value, "bytes %llu-", &r->start) == 1;
+    return yk_http_on_event(e);
+}
+
+esp_err_t yk_cloud_get_to(const char *url, uint64_t from, uint8_t *buf, size_t size, yk_cloud_piece_fn piece,
+                          bool (*go_on)(void *ctx), void *ctx, int timeout_ms, uint64_t *got, const char **code) {
+    *got = 0;
+    if (!url || strncmp(url, "https://", 8) || !buf || !size || !piece) {
+        *code = "BAD_URL";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (go_on && !go_on(ctx)) {  // told already: no connection for nothing
+        *code = "STOPPED";
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (yk_http_prepare(code) != ESP_OK) return ESP_FAIL;
+    get_to_range_t range = {0};
+    const esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = timeout_ms,
+        .buffer_size = YK_HTTP_BUFFER(2048),
+        .buffer_size_tx = YK_HTTP_BUFFER(1024),
+        .keep_alive_enable = false,
+        .event_handler = get_to_on_event,
+        .user_data = &range,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) {
+        *code = "NO_MEM";
+        return ESP_ERR_NO_MEM;
+    }
+    if (from) {
+        char bytes[40];
+        snprintf(bytes, sizeof(bytes), "bytes=%llu-", (unsigned long long)from);
+        esp_http_client_set_header(c, "Range", bytes);
+    }
+    esp_err_t err = esp_http_client_open(c, 0);
+    if (err == ESP_OK && esp_http_client_fetch_headers(c) < 0) err = ESP_FAIL;
+    const int status = err == ESP_OK ? esp_http_client_get_status_code(c) : 0;
+    uint64_t at = 0;  // a 200 is the whole file, from its first byte
+    // 206: Content-Range bytes <from>-<last>/<size>. From elsewhere than asked: not this file's next bytes.
+    if (status == 206) at = range.ranged && range.start == from ? from : UINT64_MAX;
+    if (err != ESP_OK) {
+        *code = "NETWORK";
+    } else if ((status != 200 && status != 206) || at == UINT64_MAX) {
+        *code = "SERVER";
+        err = ESP_FAIL;
+    } else {
+        int n = 0;
+        bool stopped = false, refused = false;
+        while (!(stopped = go_on && !go_on(ctx))) {
+            if ((n = esp_http_client_read(c, (char *)buf, (int)size)) <= 0) break;
+            if (!piece(ctx, at, buf, (size_t)n)) {
+                refused = true;
+                break;
+            }
+            at += (uint64_t)n;
+            *got += (uint64_t)n;
+        }
+        if (stopped) {
+            *code = "STOPPED";
+            err = ESP_ERR_INVALID_STATE;
+        } else if (refused) {
+            *code = "WRITE";
+            err = ESP_FAIL;
+        } else if (n < 0 || !esp_http_client_is_complete_data_received(c)) {
+            *code = "NETWORK";  // cut short: what came stays the caller's, to go on from
+            err = ESP_FAIL;
+        }
+    }
+    if (err != ESP_OK) ESP_LOGW(TAG, "get_to failed: HTTP %d %s got=%llu", status, *code, (unsigned long long)*got);
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    return err;
+}
+
+esp_err_t yk_cloud_get(const char *url, uint8_t *buf, size_t size, size_t *len, int timeout_ms, const char **code) {
+    return yk_cloud_get_while(url, buf, size, len, timeout_ms, NULL, NULL, code);
+}
+
+esp_err_t yk_cloud_status_text(const char *json, const char **code) {
     yk_http_response_t res;
     esp_err_t err = call_json(HTTP_METHOD_POST, "/device/v1/status", json, 15000, &res, code);
-    cJSON_free(json);
     yk_http_free(&res);
+    return err;
+}
+
+esp_err_t yk_cloud_status(const cJSON *report, const char **code) {
+    char *json = cJSON_PrintUnformatted(report);
+    const esp_err_t err = yk_cloud_status_text(json, code);
+    cJSON_free(json);
     return err;
 }

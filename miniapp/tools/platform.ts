@@ -123,11 +123,11 @@ export async function login(url: string, options: { open?: boolean; say?: (line:
       // not allowed yet, asked too soon, or the network or the platform in trouble: wait and ask again
       if (error instanceof PlatformError && (error.code === "CLI_PENDING" || error.code === "RATE_LIMIT" || error.code === "OFFLINE" || error.status >= 500)) continue;
       if (error instanceof PlatformError && error.code === "CLI_DENIED") throw new Error("网页上没有允许，没登录");
-      if (error instanceof PlatformError && error.code === "CLI_EXPIRED") throw new Error("码过期了，再来一次：./kit miniapp login");
+      if (error instanceof PlatformError && error.code === "CLI_EXPIRED") throw new Error("码过期了，再来一次：./kit login");
       throw error;
     }
   }
-  throw new Error("码过期了，再来一次：./kit miniapp login");
+  throw new Error("码过期了，再来一次：./kit login");
 }
 
 /**
@@ -202,7 +202,7 @@ export const ERROR_WORDS: Record<string, string> = {
   NOT_DEVELOPER: "这个账号还不是开发者：先在开发者网站用邀请码申请",
   TERMS_OUTDATED: "开发者协议更新了：先到开发者网站读完签了",
   DEVELOPER_UNAVAILABLE: "开发者平台暂时连不上，过一会儿再试",
-  CLI_TOKEN_INVALID: "登录过期了，或者在网站上退出了：./kit miniapp login 重新登录",
+  CLI_TOKEN_INVALID: "登录过期了，或者在网站上退出了：./kit login 重新登录",
   MINIAPP_STORAGE_UNAVAILABLE: "平台暂时存不了小程序，过一会儿再试",
   MINIAPP_TOO_LARGE: "包压缩后超过 5 MB",
   OFFLINE: "连不上开发者网站：看看网络",

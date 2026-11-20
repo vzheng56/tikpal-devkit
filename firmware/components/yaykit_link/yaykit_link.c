@@ -143,6 +143,7 @@ static const char *reset_reason(void) {
 
 const char *yk_link_device_id(void) { return device_id; }
 bool yk_link_ble_active(void) { return active; }
+int yk_link_ble_core(void) { return YK_NIMBLE_CORE; }
 bool yk_link_ble_connected(void) { return active && connected; }
 const char *yk_link_ble_name(void) { return active ? ble_name : ""; }
 const char *yk_link_pairing_code(void) { return active ? code : ""; }

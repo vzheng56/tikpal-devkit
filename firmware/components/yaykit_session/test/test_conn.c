@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "yk_conn_drop.h"
 #include "yk_conn_timing.h"
 #include "yk_ticket.h"
 
@@ -122,7 +123,70 @@ static void test_url(void) {
     CHECK(!yk_ticket_url(NULL, host, sizeof(host), &path));
 }
 
+/** How the session went away and came back (0.1.20 4.8; the report's net): the cause, why it stayed down, how long. */
+static void test_drop(void) {
+    // The cause, from what was seen.
+    yk_drop_seen_t s = {.ip = false, .close_code = 4001};
+    CHECK(yk_drop_classify(&s) == YK_DROP_WIFI);  // off the router: nothing else can be told
+    s = (yk_drop_seen_t){.ip = true, .close_code = 4001};
+    CHECK(yk_drop_classify(&s) == YK_DROP_CLOSED);
+    s = (yk_drop_seen_t){.ip = true, .tls_error = YK_DROP_TLS_CANNOT_RESOLVE};
+    CHECK(yk_drop_classify(&s) == YK_DROP_NO_INTERNET);
+    s.tls_error = YK_DROP_TLS_FAILED_CONNECT;
+    CHECK(yk_drop_classify(&s) == YK_DROP_NO_INTERNET);
+    s.tls_error = YK_DROP_TLS_CONNECTION_TIMEOUT;
+    CHECK(yk_drop_classify(&s) == YK_DROP_TIMEOUT);
+    s.tls_error = YK_DROP_TLS_BASE + 0x0E;  // a handshake that failed
+    CHECK(yk_drop_classify(&s) == YK_DROP_SERVER);
+    s = (yk_drop_seen_t){.ip = true, .handshake = true};
+    CHECK(yk_drop_classify(&s) == YK_DROP_SERVER);
+    s = (yk_drop_seen_t){.ip = true, .pong_timeout = true};
+    CHECK(yk_drop_classify(&s) == YK_DROP_TIMEOUT);
+    s = (yk_drop_seen_t){.ip = true};
+    CHECK(yk_drop_classify(&s) == YK_DROP_OTHER);
+    CHECK(!strcmp(yk_drop_cause_word(YK_DROP_NO_INTERNET), "no_internet") && !strcmp(yk_drop_cause_word(YK_DROP_WIFI), "wifi"));
+    // Pings stop (the router went): the cause is told by the tries that fail while down; back after three.
+    yk_drop_t d = {0};
+    CHECK(!d.have);
+    yk_drop_went(&d, YK_DROP_TIMEOUT, 15, 0, 10000, 1763100000);
+    CHECK(d.have && d.down && d.drops == 1 && d.cause == YK_DROP_TIMEOUT && d.wifi_reason == -1 && d.down_s == -1);
+    yk_drop_try(&d, YK_DROP_NONE, -1);
+    yk_drop_try(&d, YK_DROP_WIFI, 200);  // no address: the router is gone
+    CHECK(d.cause == YK_DROP_WIFI && d.wifi_reason == 200 && d.tries == 1);
+    yk_drop_try(&d, YK_DROP_NONE, -1);
+    yk_drop_try(&d, YK_DROP_NO_INTERNET, -1);  // a plainer one already told: kept
+    CHECK(d.cause == YK_DROP_WIFI);
+    yk_drop_try(&d, YK_DROP_NONE, -1);
+    yk_drop_back(&d, 48400);
+    CHECK(!d.down && d.down_s == 38 && d.tries == 3 && d.at_unix_s == 1763100000);
+    yk_drop_back(&d, 90000);  // once
+    CHECK(d.down_s == 38);
+    // Said in a report: the count goes, the latest stays; a newer drop replaces it.
+    yk_drop_taken(&d, 1);
+    CHECK(d.drops == 0 && d.have && d.cause == YK_DROP_WIFI);
+    yk_drop_went(&d, YK_DROP_CLOSED, -1, 4001, 100000, 0);
+    CHECK(d.drops == 1 && d.cause == YK_DROP_CLOSED && d.close_code == 4001 && d.at_unix_s == 0);
+    yk_drop_try(&d, YK_DROP_NONE, -1);
+    yk_drop_try(&d, YK_DROP_WIFI, 2);  // the server closed it: that is why, whatever came after
+    CHECK(d.cause == YK_DROP_CLOSED && d.wifi_reason == -1);
+    yk_drop_back(&d, 100200);  // under a second: 0 s, one try
+    CHECK(d.down_s == 0 && d.tries == 1);
+    // Two drops before the report went: both counted; a report that went before the second leaves one.
+    yk_drop_went(&d, YK_DROP_OTHER, -1, 0, 200000, 0);
+    CHECK(d.drops == 2);
+    yk_drop_taken(&d, 1);
+    CHECK(d.drops == 1);
+    yk_drop_taken(&d, 5);
+    CHECK(d.drops == 0);
+    // Tries and back without a drop known: nothing.
+    yk_drop_t none = {0};
+    yk_drop_try(&none, YK_DROP_WIFI, 3);
+    yk_drop_back(&none, 5000);
+    CHECK(!none.have && none.cause == YK_DROP_NONE);
+}
+
 int main(void) {
+    test_drop();
     test_line();
     test_ticket();
     test_url();

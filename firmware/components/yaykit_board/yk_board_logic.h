@@ -119,9 +119,10 @@ const char *yk_board_charge_result_name(yk_charge_result_t result);
 
 // The shared preferences (P10): the valid range of each, a bad stored value reading as the default.
 // YK_PREF_BUDDY (0.1.12, docs/delivery/2026-11-06-形象设计.md 8): who talks with you, 0 Pip, 3 Mote, 4 Dial, 5 Bloom
-// (BOARD_BUDDY_*); any other value, 1 and 2 (retired) too, reads and is set as Pip. Added at the end: the others keep
-// their numbers.
-typedef enum { YK_PREF_VOLUME, YK_PREF_BRIGHTNESS, YK_PREF_SCREEN_OFF, YK_PREF_BUDDY } yk_pref_t;
+// (BOARD_BUDDY_*); any other value, 1 and 2 (retired) too, reads and is set as Pip. YK_PREF_COLORWAY (Yay 0.1.19 4.7):
+// the accent's colourway, 0..4 (BOARD_COLORWAY_*); any other value reads and is set as the original. Added at the end:
+// the others keep their numbers.
+typedef enum { YK_PREF_VOLUME, YK_PREF_BRIGHTNESS, YK_PREF_SCREEN_OFF, YK_PREF_BUDDY, YK_PREF_COLORWAY } yk_pref_t;
 int yk_board_pref_clamp(yk_pref_t which, int value);
 int yk_board_pref_default(yk_pref_t which);
 // A value read back from NVS (or -1 when missing): in range it stands, out of range it is the default.
@@ -131,6 +132,11 @@ int yk_board_pref_read(yk_pref_t which, int stored);
 // spaces, starting with a letter or '<'. Anything else is not one (a bad value reads as not written).
 #define YK_PREF_TZ_MAX 64
 bool yk_board_tz_ok(const char *posix);
+// The device's language (0.1.17, key `lang`; docs/delivery/2026-11-06-登录与开箱.md 5.4, 7): as the platform says it
+// ("zh-Hans", "en", "ja", "es-419"): 2 to YK_PREF_LANG_MAX - 1 characters, a letter first, then letters, digits and '-'.
+// Anything else is not one (a bad value reads as not written).
+#define YK_PREF_LANG_MAX 8
+bool yk_board_lang_ok(const char *tag);
 // ... and its offset east of UTC now, in minutes (key `tz_off`, BOSS-2 11-02): -12:00 to +14:00.
 #define YK_PREF_TZ_OFF_MIN (-720)
 #define YK_PREF_TZ_OFF_MAX 840

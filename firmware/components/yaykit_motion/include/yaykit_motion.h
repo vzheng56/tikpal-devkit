@@ -2,10 +2,14 @@
 // Grown from Breathe's motion.c (10 Hz accelerometer, face down and pick-up) into a shared component: accelerometer
 // and gyroscope at ~224 Hz, gravity and linear acceleration in screen coordinates, and the events every app uses.
 //
-//   Party Play   shake (with strength) to roll, still / moving for the bomb, the holder's direction, the stream
-//   Breathe      face down (a 250 ms probe, then 600 ms) ends a session, pick-up wakes
-//   Translator   flat = split screen, upright (and which way up) = one side
-//   every app    pick-up wakes the screen; face down quiets it
+//   Party Play      yk_motion_take() + yk_motion_state() + yk_motion_holder(500) every frame (33 ms, LVGL task):
+//                   pick-up or shake rolls the dice, still lands them, gravity less linear acceleration pushes them,
+//                   moving for the bomb, face down quiets, the holder's direction
+//   Homework Buddy  take() at 56 Hz: face down dims the screen, face up or pick-up lights it
+//   Language Buddy  on_event: shake for another one, face down / up
+//   Selfie          on_event at 56 Hz: which way up while upright turns the screen
+// (Translator does not link this.) Waking on pick-up and going quiet face down are each app's own, and each app's
+// rules differ: this component only reports the events.
 //
 // Screen coordinates: x to the right, y down (as pixels), z out of the glass towards the viewer. Gravity points
 // down: flat with the glass up it is (0, 0, -1) g. Angles on the screen are degrees clockwise from the top
@@ -16,7 +20,8 @@
 // test device's measured mapping applies (sensor z faces the back).
 //
 // Pure C parts (the estimate, the events, CSV) are in yk_motion_core.c and host tested with recorded data
-// (test/motion/*.csv). The device part runs one task that reads the sensor's FIFO every 20 ms.
+// (test/motion/*.csv). The device part runs one task that polls the sensor's registers every 4 ms at 224 Hz (every
+// 16 ms at 56 Hz), a little faster than it samples, and skips a read whose sample counter has not moved (no FIFO).
 #pragma once
 
 #include <stdbool.h>
@@ -34,7 +39,8 @@ typedef enum {
     YK_MOTION_FLAT,             // lies flat, glass up: within flat_deg of level for orient_ms
     YK_MOTION_UPRIGHT,          // stands or is held upright: past upright_deg for orient_ms; `angle` = which screen
                                 // direction is up (0: the top edge, 180: upside down)
-    YK_MOTION_LIFT,             // picked up from rest
+    YK_MOTION_LIFT,             // picked up from rest: only once it has been still since yk_motion_start() (started
+                                // in a hand, the first is after it was put down and picked up again)
     YK_MOTION_PUT_DOWN,         // at rest again after moving; `angle` / `confidence`: where the holder was in the
                                 // half second before it came to rest (yk_motion_holder())
     YK_MOTION_SHAKE_START,      // `strength` 0..1 when it was recognised
@@ -54,7 +60,8 @@ typedef struct {
     int64_t t_ms;      // esp_timer milliseconds of the sample that decided it
     float strength;    // SHAKE_START: 0..1
     float angle;       // UPRIGHT: up; PUT_DOWN: the holder; degrees 0..360 clockwise from the top
-    float confidence;  // PUT_DOWN: 0..1 (0: no idea, the device stayed level; the angle is then the last known)
+    float confidence;  // PUT_DOWN: 0..1, as yk_motion_holder() (nobody tilted it in that half second: the last
+                       // known direction, half as sure; 0 and angle 0 when there never was one)
 } yk_motion_event_t;
 
 /** One processed sample, screen coordinates. */
@@ -124,7 +131,7 @@ void yk_motion_default_cal(yk_motion_cal_t *cal);
 // ---------------------------------------------------------------- device
 
 typedef void (*yk_motion_event_fn)(const yk_motion_event_t *ev, void *ctx);
-/** Samples since the last call (every ~20 ms), oldest first. From the motion task: be quick. */
+/** Samples since the last call (every ~20 ms), oldest first. From the motion task: be quick (no LVGL). */
 typedef void (*yk_motion_stream_fn)(const yk_motion_sample_t *s, size_t n, void *ctx);
 
 typedef struct {
@@ -132,6 +139,8 @@ typedef struct {
     const yk_motion_thresholds_t *thresholds;  // NULL: defaults
     yk_motion_event_fn on_event;             // NULL: events are queued for yk_motion_take()
     void *ctx;
+    bool stack_in_psram;                     // the task's 4 KB stack in PSRAM, not internal RAM (Yay's badge, 0.1.20:
+                                             // internal RAM is short there); false as ever
 } yk_motion_config_t;
 
 /** Starts the sensor and its task (after board_init(): it is on the shared I2C bus). cfg may be NULL. Reads the
@@ -145,11 +154,15 @@ bool yk_motion_running(void);
 bool yk_motion_take(yk_motion_event_t *ev);
 /** The state now (any task). */
 void yk_motion_state(yk_motion_state_t *out);
-/** Samples as they come (Party Play's dice): every ~20 ms, a batch. NULL stops. One listener. */
+/** Samples as they come, for what wants every one (a knock between two frames): every ~20 ms, a batch, from the motion
+ *  task. NULL stops. One listener. (Nothing uses it yet: Party Play reads yk_motion_state() once a frame.) */
 void yk_motion_stream(yk_motion_stream_fn fn, void *ctx);
 /** The holder's direction: the circular mean of the screen tilt's direction over the last window_ms (Party Play
- *  asks for the half second before the bomb went off), and how sure (0..1). When the device stayed level in that
- *  time: the last known direction with its confidence halved; false when there never was one. */
+ *  asks for the half second before the bomb went off), and how sure (0..1). Only tilts between holder_min_deg and
+ *  holder_max_deg count. When none did in that time (flat, upright, face down): the last known direction with its
+ *  confidence halved, once for the whole stretch (asking again, even every frame, gives the same until a new
+ *  direction is worked out); false when there never was one. To know whether someone holds it towards themselves
+ *  now, look at yk_motion_state()'s tilt_deg as well. */
 bool yk_motion_holder(int window_ms, float *angle, float *confidence);
 
 /** New thresholds while running. */

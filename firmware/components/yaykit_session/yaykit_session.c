@@ -22,8 +22,18 @@
 #include "mbedtls/base64.h"
 #include "mbedtls/ssl.h"
 #include "sdkconfig.h"
+#include "yk_conn_drop.h"
 #include "yk_conn_timing.h"
 #include "yk_ticket.h"
+#if __has_include("esp_tls_errors.h")
+#include "esp_tls_errors.h"
+_Static_assert(ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME == YK_DROP_TLS_CANNOT_RESOLVE &&
+                   ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST == YK_DROP_TLS_FAILED_CONNECT &&
+                   ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT == YK_DROP_TLS_CONNECTION_TIMEOUT,
+               "yk_conn_drop's mirror of esp-tls's errors");
+#endif
+// The router's last reason (yaykit_wifi), when the firmware has it: the report's net.last.wifiReason (0.1.20)
+uint8_t yk_wifi_last_reason(void) __attribute__((weak));
 #if CONFIG_YK_SESSION_TLS_TICKETS
 #include "esp_rtc_time.h"
 #include "esp_tls.h"
@@ -39,6 +49,10 @@ static const char *TAG = "yk_session";
 #define TOKEN_MAX 1024
 #define FRAME_MAX (YK_PROTO_HEADER + 1276)
 #define TEXT_MAX 16384  // the longest text frame taken (stt text is at most 2000 characters)
+#ifndef CONFIG_YK_SESSION_WS_BUFFER_MIN
+#define CONFIG_YK_SESSION_WS_BUFFER_MIN 0
+#endif
+#define YK_SESSION_WS_BUFFER (CONFIG_YK_SESSION_WS_BUFFER_MIN > 2048 ? CONFIG_YK_SESSION_WS_BUFFER_MIN : 2048)
 #define CONNECT_WAIT_MS 15000
 // No address yet (a start, an app switch): wait for it rather than try, fail and back off (~1.8 s lost before, B). The
 // address's event cuts the wait short; this long without one, it tries anyway, as before.
@@ -73,6 +87,13 @@ static struct {
     bool offered;             // a kept ticket was offered
     bool timed;               // the line is out
     yk_session_stats_t st;
+    // How it went away and came back (0.1.20 4.8, the report's net; yk_conn_drop.h): `drop` under drop_lock (the report's
+    // task reads it); what the WebSocket client saw of this connection's end, from its task, read once it is down.
+    yk_drop_t drop;
+    SemaphoreHandle_t drop_lock;
+    volatile int seen_close;   // the server's close code, 0 none
+    volatile int seen_tls;     // esp-tls's last error, 0 none
+    volatile bool seen_pong, seen_handshake;
 } S;
 
 const char *yk_session_state_name(yk_session_state_t s) {
@@ -390,9 +411,16 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
         S.upgrade_us = esp_timer_get_time();  // its 101 came
         xEventGroupSetBits(S.events, BIT_UP);
         break;
+    case WEBSOCKET_EVENT_ERROR:
+        if (e) {  // why, for the report's net (0.1.20): kept until the session's task reads it
+            if (e->error_handle.esp_tls_last_esp_err) S.seen_tls = e->error_handle.esp_tls_last_esp_err;
+            if (e->error_handle.error_type == WEBSOCKET_ERROR_TYPE_PONG_TIMEOUT) S.seen_pong = true;
+            if (e->error_handle.error_type == WEBSOCKET_ERROR_TYPE_HANDSHAKE) S.seen_handshake = true;
+        }
+        xEventGroupSetBits(S.events, BIT_DOWN | BIT_GONE);
+        break;
     case WEBSOCKET_EVENT_DISCONNECTED:
     case WEBSOCKET_EVENT_CLOSED:
-    case WEBSOCKET_EVENT_ERROR:
         xEventGroupSetBits(S.events, BIT_DOWN | BIT_GONE);
         break;
     case WEBSOCKET_EVENT_DATA:
@@ -413,6 +441,7 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
             if (e->data_len >= 2) {
                 const int code = ((uint8_t)e->data_ptr[0] << 8) | (uint8_t)e->data_ptr[1];
                 printf("YAY_NET closed code=%d\n", code);  // 4001: the token ran out; the next connection gets one
+                S.seen_close = code;
             }
             xEventGroupSetBits(S.events, BIT_PEER_CLOSE);
         }
@@ -434,6 +463,13 @@ static void ws_connect(void) {
     stage("begin");
     const bool have = token && S.cfg.token && S.cfg.token(token, TOKEN_MAX, false) == ESP_OK && token[0];
     stage("token");
+    // Held while the token came (fetching one takes seconds, and the hold does not end it): no connection now. Whatever
+    // held it goes on, as the phone link does: Bluetooth and this WebSocket together are under the 40,000 bytes line.
+    if (S.hold) {
+        free(token);
+        xEventGroupSetBits(S.events, BIT_DOWN);
+        return;
+    }
     snprintf(headers, TOKEN_MAX + 128, "%s%s%sX-Yaykit-Firmware: %s\r\n", have ? "Authorization: Bearer " : "",
              have ? token : "", have ? "\r\n" : "", S.cfg.firmware ? S.cfg.firmware : "");
     free(token);
@@ -447,7 +483,9 @@ static void ws_connect(void) {
         .pingpong_timeout_sec = 45,  // nothing back for 45 s: drop and reconnect (4.1)
         .disable_auto_reconnect = true,
         .network_timeout_ms = 10000,
-        .buffer_size = 2048,
+        // Its two buffers are malloc()'d: at 2 KB internal RAM for as long as the session is up; Yay asks for more than
+        // CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL, which puts them in PSRAM (Kconfig: YK_SESSION_WS_BUFFER_MIN).
+        .buffer_size = YK_SESSION_WS_BUFFER,
         .task_stack = 6144,
         .task_prio = 5,
     };
@@ -521,6 +559,65 @@ static void reauth(void) {
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
 }
 
+// ---------------------------------------------------------------- how it went away (0.1.20, the report's net)
+
+/** What this connection's end looked like, classified (and the Wi-Fi's reason, -1 none). */
+static yk_drop_cause_t drop_cause(bool wait_timeout, int *wifi_reason) {
+    const yk_drop_seen_t seen = {.ip = have_ip(), .close_code = S.seen_close, .pong_timeout = S.seen_pong,
+                                 .wait_timeout = wait_timeout, .handshake = S.seen_handshake, .tls_error = S.seen_tls};
+    const int r = yk_wifi_last_reason ? yk_wifi_last_reason() : 0;
+    *wifi_reason = r > 0 ? r : -1;
+    return yk_drop_classify(&seen);
+}
+
+static void drop_seen_reset(void) { S.seen_close = 0, S.seen_tls = 0, S.seen_pong = false, S.seen_handshake = false; }
+
+static int64_t clock_s(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec > 1735689600 ? tv.tv_sec : 0;  // 2025: before it the clock is not set yet
+}
+
+/** It went (the session was up), a connection tried, or it failed: under drop_lock. */
+static void drop_went(void) {
+    int reason;
+    const yk_drop_cause_t c = drop_cause(false, &reason);
+    xSemaphoreTake(S.drop_lock, portMAX_DELAY);
+    yk_drop_went(&S.drop, c, reason, S.seen_close, esp_timer_get_time() / 1000, clock_s());
+    xSemaphoreGive(S.drop_lock);
+    printf("YAY_NET drop cause=%s wifi_reason=%d close=%d\n", yk_drop_cause_word(c), reason, S.seen_close);
+}
+static void drop_try(yk_drop_cause_t failed, int reason) {
+    xSemaphoreTake(S.drop_lock, portMAX_DELAY);
+    yk_drop_try(&S.drop, failed, reason);
+    xSemaphoreGive(S.drop_lock);
+}
+static void drop_back(void) {
+    xSemaphoreTake(S.drop_lock, portMAX_DELAY);
+    const bool was = S.drop.have && S.drop.down;
+    yk_drop_back(&S.drop, esp_timer_get_time() / 1000);
+    const yk_drop_t d = S.drop;
+    xSemaphoreGive(S.drop_lock);
+    if (was) printf("YAY_NET back cause=%s down_s=%d tries=%d\n", yk_drop_cause_word(d.cause), (int)d.down_s, (int)d.tries);
+}
+
+void yk_session_drop(yk_drop_t *out) {
+    if (!S.drop_lock) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    xSemaphoreTake(S.drop_lock, portMAX_DELAY);
+    *out = S.drop;
+    xSemaphoreGive(S.drop_lock);
+}
+
+void yk_session_drop_taken(uint32_t n) {
+    if (!S.drop_lock || !n) return;
+    xSemaphoreTake(S.drop_lock, portMAX_DELAY);
+    yk_drop_taken(&S.drop, n);
+    xSemaphoreGive(S.drop_lock);
+}
+
 // ---------------------------------------------------------------- the task
 
 static void session_task(void *arg) {
@@ -540,6 +637,10 @@ static void session_task(void *arg) {
             printf("YAY_NET session ip=%d after_ms=%u\n", have_ip(), (unsigned)((esp_timer_get_time() - t0) / 1000));
         }
         S.closing = false;     // a new connection (S.ws is NULL here: nothing sends)
+        if (!S.usb) {
+            drop_try(YK_DROP_NONE, -1);  // one more tried, while down (the report's net.last.tries)
+            drop_seen_reset();
+        }
         S.connect_t0 = esp_timer_get_time();
         set_state(YK_SESSION_CONNECTING);
         if (!S.usb) ws_connect();  // the USB bridge says `ys c` when its side is up
@@ -550,13 +651,25 @@ static void session_task(void *arg) {
             say_hello();
             if (!S.usb) stage("hello_sent");
             if (S.state == YK_SESSION_UP) {
+                if (!S.usb) drop_back();
                 for (;;) {
                     const EventBits_t got = xEventGroupWaitBits(S.events, BIT_DOWN | BIT_REAUTH, pdTRUE, pdFALSE, portMAX_DELAY);
                     if (got & BIT_REAUTH) reauth();
                     if (got & BIT_DOWN) break;
                 }
+                // Down from up: every KICK left while it was up is stale (a hold let go, an address: up waits only for
+                // DOWN and REAUTH), and would end the back-off at once (0.1.22, 新四号机 09:31 and ④: retry_ms=830,
+                // connecting 2-4 ms after the drop, ahead of Yay's https_first and note hold, 38,475). Cleared: the
+                // back-off waits as designed; a KICK that comes during it (Wi-Fi's address, a hold let go) still cuts it.
+                xEventGroupClearBits(S.events, BIT_KICK);
                 S.st.drops++;
+                // Gone by itself (not held for the phone link, not closed to leave): the report's net (0.1.20)
+                if (!S.usb && !S.hold && !S.closing) drop_went();
             }
+        } else if (!S.usb && !S.hold) {
+            int reason;  // this try failed (or its wait ran out): why it stays down
+            const yk_drop_cause_t c = drop_cause(!(bits & BIT_DOWN), &reason);
+            drop_try(c, reason);
         }
         if (!S.usb) ws_close();
         set_state(YK_SESSION_DOWN);
@@ -582,15 +695,23 @@ esp_err_t yk_session_start(const yk_session_config_t *cfg) {
     if (S.hold) printf("YAY_NET session_hold=1 at=start\n");
     S.events = xEventGroupCreate();
     S.send_lock = xSemaphoreCreateMutex();
+    S.drop_lock = xSemaphoreCreateMutex();
     S.text = heap_caps_malloc(TEXT_MAX, MALLOC_CAP_SPIRAM);
     S.frame = heap_caps_malloc(FRAME_MAX, MALLOC_CAP_SPIRAM);
-    if (!S.events || !S.send_lock || !S.text || !S.frame) return ESP_ERR_NO_MEM;
+    if (!S.events || !S.send_lock || !S.drop_lock || !S.text || !S.frame) return ESP_ERR_NO_MEM;
     // The address's event connects at once (no default event loop yet: the wait polls instead).
     if (!S.usb) esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL);
     // 8 KB of internal stack: the token comes over HTTPS (yaykit_cloud), here.
     if (xTaskCreatePinnedToCore(session_task, "yk_session", 8192, NULL, 5, &S.task, 0) != pdPASS) return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "session to %s", cfg->url);
     return ESP_OK;
+}
+
+void yk_session_forget_ticket(void) {
+#if CONFIG_YK_SESSION_TLS_TICKETS
+    uint8_t *area = ticket_area();
+    if (area) yk_ticket_clear(area, YK_TICKET_AREA);
+#endif
 }
 
 void yk_session_kick(void) {

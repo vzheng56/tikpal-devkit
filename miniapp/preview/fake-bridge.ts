@@ -17,6 +17,8 @@ import { MINIAPP_CAPABILITY } from "../src/contract/miniapp-capabilities.js";
 import { METHODS } from "../src/methods.js";
 import miniapps from "./fixtures/miniapps.json";
 import recordings from "./fixtures/recordings.json";
+import { Failure, fail } from "./failure.js";
+import { level3 } from "./level3.js";
 import { DEFAULTS, INSETS } from "./settings.js";
 import type { CallRecord, FakeContext, FakeError, FakeHandlers, FakeModule, PreviewHost, PreviewSettings } from "./types.js";
 
@@ -59,16 +61,14 @@ export function envOf(s: PreviewSettings): MiniappEnv {
     platform: s.platform,
     capabilityLevel: s.level,
     insets: INSETS[s.platform],
+    // Level 3: how the page was opened (the panel's 「从应用码打开」); a container below it has no such field.
+    ...(s.level >= 3 ? { launch: s.launch.on ? { from: "voiceCode", action: s.launch.action, value: s.launch.value } : null } : {}),
   });
 }
 
 /** What reaches the server: these fail with 断网 and 未登录. */
-const SERVER = (method: string) => /^(recordings|records|settings|user)\./.test(method) || method === "audio.play";
+const SERVER = (method: string) => /^(recordings|records|settings|user|map|places)\./.test(method) || method === "audio.play";
 
-class Failure {
-  constructor(readonly error: FakeError) {}
-}
-const fail = (code: FakeError["code"], extra: Omit<FakeError, "code"> = {}) => new Failure({ code, ...extra });
 
 // ------------------------------------------------------------------ the fixtures' answers
 
@@ -219,7 +219,8 @@ export function install(custom: FakeModule = {}) {
     fixtures: { miniapps, recordings },
   };
   const own = custom.handlers ?? custom.default ?? {};
-  const fallback = defaults(ctx);
+  const three = level3(ctx, manifest, settings);
+  const fallback = { ...defaults(ctx), ...three.handlers };
   const handlers: FakeHandlers = { ...fallback, ...own };
 
   async function answer(method: string, params: unknown): Promise<{ result: unknown; note?: string }> {
@@ -276,6 +277,8 @@ export function install(custom: FakeModule = {}) {
   (window as unknown as { __tikpalFake: unknown }).__tikpalFake = {
     switches: custom.switches ?? {},
     envChanged: () => ctx.emit("env.changed", ctx.env()),
+    // The panel's level 3 buttons: a 声波码 scanned while open, the link lost a moment, off the route, arrived.
+    ...three.controls,
   };
 }
 

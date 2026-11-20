@@ -49,6 +49,17 @@ export type PreviewSettings = {
   slow: boolean;
   denied: string[];
   switches: Record<string, string>;
+  /** Level 3: opened from a 声波码 of the app's own action (env.launch), and what it carried; 又扫到 sends the same. */
+  launch: { on: boolean; action: number; value: number };
+  /** Level 3, device.link: Tikpal Voice near, none near, two near (a mark picks one), its key not the phone's, Bluetooth off. */
+  device: "near" | "none" | "several" | "key" | "off";
+  /** Level 3, trip: it starts; another 小程序's trip is on; location only while the app is open. And how fast it goes. */
+  trip: "ok" | "busy" | "background";
+  tripSpeed: 1 | 10;
+  /** Level 3, map.*: answers; the day's limit reached; Amap down; too far, no route, outside the mainland (routes). */
+  map: "ok" | "limit" | "down" | "far" | "noroute" | "outside";
+  /** Level 3, places.saved: home and work saved, home only, neither. */
+  places: "both" | "home" | "none";
 };
 
 /** One call as the panel lists it. */

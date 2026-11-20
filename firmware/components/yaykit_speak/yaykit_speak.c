@@ -31,6 +31,10 @@
 #define PACKETS     8192   // bytes of packets waiting to be decoded (~4 s at 16 kbit/s)
 #define STACK       (16 * 1024)  // libopus decodes on the stack (about 8 KB used); PSRAM (no flash writes here)
 #define IDLE_CLOSE_MS 5000
+#define OPEN_TRIES 3      // the codec's open, again after a failure (0.1.20: the I2C a flash erase held up), as the
+#define OPEN_RETRY_MS 20  // microphones' (yaykit_audio's YK_AUDIO_OPEN_TRIES)
+#define MIC_WAIT_MS 150  // yk_speak_mic(true) waits this long at most for the codec (it opens in about 10 to 30 ms)
+#define MIC_OPENING_MS 1000  // after yk_speak_mic(true) the idle close waits: the microphones open in tens of ms
 #define LEVELS      64     // per block, by index % LEVELS: enough for the blocks ahead at 5 ms
 // Measured on the Tikpal R1: the amplifier is mute for about 300 ms after GPIO43 goes high, then at full level
 // at once. Sound in that time is lost, so playback waits it out with silence; yk_speak_prepare() starts it early.
@@ -60,7 +64,10 @@ static struct {
     volatile bool cue;      // this utterance is a cue (yk_speak_cue_pcm): no voice loudness
     volatile bool reclaim;  // yk_speak_reclaim(): open and close the codec once, when idle
     volatile bool mic;      // yk_speak_mic(): the microphones are recording
-    SemaphoreHandle_t reclaim_lock;  // a reclaim's check and its codec open/close, against yk_speak_mic(true)
+    volatile int64_t mic_at_us;  // when yk_speak_mic(true) was last called
+    SemaphoreHandle_t reclaim_lock;  // the codec's opening for the microphones, a reclaim and the idle close, against
+                                     // yk_speak_mic(true)
+    SemaphoreHandle_t opened;        // given at each codec open: yk_speak_mic(true) waits for it
     volatile int volume;
     yk_mix_t *mix;
     yk_loud_t *loud;  // the voice's loudness (yk_loud.h), on the utterance before the mix
@@ -68,7 +75,10 @@ static struct {
     int16_t *chunk;   // the utterance's block
     int16_t *mono;    // the mixed block
     int16_t *out;     // stereo
-    uint8_t *packet;  // MAX_PACKET
+    uint8_t *packet;  // MAX_PACKET + 1: a packet as it comes out of `packets`, its line first
+    uint8_t *give;    // MAX_PACKET + 1: yk_speak_opus_wait's, its line put first (under packets_lock)
+    volatile int line_given;  // yk_speak_line(): the line of the packets given from now on, -1 not known
+    yk_gaps_t *gaps;  // PSRAM: where this utterance's lines and gaps fall (yk_speak_dsp.h, 0.1.18)
     int16_t *tone;    // the chime
     const uint8_t *clip;  // an Opus clip being played as the utterance (yk_speak_clip)
     size_t clip_bytes, clip_pos;
@@ -133,6 +143,37 @@ static size_t ring_read(int16_t *x, size_t n) {
     return n;
 }
 
+/** ring_read, and the ring's read count before it in *from (where these samples sit, for S.gaps). */
+static size_t ring_read_from(int16_t *x, size_t n, size_t *from) {
+    taskENTER_CRITICAL(&S.lock);
+    *from = S.ring.tail;
+    n = yk_ring_read(&S.ring, x, n);
+    taskEXIT_CRITICAL(&S.lock);
+    return n;
+}
+
+static size_t ring_written(void) {
+    taskENTER_CRITICAL(&S.lock);
+    const size_t n = S.ring.head;
+    taskEXIT_CRITICAL(&S.lock);
+    return n;
+}
+
+#define LINE_NONE 0xFF  // a packet given with no line (yk_speak_line not called, or -1)
+
+/** A gap is over (0.1.18 acceptance): development builds say where it fell, one line each. Between two lines (the next
+ *  one late), or inside one (its packets behind), or at the end (the end came late). The utterance's count and longest
+ *  go into yk_speak_stats (gaps, gap_max_ms) in any build. */
+static void gap_said(const yk_gap_t *g) {
+#if CONFIG_YAY_DEV
+    const char *where = g->next < 0 ? "end" : g->line < 0 ? "?" : g->next == g->line ? "inside" : "between";
+    printf("YK_SPEAK underrun at_ms=%d gap_ms=%d line=%d line_ms=%d next=%d where=%s\n", (int)g->at_ms, (int)g->gap_ms,
+           g->line, (int)g->line_ms, g->next, where);
+#else
+    (void)g;
+#endif
+}
+
 static void ring_clear(void) {
     taskENTER_CRITICAL(&S.lock);
     yk_ring_clear(&S.ring);
@@ -156,6 +197,9 @@ static void pa_linger(void) {
     taskEXIT_CRITICAL(&S.lock);
 }
 
+/** Microphones about to open (yk_speak_mic(true) less than MIC_OPENING_MS ago): no idle close under them. */
+static bool mic_opening(void) { return S.mic && now_us() - S.mic_at_us < MIC_OPENING_MS * 1000LL; }
+
 /** When the amplifier is (or will be) up, esp_timer us. */
 static int64_t warm_at(void) { return S.pa_on ? S.pa_on_us + PA_WARM_MS * 1000LL : INT64_MAX; }
 
@@ -165,13 +209,27 @@ static bool codec_open(void) {
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = S.rate, .channel = 2, .bits_per_sample = 16,
     };
-    if (esp_codec_dev_open(S.spk, &fs) != ESP_CODEC_DEV_OK) {
-        ESP_LOGE(TAG, "speaker open failed");
-        return false;
+    for (int tries = 1;; tries++) {
+        if (esp_codec_dev_open(S.spk, &fs) == ESP_CODEC_DEV_OK) {
+            if (tries > 1) {
+                S.st.open_retried++;
+                ESP_LOGW(TAG, "speaker opened on try %d", tries);
+            }
+            break;
+        }
+        esp_codec_dev_close(S.spk);  // what the failed open set up
+        if (tries >= OPEN_TRIES) {
+            S.st.open_gave_up++;
+            ESP_LOGE(TAG, "speaker open failed (%d tries)", tries);
+            return false;
+        }
+        ESP_LOGW(TAG, "speaker open failed (try %d of %d)", tries, OPEN_TRIES);
+        vTaskDelay(pdMS_TO_TICKS(OPEN_RETRY_MS));
     }
     codec_set_volume();
     S.open = true;
     S.st.open_ms = (uint32_t)((now_us() - t0) / 1000);
+    if (S.opened) xSemaphoreGive(S.opened);
     return true;
 }
 
@@ -227,11 +285,15 @@ static void decode_some(void) {
             len = clip_packet(S.packet);
         } else if (xMessageBufferIsEmpty(S.packets) == pdFALSE) {
             xSemaphoreTake(S.packets_lock, portMAX_DELAY);
-            len = xMessageBufferReceive(S.packets, S.packet, MAX_PACKET, 0);
+            len = xMessageBufferReceive(S.packets, S.packet, MAX_PACKET + 1, 0);
             xSemaphoreGive(S.packets_lock);
         }
         if (!len) break;
-        esp_audio_dec_in_raw_t raw = {.buffer = S.packet, .len = len};
+        // Given ones come with their line first (yk_speak_opus_wait); a clip's have none.
+        const bool given = !S.clip;
+        if (given && len < 2) continue;
+        const int line = given && S.packet[0] != LINE_NONE ? S.packet[0] : -1;
+        esp_audio_dec_in_raw_t raw = {.buffer = given ? S.packet + 1 : S.packet, .len = given ? len - 1 : len};
         esp_audio_dec_out_frame_t frame = {.buffer = (uint8_t *)S.pcm, .len = S.max_pcm * sizeof(int16_t)};
         esp_audio_dec_info_t info;
         const int64_t t0 = now_us();
@@ -244,6 +306,7 @@ static void decode_some(void) {
             S.st.decode_errors++;
             continue;
         }
+        yk_gaps_decoded(S.gaps, line, ring_written());
         ring_write(S.pcm, frame.decoded_size / sizeof(int16_t));
     }
 }
@@ -345,9 +408,14 @@ static const int16_t *utterance_block(int64_t heard_us) {
         S.faded_in = false;
         S.state = PLAYING;
     }
-    size_t n = ring_read(S.chunk, S.block);
+    size_t from;
+    size_t n = ring_read_from(S.chunk, S.block, &from);
+    const bool in = n < S.block && all_in();
+    yk_gap_t gap;
+    if (yk_gaps_block(S.gaps, from, n, n < S.block && !in, heard_us, (int)S.rate, &gap)) gap_said(&gap);
+    if (in && yk_gaps_end(S.gaps, heard_us, &gap)) gap_said(&gap);
     if (n < S.block) {
-        if (all_in()) {
+        if (in) {
             if (n) {
                 const size_t f = n > S.fade ? S.fade : n;
                 yk_fade(S.chunk + n - f, f, 1, 0);
@@ -411,6 +479,14 @@ static void speak_task(void *arg) {
             }
             const bool woken = ulTaskNotifyTake(pdTRUE, wait);
             if (wanted()) continue;
+            if (yk_speak_open_for_mic(S.open, S.mic)) {
+                // Speaker first, then the microphones (yk_speak_mic): the transmit side keeps the speaker's format and
+                // its DMA buffers their size. The amplifier stays off: nothing is heard.
+                xSemaphoreTake(S.reclaim_lock, portMAX_DELAY);
+                if (yk_speak_open_for_mic(S.open, S.mic) && codec_open()) S.st.mic_opens++;
+                xSemaphoreGive(S.reclaim_lock);
+                continue;
+            }
             if (S.reclaim) {
                 // The microphones left the shared I2S in their format: the speaker's again (amplifier off: silent).
                 // Not while they record again (checked and done under the lock yk_speak_mic takes).
@@ -420,8 +496,13 @@ static void speak_task(void *arg) {
                 xSemaphoreGive(S.reclaim_lock);
                 continue;
             }
-            if (S.pa_off_us && now_us() >= S.pa_off_us) pa(false);
-            else if (!woken && !S.pa_on && S.open) codec_close();
+            if (S.pa_off_us && now_us() >= S.pa_off_us) {
+                pa(false);
+            } else if (yk_speak_may_close(S.open, woken, S.pa_on, mic_opening())) {
+                xSemaphoreTake(S.reclaim_lock, portMAX_DELAY);  // not as yk_speak_mic(true) finds it open
+                if (yk_speak_may_close(S.open, woken, S.pa_on, mic_opening())) codec_close();
+                xSemaphoreGive(S.reclaim_lock);
+            }
             continue;
         }
         if (S.state == DRAINING && blocks_heard() >= S.drain_at) S.state = IDLE;
@@ -498,7 +579,9 @@ esp_err_t yk_speak_init_cfg(const yk_speak_config_t *cfg) {
     S.chunk = heap_caps_malloc(MAX_BLOCK * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     S.mono = heap_caps_malloc(MAX_BLOCK * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     S.out = heap_caps_malloc(MAX_BLOCK * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    S.packet = heap_caps_malloc(MAX_PACKET, MALLOC_CAP_SPIRAM);
+    S.packet = heap_caps_malloc(MAX_PACKET + 1, MALLOC_CAP_SPIRAM);
+    S.give = heap_caps_malloc(MAX_PACKET + 1, MALLOC_CAP_SPIRAM);
+    S.gaps = heap_caps_calloc(1, sizeof(yk_gaps_t), MALLOC_CAP_SPIRAM);
     S.tone = heap_caps_malloc(rate / 5 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     S.mix = heap_caps_calloc(1, sizeof(yk_mix_t), MALLOC_CAP_SPIRAM);
     S.loud = heap_caps_calloc(1, sizeof(yk_loud_t), MALLOC_CAP_SPIRAM);
@@ -506,9 +589,13 @@ esp_err_t yk_speak_init_cfg(const yk_speak_config_t *cfg) {
     S.packets_lock = xSemaphoreCreateMutex();
     S.mix_lock = xSemaphoreCreateRecursiveMutex();
     S.reclaim_lock = xSemaphoreCreateMutex();
-    if (!S.packets_lock || !S.mix_lock || !S.reclaim_lock) return ESP_ERR_NO_MEM;
-    if (!ring || !S.pcm || !S.chunk || !S.mono || !S.out || !S.packet || !S.tone || !S.mix || !S.loud || !S.packets)
+    S.opened = xSemaphoreCreateBinary();
+    if (!S.packets_lock || !S.mix_lock || !S.reclaim_lock || !S.opened) return ESP_ERR_NO_MEM;
+    if (!ring || !S.pcm || !S.chunk || !S.mono || !S.out || !S.packet || !S.give || !S.gaps || !S.tone || !S.mix || !S.loud ||
+        !S.packets)
         return ESP_ERR_NO_MEM;
+    yk_gaps_reset(S.gaps);
+    S.line_given = -1;
     yk_ring_init(&S.ring, ring, S.ring_cap);
     yk_mix_init(S.mix, rate, board_speaker()->ceiling_dbfs);  // yk_loud gets its settings at the first begin()
     esp_opus_dec_cfg_t oc = ESP_OPUS_DEC_CONFIG_DEFAULT();
@@ -542,9 +629,26 @@ void yk_speak_mic(bool recording) {
         S.mic = recording;
         return;
     }
-    xSemaphoreTake(S.reclaim_lock, portMAX_DELAY);  // a reclaim going on finishes first (about 20 ms)
+    xSemaphoreTake(S.opened, 0);  // an open before this one does not count
+    xSemaphoreTake(S.reclaim_lock, portMAX_DELAY);  // a reclaim or a close going on finishes first (about 20 ms)
     S.mic = recording;
+    if (recording) S.mic_at_us = now_us();  // no idle close for MIC_OPENING_MS: they open in it
+    const bool open_first = yk_speak_open_for_mic(S.open, recording);
     xSemaphoreGive(S.reclaim_lock);
+    if (!open_first || !S.task) return;
+    // Speaker first, then the microphones: the speaker's task opens the codec (amplifier off), the microphones open
+    // after it. Not waited for longer than MIC_WAIT_MS: then they open as before, with the bigger buffers.
+    const int64_t t0 = now_us();
+    const TickType_t until = xTaskGetTickCount() + pdMS_TO_TICKS(MIC_WAIT_MS);
+    xTaskNotifyGive(S.task);
+    for (TickType_t now = xTaskGetTickCount(); !S.open && (int32_t)(until - now) > 0; now = xTaskGetTickCount())
+        xSemaphoreTake(S.opened, until - now);
+    const uint32_t ms = (uint32_t)((now_us() - t0) / 1000);
+    if (ms > S.st.mic_wait_max_ms) S.st.mic_wait_max_ms = ms;
+    if (!S.open) {
+        S.st.mic_late++;
+        ESP_LOGW(TAG, "speaker not open for the microphones after %u ms", (unsigned)ms);
+    }
 }
 
 void yk_speak_cancel(void) {
@@ -575,6 +679,7 @@ static esp_err_t begin(const uint8_t *clip, size_t clip_bytes, bool cue) {
     S.started = false;
     S.stop = false;
     S.t_begin = now_us();
+    yk_gaps_reset(S.gaps);  // and the count goes with it: yk_speak_stats says this utterance's
     S.cue = cue;
     if (!cue) {  // a cue leaves the last utterance's measurements and its kept copy alone
         S.u_sum = 0;
@@ -603,18 +708,24 @@ esp_err_t yk_speak_clip(const yk_clip_t *clip) {
     return begin(clip->data, clip->bytes, false);
 }
 
+void yk_speak_line(int line) { S.line_given = line; }
+
 esp_err_t yk_speak_opus_wait(const uint8_t *packet, size_t bytes, int timeout_ms) {
     if (!S.task || S.state == IDLE || S.clip) return ESP_ERR_INVALID_STATE;
     if (!packet || !bytes || bytes > MAX_PACKET) return ESP_ERR_INVALID_ARG;
     // Never a blocked send: begin() and stop() reset the buffer, which FreeRTOS forbids with a sender waiting.
     const int64_t give_up = now_us() + (int64_t)timeout_ms * 1000;
+    const int line = S.line_given;
     for (;;) {
         xSemaphoreTake(S.packets_lock, portMAX_DELAY);
-        const size_t sent = xMessageBufferSpacesAvailable(S.packets) >= bytes + sizeof(size_t)
-                                ? xMessageBufferSend(S.packets, packet, bytes, 0)
-                                : 0;
+        size_t sent = 0;
+        if (xMessageBufferSpacesAvailable(S.packets) >= bytes + 1 + sizeof(size_t)) {
+            S.give[0] = line >= 0 && line < LINE_NONE ? (uint8_t)line : LINE_NONE;  // the line goes with the packet
+            memcpy(S.give + 1, packet, bytes);
+            sent = xMessageBufferSend(S.packets, S.give, bytes + 1, 0);
+        }
         xSemaphoreGive(S.packets_lock);
-        if (sent == bytes) {
+        if (sent == bytes + 1) {
             xTaskNotifyGive(S.task);
             return ESP_OK;
         }
@@ -817,6 +928,7 @@ void yk_speak_stats(yk_speak_stats_t *out) {
     if (S.mix) out->limited = S.mix->limited;
     out->utter_peak_db10 = S.u_peak ? (int16_t)lrint(200 * log10(S.u_peak / 32768.0)) : 0;
     out->utter_rms_db10 = S.u_n ? (int16_t)lrint(100 * log10((double)S.u_sum / S.u_n / (32768.0 * 32768.0))) : 0;
+    if (S.gaps) out->gaps = S.gaps->gaps, out->gap_max_ms = S.gaps->gap_max_ms;
 }
 
 // ---------------------------------------------------------------- console
@@ -829,13 +941,15 @@ static void print_stats(void) {
     printf("SPEAK_STAT utterances=%u first_ms=%u warm_ms=%u open_ms=%u packets=%u errors=%u decode_us=%u "
            "decode_max_us=%u underruns=%u played_ms=%u stack_free=%u volume=%d rate=%u block_ms=%u sfx_started=%u "
            "sfx_dropped=%u sfx_max=%u mix_us=%u mix_max_us=%u late_blocks=%u limited=%u latency_ms=%d codec_vol=%d "
-           "utter_peak_db=%.1f utter_rms_db=%.1f loud_limited=%u muted=%d\n",
+           "utter_peak_db=%.1f utter_rms_db=%.1f loud_limited=%u muted=%d mic_opens=%u mic_wait_max_ms=%u mic_late=%u "
+           "open=%d\n",
            (unsigned)s.utterances, (unsigned)s.first_ms, (unsigned)s.warm_ms, (unsigned)s.open_ms, (unsigned)s.packets,
            (unsigned)s.decode_errors, (unsigned)s.decode_us, (unsigned)s.decode_max_us, (unsigned)s.underruns,
            (unsigned)s.played_ms, (unsigned)s.stack_free, S.volume, (unsigned)s.rate, (unsigned)s.block_ms,
            (unsigned)s.sfx_started, (unsigned)s.sfx_dropped, (unsigned)s.sfx_max, (unsigned)s.mix_us,
            (unsigned)s.mix_max_us, (unsigned)s.late_blocks, (unsigned)s.limited, yk_speak_latency_ms(), codec_volume(),
-           s.utter_peak_db10 / 10.0, s.utter_rms_db10 / 10.0, S.loud ? (unsigned)S.loud->limited : 0, muted);
+           s.utter_peak_db10 / 10.0, s.utter_rms_db10 / 10.0, S.loud ? (unsigned)S.loud->limited : 0, muted,
+           (unsigned)s.mic_opens, (unsigned)s.mic_wait_max_ms, (unsigned)s.mic_late, S.open);
 }
 
 #if CONFIG_YAY_DEV
@@ -1034,6 +1148,14 @@ static int speak_cmd(int argc, char **argv) {
         print_stats();
         return 0;
     }
+    if (!strcmp(sub, "mic") && argc > 2) {
+        // speak mic 1|0: what the main firmware does around its microphones (yk_speak_mic), to record with the
+        // speaker's codec open (amplifier off) or closed: `speak mic 1`, then `audio rec <ms> raw`, then `speak mic 0`.
+        const int64_t t0 = now_us();
+        yk_speak_mic(atoi(argv[2]) != 0);
+        printf("SPEAK_MIC %d open=%d ms=%lld\n", S.mic, S.open, (long long)((now_us() - t0) / 1000));
+        return 0;
+    }
     if (!strcmp(sub, "chime") && argc > 2) {
         const int64_t t0 = now_us();
         const esp_err_t err = yk_speak_chime(!strcmp(argv[2], "end") ? YK_CHIME_END : YK_CHIME_START);
@@ -1073,7 +1195,7 @@ static int speak_cmd(int argc, char **argv) {
 esp_err_t yk_speak_register_console(void) {
     const esp_console_cmd_t cmd = {
         .command = "speak",
-        .help = "speak stat | sfx <n> [gap_ms] | chime start|end | vol <0-10> | hold 0|1 | clock | prepare | stop"
+        .help = "speak stat | sfx <n> [gap_ms] | chime start|end | vol <0-10> | hold 0|1 | mic 0|1 | clock | prepare | stop"
 #if CONFIG_YAY_DEV
                 " | tone <hz> <ms> [dBFS] [after_ms] | codec <0-100>|off | "
                 "loud <boost_db> [ceiling] [hp_hz]|off|default | keep | dump"

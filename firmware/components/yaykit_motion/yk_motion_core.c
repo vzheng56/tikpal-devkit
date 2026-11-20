@@ -129,7 +129,9 @@ bool ykm_holder(ykm_core_t *c, int64_t end_ms, int window_ms, float *angle, floa
     }
     if (!valid) {
         if (!c->holder_known) return false;
-        c->holder_conf *= 0.5f;
+        // Nobody tilted it towards themselves in the window: the last direction, half as sure. Once for the whole
+        // stretch, not on every call (an app asking every frame drove it to 0 in 0.2 s).
+        if (!c->holder_stale) c->holder_conf *= 0.5f, c->holder_stale = true;
         *angle = c->holder_angle;
         *conf = c->holder_conf;
         return true;
@@ -138,6 +140,7 @@ bool ykm_holder(ykm_core_t *c, int64_t end_ms, int window_ms, float *angle, floa
     c->holder_angle = angle_of(sx, sy);
     c->holder_conf = r * (float)valid / (float)all;
     c->holder_known = true;
+    c->holder_stale = false;
     *angle = c->holder_angle;
     *conf = c->holder_conf;
     return true;
@@ -152,6 +155,10 @@ int ykm_feed(ykm_core_t *c, const float acc[3], const float gyr[3], int64_t t_us
     ykm_map(&c->cal, gyr, w);
     for (int i = 0; i < 3; i++) f[i] -= c->cal.acc_bias[i], w[i] -= c->cal.gyro_bias[i];
     const float fn = norm3(f);
+    // Not started until a sample reads about 1 g: before it there is nothing to start the estimate (and the rest a
+    // pick-up is measured from) on. A reading of all zeros (the sensor switched on, no sample yet) once started the
+    // estimate lying flat glass up: standing upright it then turned 90 degrees in the first 300 ms, a pick-up.
+    if (!c->started && (fn < YKM_START_G_MIN || fn > YKM_START_G_MAX)) return 0;
     if (!c->started) {
         c->started = true;
         const float k = fn > 0.1f ? -1.0f / fn : 0;
@@ -247,7 +254,8 @@ int ykm_feed(ykm_core_t *c, const float acc[3], const float gyr[3], int64_t t_us
         memcpy(c->rest_g, g, sizeof(c->rest_g));
         c->lift_cond_since_ms = 0;
     }
-    const bool armed = !c->was_moved && t - c->last_lift_ms >= th->lift_gap_ms && up_z > -0.5f;
+    if (c->still) c->rested = true;
+    const bool armed = c->rested && !c->was_moved && t - c->last_lift_ms >= th->lift_gap_ms && up_z > -0.5f;
     if (armed && !c->still) {
         const bool strong = lin_n > th->lift_g || w_n > th->lift_dps;
         if (!strong) c->lift_cond_since_ms = 0;

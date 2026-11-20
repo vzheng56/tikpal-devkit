@@ -32,6 +32,7 @@ typedef struct {
     const char *name;   // 「Wi-Fi」; NULL: no row (the rows under it move up)
     const char *value;  // one line, cut with … at a character
     bool problem;       // the value in coral: it is wrong (not added, not connected); ink otherwise
+    bool tap;           // a tap on the row is reported (yk_sheet_on_row; 0.1.20: an app's 「音量」 opens the volume dial)
 } yk_sheet_row_t;
 
 typedef struct {
@@ -42,6 +43,9 @@ typedef struct {
     const char *line;                   // ... the line under it
     const char *button;                 // the button's words, under the rows or the line; NULL: no button
     const char *hint;                   // the bottom line (「上滑收起」); NULL: none
+    const char *button2;                // a second button under the first (or under the rows or the line), drawn as the
+                                        // first; the panel grows down for it. NULL: none, the sheet as ever (Yay's
+                                        // 极简模式 / 退出极简模式, 0.1.20; yk_sheet_on_button2)
 } yk_sheet_view_t;
 
 typedef struct yk_sheet yk_sheet_t;
@@ -51,6 +55,8 @@ typedef struct yk_sheet yk_sheet_t;
  *  (either NULL: nothing). Deleted with its parent, or by yk_sheet_delete(). NULL without memory. */
 yk_sheet_t *yk_sheet_create(lv_obj_t *parent, lv_event_cb_t on_dim, void *dim_ctx, lv_event_cb_t on_button,
                             void *button_ctx);
+/** A tap on the second button (yk_sheet_view_t.button2) sends `on_button2` LV_EVENT_CLICKED with `ctx`. */
+void yk_sheet_on_button2(yk_sheet_t *sheet, lv_event_cb_t on_button2, void *ctx);
 /** Its layer, to show, hide or move (lv_obj_set_hidden). */
 lv_obj_t *yk_sheet_obj(const yk_sheet_t *sheet);
 /** Says `view`; only what changed is drawn again. The strings are copied (LVGL's labels). */
@@ -59,6 +65,12 @@ void yk_sheet_fill(yk_sheet_t *sheet, const yk_sheet_view_t *view);
  *  (LV_EVENT_GESTURE, `ctx` its user data; lv_indev_get_gesture_dir() says which way). For a parent that is an app's
  *  screen, whose own swipes are its own (yaykit_app). */
 void yk_sheet_take_swipes(yk_sheet_t *sheet, lv_event_cb_t on_swipe, void *ctx);
+/** A tap on a row whose `tap` is set: `row` is its index in the view's `row` (not where it shows). */
+typedef void (*yk_sheet_row_cb_t)(int row, void *ctx);
+/** From now on the rows with `tap` set take a tap (yk_ui_tap_only's: down and up on the row, the finger still) and
+ *  report it to `cb`, the row lit while the finger is on it; a tap elsewhere on the panel is still nothing. Without
+ *  this, or for rows without `tap`, rows are only words, as before (Yay 0.1.20, F-1077). */
+void yk_sheet_on_row(yk_sheet_t *sheet, yk_sheet_row_cb_t cb, void *ctx);
 /** Deletes its objects and itself (by the next LVGL tick: safe from its own events). */
 void yk_sheet_delete(yk_sheet_t *sheet);
 

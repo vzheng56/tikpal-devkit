@@ -8,6 +8,7 @@
 
 #include "yk_apps_logic.h"
 #include "yk_round.h"
+#include "yk_words.h"
 
 // Ring k's corners, anticlockwise from the right (screen: y down), and the way from each corner to the next.
 static const int8_t CORNER[6][2] = {{1, 0}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}, {0, 1}};
@@ -62,8 +63,8 @@ float yk_more_lit(float d) {
 }
 
 bool yk_more_shown(float x, float y) {
-    const float dx = x - YK_CX, dy = y - YK_CY;
-    return y >= YK_MORE_TOP && y <= YK_MORE_BOTTOM && dx * dx + dy * dy <= (float)YK_MORE_SHOW_R * YK_MORE_SHOW_R;
+    if (y < YK_MORE_TOP) return false;
+    return hypotf(x - YK_CX, y - YK_CY) + yk_more_size(yk_more_from_middle(x, y)) / 2 <= (float)YK_R_BAND;
 }
 
 void yk_more_offset_for(int i, float *ox, float *oy) {
@@ -136,7 +137,8 @@ int yk_more_line_room(int y, int line_h) {
     return w < YK_MORE_LINE_W ? w : YK_MORE_LINE_W;
 }
 
-static const float CLASS_DISC[YK_MORE_GLYPHS] = {100, 86, 72, 63, 54, 49, 44, 40};
+// At rest: 0, 2, 4 and 7 (YK_MORE_SIZE_0, _1, _2, _FAR); the others half way between those.
+static const float CLASS_DISC[YK_MORE_GLYPHS] = {116, 98, 80, 70, 60, 55, 50, 46};
 
 int yk_more_size_class(float size) {
     int best = 0;
@@ -186,35 +188,31 @@ int yk_more_pick(const yk_apps_slot_t *installed, int n, const char *const cache
 }
 
 const char *yk_more_state_text(yk_more_where_t where, bool current, bool preview, bool english) {
-    if (current) return english ? "In use" : "正在用";
-    if (where == YK_MORE_SOON) return english ? "Coming soon" : "即将推出";
-    if (preview) {
-        switch (where) {
-        case YK_MORE_SLOT: return english ? "Preview · tap to open" : "预览版 · 点一下打开";
-        case YK_MORE_CACHE: return english ? "Preview · downloaded" : "预览版 · 下载过 · 几秒就好";
-        default: return english ? "Preview · ~20 s download" : "预览版 · 要下载 · 约二十秒";
-        }
-    }
+    (void)preview;  // the screen says nothing of the channel (Yay 0.1.18, fix 5): only the store tells them apart
+    if (current) return yk_word_in(english, YK_STR_YAYKIT_MORE_IN_USE);
+    if (where == YK_MORE_SOON) return yk_word_in(english, YK_STR_YAYKIT_MORE_COMING_SOON);
     switch (where) {
-    case YK_MORE_SLOT: return english ? "Installed · tap to open" : "已装好 · 点一下打开";
-    case YK_MORE_CACHE: return english ? "Downloaded · seconds" : "下载过 · 几秒就好";
-    default: return english ? "To download · ~20 s" : "要下载 · 大约二十秒";
+    case YK_MORE_SLOT: return yk_word_in(english, YK_STR_YAYKIT_MORE_INSTALLED_TAP);
+    case YK_MORE_CACHE: return yk_word_in(english, YK_STR_YAYKIT_MORE_SECONDS);
+    default: return yk_word_in(english, YK_STR_YAYKIT_MORE_ABOUT20);
     }
 }
 
 const char *yk_more_eta_text(int eta_s, bool english, char *out, size_t size) {
     if (!size) return out;
     if (eta_s <= 10) {
-        snprintf(out, size, english ? "~10 s" : "约 10 秒");
+        snprintf(out, size, "%s", yk_word_in(english, YK_STR_YAYKIT_MORE_ETA10));
     } else if (eta_s <= 55) {
         const int tens = (eta_s + 9) / 10 * 10;  // up to the next ten; 51–55 still 50 (from 56 a minute)
-        snprintf(out, size, english ? "~%d s" : "约 %d 秒", tens > 50 ? 50 : tens);
+        char n[12];
+        yk_wordf_in(english, out, size, YK_STR_YAYKIT_MORE_ETA_SECONDS, yk_words_num(n, tens > 50 ? 50 : tens));
     } else if (eta_s < 90) {
-        snprintf(out, size, english ? "~1 min" : "约 1 分钟");
+        snprintf(out, size, "%s", yk_word_in(english, YK_STR_YAYKIT_MORE_ETA1MIN));
     } else if (eta_s < 570) {
-        snprintf(out, size, english ? "~%d min" : "约 %d 分钟", (eta_s + 30) / 60);  // the nearest minute
+        char n[12];
+        yk_wordf_in(english, out, size, YK_STR_YAYKIT_MORE_ETA_MINUTES, yk_words_num(n, (eta_s + 30) / 60));  // the nearest minute
     } else {
-        snprintf(out, size, english ? "10+ min" : "10 分钟以上");
+        snprintf(out, size, "%s", yk_word_in(english, YK_STR_YAYKIT_MORE_ETA10PLUS));
     }
     return out;
 }
@@ -236,14 +234,10 @@ const char *yk_more_state_line(yk_more_where_t where, bool current, bool preview
     if (!size) return out;
     if (!current && where == YK_MORE_CACHE) {  // only the device's own copying (Yay 0.1.5's delivery 3): no network
         char what[24];
-        // Its size not known; or a preview's 10 分钟以上, 228 px (copying never takes that long: 137 MB)
-        if (eta_s <= 0 || (preview && eta_s >= 570))
-            snprintf(out, size, "%s", preview ? (english ? "Preview · downloaded" : "预览版 · 下载过")
-                                              : (english ? "Downloaded" : "下载过"));
-        else if (preview)  // Preview · downloaded · ~20 s is 239 px of the 222
-            snprintf(out, size, english ? "Preview · %s" : "预览版 · 下载过 · %s", yk_more_eta_text(eta_s, english, what, sizeof(what)));
+        if (eta_s <= 0)  // its size not known
+            snprintf(out, size, "%s", yk_word_in(english, YK_STR_YAYKIT_INSTALL_QUICK));
         else
-            snprintf(out, size, english ? "Downloaded · %s" : "下载过 · %s", yk_more_eta_text(eta_s, english, what, sizeof(what)));
+            snprintf(out, size, "%s", yk_more_eta_text(eta_s, english, what, sizeof(what)));
         return out;
     }
     if (current || where != YK_MORE_CLOUD) {
@@ -251,8 +245,7 @@ const char *yk_more_state_line(yk_more_where_t where, bool current, bool preview
         return out;
     }
     if (eta_s <= 0 && !bytes) {  // no list and no catalog: not even its size
-        snprintf(out, size, "%s", preview ? (english ? "Preview · to download" : "预览版 · 要下载")
-                                          : (english ? "To download" : "要下载"));
+        snprintf(out, size, "%s", yk_word_in(english, YK_STR_YAYKIT_MORE_TAKES_MOMENT));
         return out;
     }
     char what[24];
@@ -260,10 +253,10 @@ const char *yk_more_state_line(yk_more_where_t where, bool current, bool preview
         yk_more_eta_text(eta_s, english, what, sizeof(what));
     else
         yk_more_size_text(bytes, what, sizeof(what));
-    if (preview)
-        snprintf(out, size, english ? "Preview · %s download" : "预览版 · %s", what);
-    else
-        snprintf(out, size, english ? "To download · %s" : "要下载 · %s", what);
+    if (eta_s > 0)
+        snprintf(out, size, "%s", what);
+    else  // its size alone says nothing by itself
+        yk_wordf_in(english, out, size, YK_STR_YAYKIT_MORE_TAKES_MOMENT_ETA, what);
     return out;
 }
 
@@ -274,8 +267,9 @@ float yk_more_shake(int t_ms) {
 }
 
 int yk_more_icon_px(int size_class) {
-    static const int PX[YK_MORE_GLYPHS] = {84, 72, 61, 53, 45, 41, 37, 34};
-    return PX[size_class < 0 ? 0 : size_class >= YK_MORE_GLYPHS ? YK_MORE_GLYPHS - 1 : size_class];
+    const int c = size_class < 0 ? 0 : size_class >= YK_MORE_GLYPHS ? YK_MORE_GLYPHS - 1 : size_class;
+    const int px = (int)lroundf(CLASS_DISC[c] * YK_CATALOG_ICON / (2 * YK_MARK_DISC_R));
+    return px > YK_MORE_ICON_MAX ? YK_MORE_ICON_MAX : px;
 }
 
 /** One line of `sn` values (every `ss`-th of src) as `dn` (every `ds`-th of dst): the area each covers, or bilinear. */
@@ -317,4 +311,11 @@ void yk_more_icon_scale(const uint8_t *src, int n, uint8_t *dst, float *tmp) {
             dst[y * n + x] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
         }
     }
+}
+
+uint8_t yk_more_fade(uint8_t v, uint8_t target, int dt_ms) {
+    if (dt_ms <= 0 || v == target) return v;
+    const int step = dt_ms >= YK_MORE_FADE_MS ? 255 : (255 * dt_ms + YK_MORE_FADE_MS - 1) / YK_MORE_FADE_MS;
+    if (v < target) return (uint8_t)(target - v <= step ? target : v + step);
+    return (uint8_t)(v - target <= step ? target : v - step);
 }

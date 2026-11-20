@@ -40,6 +40,15 @@ esp_err_t yk_audio_start(const yk_audio_config_t *cfg);
 void yk_audio_stop(void);
 bool yk_audio_running(void);
 
+/** The microphones' open is tried again after a failure, YK_AUDIO_OPEN_TRIES in all, YK_AUDIO_OPEN_RETRY_MS apart (0.1.20:
+ *  a flash erase or write disables the cache and can hold the ES7210's I2C read past its timeout). */
+#define YK_AUDIO_OPEN_TRIES    3
+#define YK_AUDIO_OPEN_RETRY_MS 20
+/** The last yk_audio_start()'s microphones never opened (every try failed): nothing was captured, and nothing will be
+ *  until the next start. False before the open has given up, and from the next yk_audio_start(). For whoever started
+ *  them: what this press would have said is nothing (Yay: not sent, 没听清; 极简模式: 没录上). */
+bool yk_audio_open_failed(void);
+
 /** What was captured since yk_audio_start(), at most the last 0.5 s, oldest first. Returns the samples copied. */
 size_t yk_audio_preroll(int16_t *out, size_t max_samples);
 
@@ -55,6 +64,11 @@ typedef struct {
     uint32_t fe_us, ns_us, vad_us, finish_us;  // average per 20 ms of audio
     uint32_t busy_max_us;     // the longest 20 ms worth of processing
     uint32_t open_ms;         // opening the microphones in the last start
+    // 0.1.20: the open is tried again after a failure (YK_AUDIO_OPEN_TRIES)
+    uint8_t open_tries;       // in the last start: 1 as ever; 0 not tried yet (or the key went up before)
+    bool open_failed;         // the last start's open gave up (yk_audio_open_failed)
+    uint32_t open_retried;    // since the start of the firmware: opens that took more than one try
+    uint32_t open_gave_up;    // ... and that never opened
 } yk_audio_stats_t;
 void yk_audio_stats(yk_audio_stats_t *out);
 

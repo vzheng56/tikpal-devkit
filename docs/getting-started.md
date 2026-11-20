@@ -1,12 +1,12 @@
-# 上手：从零到第一次写进圆屏
+# 上手：从零到第一次写进 Tikpal Voice
 
 大约半小时，大半是等 ESP-IDF 下载。
 
 ## 要准备的
 
 - 一台 Mac（Apple 芯片或 Intel 都行），装了 Xcode 命令行工具（没装的话 `./kit setup` 会弹窗让你装）。
-- 一台测试圆屏，装着 Tikpal 主固件（正式版就行），连着 Wi-Fi。
-- 一个 Tikpal 账号：自己注册，在 Tikpal App 里扫码绑你的测试圆屏，再把账号**私下**告诉我们（不要写在公开的单子里）。我们把它加进内部测试名单，给你开发用的点数。
+- 一台测试用的 Tikpal Voice，装着 Tikpal 主固件（正式版就行），连着 Wi-Fi。
+- 一个 Tikpal 账号：自己注册，在 Tikpal App 里扫码绑你测试用的 Tikpal Voice，再把账号**私下**告诉我们（不要写在公开的单子里）。我们把它加进内部测试名单，给你开发用的点数。
 - 一根能传数据的 USB-C 线。
 - 你自己的 GitHub 账号。
 
@@ -27,7 +27,7 @@ cd yaykit-devkit
 cd my-timer
 ```
 
-`my-timer/` 是一个新的 git 仓库，里面是模板（一个计数器：短按加一，按住清零），已经改好了名字：
+`my-timer/` 是一个新的 git 仓库，里面是模板（一个计数器：点屏幕加一，按住侧键清零），已经改好了名字：
 
 | 文件 | 是什么 |
 |---|---|
@@ -39,7 +39,7 @@ cd my-timer
 | `kit` | 这个应用的 `kit` 命令 |
 | `CLAUDE.md`、`.claude/skills/tikpal-app/` | 给 Claude Code 看的规矩和做法 |
 
-在 GitHub 上建一个空仓库，推上去。仓库可以公开；私有的话，把 `vzheng56` 加成协作者，我们审核时要读它：
+在 GitHub 上建一个空仓库，推上去。仓库要公开，审核时我们按提交号拉代码重编；私有仓库现在编不了（加协作者也不行），以后改成用交审时上传的源码重编再说：
 
 ```bash
 git remote add origin git@github.com:<你>/my-timer.git
@@ -56,19 +56,20 @@ git push -u origin main
 
 第一次要几分钟（还要从乐鑫的组件库下载 LVGL 这些依赖），之后只编改了的。编完会跑主机测试，并检查镜像不超过 3.5 MB。
 
-## 4. 写进圆屏
+## 4. 写进 Tikpal Voice
 
-用 USB 线把圆屏接到 Mac 上（圆屏开着就行，不用按任何键）：
+用 USB 线把 Tikpal Voice 接到 Mac 上（开着就行，不用按任何键）：
 
 ```bash
 ./kit install --slot 2
 ```
 
-它先让圆屏进恢复器，把镜像写进位置 2，然后直接打开。位置 1 是 Tikpal 主固件，碰不到；也不擦别的。位置 2 原来有应用的会被换掉（以后可以从主固件的「我的应用」再装回来）。
+它先让 Tikpal Voice 进恢复器，把镜像写进位置 2，然后直接打开。位置 1 是 Tikpal 主固件，碰不到；也不擦别的。位置 2 原来有应用的会被换掉（以后可以从主固件的「我的应用」再装回来）。
 
 打开以后：
 
-- **短按**侧键加一，**按住**清零；
+- **点**屏幕加一，**按住**侧键清零；
+- **短按**侧键息屏，再短按亮屏（侧键的意思每个应用都一样，见[设计规范](round-screen-design.md)第 6 节）；
 - **双击**侧键开应用环，点中间回主固件；
 - 回到主固件以后，双击开应用环也能看到它，点它再打开。
 
@@ -78,13 +79,13 @@ git push -u origin main
 ./kit logs 60       # 60 秒的日志（MY_TIMER_TAP、YAY_APP …）
 ./kit snap          # 截图存成 snap.png
 ./kit heap          # 内存；底线读 ./kit info 的 heap.internalMinSinceReady：不低于 40,000 字节
-./kit info          # 圆屏上现在跑的是什么、三个位置各装着什么
+./kit info          # Tikpal Voice 上现在跑的是什么、三个位置各装着什么
 ```
 
 ## 6. 接下来
 
 - 读[应用开发指南](app-guide.md)：组件怎么用、侧键归谁、怎么回到主固件、怎么给伙伴留结果。
-- 读[圆屏设计规范](round-screen-design.md)：颜色、字号、安全圆、提示怎么写。
+- 读[Tikpal Voice 应用设计规范](round-screen-design.md)：颜色、字号、安全圆、提示怎么写。
 - 把 `counter.c` 换成你的逻辑，把界面换成你的。
 - 做完先 `./kit build --release` 再 `./kit check`，全过了照[从想法到上架](from-idea-to-store.md)在开发者平台提交。
 
@@ -93,8 +94,8 @@ git push -u origin main
 | 现象 | 怎么办 |
 |---|---|
 | `没找到 ESP-IDF` | 在开发包目录跑 `./kit setup` |
-| `install` 说找不到圆屏 | 换一根能传数据的线；`ls /dev/cu.usbmodem*` 要能看到它 |
-| `install` 卡住、圆屏黑屏 | 拔线再插；圆屏重启以后照常回到主固件。不要按住侧键插线（那会进下载模式） |
+| `install` 说找不到 Tikpal Voice | 换一根能传数据的线；`ls /dev/cu.usbmodem*` 要能看到它 |
+| `install` 卡住、Tikpal Voice 黑屏 | 拔线再插；它重启以后照常回到主固件。不要按住侧键插线（那会进下载模式） |
 | 编译说依赖锁变了 | `dependencies.lock` 跟着开发包走，别手改；换开发包版本以后重编一次再提交 |
 | 我 Mac 上编的 SHA-256 和应用仓库 CI 编的、审核重编的对不上 | 正常：Mac 上编的和 Linux（GitHub 的机器、我们审核重编的地方）编的永远差 60 几个字节：乐鑫两个平台的工具链在调试信息里带的路径不一样，ELF 哈希和它带出来的两处校验跟着变，代码和数据一字不差。交审核时用 `./kit submit --ci-sha <CI 里的那一串>` 带上；不带，我们就拿你 Mac 上编的比，只许差这几处。要确认只是这个差别：`python3 devkit/tools/compare_images.py <Mac 上的 .bin> <CI 产物里的 .bin>`，说「代码相同」就对了 |
 | CI 编的 SHA-256 和审核重编的对不上 | 有没提交、没推上去的改动，或者用了别的开发包版本 |

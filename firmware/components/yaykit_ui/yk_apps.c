@@ -1,6 +1,8 @@
-// The app ring (yk_apps.h): one opaque full-screen object on top of the screen draws the discs, icons, marks and
-// names itself (LV_EVENT_DRAW_MAIN), from the layout and poses of yk_apps_logic.c; Yay in the middle is yk_yay. A
-// frame of the motion repaints only the boxes of what moved; LVGL skips whatever the paper covers.
+// The app ring (yk_apps.h): one opaque full-screen object on top of the screen draws the discs, icons, marks and the
+// middle's words itself (LV_EVENT_DRAW_MAIN), from the layout and poses of yk_apps_logic.c (its sizes yk_rings.h's,
+// shared with the settings ring); Yay in the middle is yk_yay. A frame of the motion repaints only the boxes of what
+// moved; LVGL skips whatever the paper covers. A finger down on a place (0.1.18) grows it and says its name in the
+// middle; the same frames repaint the place and the middle, and the others once each as they dim.
 #include "yk_apps.h"
 
 #include <math.h>
@@ -13,10 +15,12 @@
 #include "esp_timer.h"
 #include "yaykit_ui.h"
 #include "yk_apps_logic.h"
+#include "yk_figure.h"
 #include "yk_hint.h"
 #include "yk_round.h"
 #include "yk_ui_priv.h"
 #include "yk_yay.h"
+#include "yk_words.h"
 
 static const char *TAG = "yk_apps";
 
@@ -25,7 +29,6 @@ static const char *TAG = "yk_apps";
 
 typedef struct {
     char slug[32];
-    char name[64];               // cut to YK_APPS_NAME_MAX_W
     char first[5];               // stands in for a missing icon
     bool installed, current;
     bool cached;                 // in the package cache (not in a slot): a hollow sage ring, not dimmed
@@ -38,6 +41,25 @@ typedef struct {
 } sat_t;
 
 static bool s_home_update;  // yk_apps_home_update(): kept across opens (`s` is cleared at each)
+static bool s_has_figure;    // yk_apps_figure() gave a pack (s_words->figure)
+
+/** What only an open ring or yk_apps_figure() needs, in PSRAM, made the first time and kept: the internal RAM is short
+ *  (the pairing page leaves some boards 1-3 KB), and nothing here is drawn often enough to want it. */
+typedef struct {
+    char name[YK_APPS_MAX][2][64];  // each place's name for the middle while it is pressed: one line or two
+    uint8_t lines[YK_APPS_MAX];
+    char label[2][24];              // the middle's own words, while it is pressed: Tikpal, 回到 Tikpal
+    uint8_t label_lines;
+    yk_figure_t figure;             // yk_apps_figure()'s copy of the buddy's pack (its bytes are the caller's)
+} words_t;
+static words_t *s_words;
+
+static words_t *words(void) {
+    if (!s_words) s_words = heap_caps_calloc(1, sizeof(*s_words), MALLOC_CAP_SPIRAM);
+    return s_words;
+}
+static yk_apps_guard_t s_guard;  // yk_apps_set_guard()
+static void *s_guard_ctx;
 
 static struct {
     lv_obj_t *root;
@@ -47,10 +69,16 @@ static struct {
     yk_apps_pose_t pose[YK_APPS_MAX + 1];
     lv_area_t drawn[YK_APPS_MAX + 1];  // what each element covered last frame
     sat_t sat[YK_APPS_MAX];
-    char label[24];
     bool home;
-    const lv_font_t *font, *first_font;
+    const lv_font_t *font, *first_font;  // the names (YK_RINGS_NAME_PX), the first characters
     int line_h;
+    int pressed;                 // yk_rings_pressed() as last drawn: 1..n a place, 0 the middle, -1 none
+    int said;                    // ... and what the middle says (the same values): it changes in a frame of its own
+    uint32_t press_t0;
+    uint32_t dim;                // the places drawn dimmed (yk_rings_press): bit i-1 for place i
+    bool press_moving;           // the press still changing the look, a step a frame ...
+    bool press_drawn;            // ... the last step drawn: the next may come
+    uint8_t yay_opa;             // what Yay's opacity was set to (setting it again repaints it)
     yk_apps_cb_t cb;
     void *ctx;
     uint32_t t0, last_input;
@@ -75,14 +103,6 @@ static lv_opa_t text_opa(const yk_apps_pose_t *p, float k0) {
     return (lv_opa_t)lroundf(p->opa * f);
 }
 
-/** A box laid out for the element at full size, carried along with it: its offset from the element's centre is
- *  scaled, its size is not (text does not scale). 4 px wider each side so LVGL never wraps a measured line. */
-static lv_area_t carried(const yk_box_t *b, int ox, int oy, const yk_apps_pose_t *p) {
-    const float k = k_of(p);
-    const int x = p->cx + (int)lroundf((b->x - ox) * k), y = p->cy + (int)lroundf((b->y - oy) * k);
-    return (lv_area_t){x - 4, y, x + b->w + 3, y + b->h - 1};
-}
-
 static void join(lv_area_t *a, const lv_area_t *b) {
     a->x1 = LV_MIN(a->x1, b->x1), a->y1 = LV_MIN(a->y1, b->y1);
     a->x2 = LV_MAX(a->x2, b->x2), a->y2 = LV_MAX(a->y2, b->y2);
@@ -93,13 +113,14 @@ static lv_area_t disc_area(int cx, int cy, float r) {
     return (lv_area_t){cx - R, cy - R, cx + R, cy + R};
 }
 
+/** The scale the marks go with: the ring's motion, not a press (the disc grows under them). */
+static float mark_k(int e, const yk_apps_pose_t *p) { return e == s.pressed && !s.moving ? 1.0f : k_of(p); }
+
 /** Everything element e (0: the middle, 1..n: an app) covers at pose p. */
 static lv_area_t element_area(int e, const yk_apps_pose_t *p) {
     const float k = k_of(p);
     if (e == 0) {
-        lv_area_t a = disc_area(p->cx, p->cy, (YK_APPS_CENTER_R + YK_APPS_RING_W) * k);
-        const lv_area_t l = carried(&s.L.label, YK_CX, YK_CY, p);
-        join(&a, &l);
+        lv_area_t a = disc_area(p->cx, p->cy, (YK_RINGS_CENTER_R + YK_RINGS_IN_USE_GAP) * k);
         if (s_home_update) {
             int dx, dy;
             float r, edge;
@@ -109,30 +130,15 @@ static lv_area_t element_area(int e, const yk_apps_pose_t *p) {
         }
         return a;
     }
-    const yk_apps_sat_t *st = &s.L.sat[e - 1];
-    lv_area_t a = disc_area(p->cx, p->cy, (YK_APPS_SAT_R + YK_APPS_RING_W) * k);
-    // the icon's square (its corners are clear, but they are drawn)
-    const lv_area_t icon = disc_area(p->cx, p->cy, YK_CATALOG_ICON / 2 * k);
-    join(&a, &icon);
-    const lv_area_t badge = disc_area(p->cx + (int)lroundf(YK_APPS_BADGE_D * k), p->cy + (int)lroundf(YK_APPS_BADGE_D * k),
-                                      YK_APPS_BADGE_R * k);
-    join(&a, &badge);
-    if (s.sat[e - 1].update) {  // the update dot, upper right
-        int dx, dy;
-        float r, edge;
-        yk_apps_update_dot(p->cx, p->cy, k, &dx, &dy, &r, &edge);
-        const lv_area_t dot = disc_area(dx, dy, edge);
-        join(&a, &dot);
-    }
-    if (s.sat[e - 1].phone) {  // the phone mark, upper right
+    lv_area_t a = disc_area(p->cx, p->cy, (YK_RINGS_SAT_R + YK_RINGS_IN_USE_GAP) * k);
+    const float km = mark_k(e, p);
+    for (int m = YK_MARK_UPDATE; m <= YK_MARK_DOWNLOAD; m++) {  // every mark it may have (a box or two more)
         int mx, my;
-        float r, edge;
-        yk_apps_phone_mark(p->cx, p->cy, k, &mx, &my, &r, &edge);
-        const lv_area_t mark = disc_area(mx, my, edge);
+        float outer;
+        yk_rings_mark((yk_mark_kind_t)m, p->cx, p->cy, km, &mx, &my, &outer);
+        const lv_area_t mark = disc_area(mx, my, outer);
         join(&a, &mark);
     }
-    const lv_area_t name = carried(&st->name, st->cx, st->cy, p);
-    join(&a, &name);
     return a;
 }
 
@@ -188,37 +194,30 @@ static void line(lv_layer_t *layer, float x1, float y1, float x2, float y2, floa
     lv_draw_line(layer, &d);
 }
 
-void yk_draw_download_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
-    const float bx = cx + YK_APPS_BADGE_D * k, by = cy + YK_APPS_BADGE_D * k;
-    yk_draw_disc(layer, (int)lroundf(bx), (int)lroundf(by), YK_APPS_BADGE_R * k, YK_SAGE, opa);
+void yk_draw_download_mark(lv_layer_t *layer, int x, int y, float k, lv_opa_t opa) {
+    const float bx = (float)x, by = (float)y;
+    yk_draw_disc(layer, x, y, YK_APPS_BADGE_R * k, YK_SAGE, opa);
     if (k < 0.5f) return;
     line(layer, bx, by - 5 * k, bx, by + 3 * k, 2.4f * k, opa);
     line(layer, bx - 4 * k, by, bx, by + 4 * k, 2.4f * k, opa);
     line(layer, bx, by + 4 * k, bx + 4 * k, by, 2.4f * k, opa);
 }
 
-void yk_draw_cached_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
-    const int mx = cx + (int)lroundf(YK_APPS_CACHE_D * k), my = cy + (int)lroundf(YK_APPS_CACHE_D * k);
-    yk_draw_disc(layer, mx, my, YK_APPS_CACHE_R * k, YK_SAGE, opa);
-    yk_draw_disc(layer, mx, my, (YK_APPS_CACHE_R - YK_APPS_CACHE_W) * k, YK_PAPER, opa);
+void yk_draw_cached_mark(lv_layer_t *layer, int x, int y, float k, lv_opa_t opa) {
+    yk_draw_disc(layer, x, y, YK_APPS_CACHE_R * k, YK_SAGE, opa);
+    yk_draw_disc(layer, x, y, (YK_APPS_CACHE_R - YK_APPS_CACHE_W) * k, YK_PAPER, opa);
 }
 
-void yk_draw_update_dot(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
-    int x, y;
-    float r, edge;
-    yk_apps_update_dot(cx, cy, k, &x, &y, &r, &edge);
-    yk_draw_disc(layer, x, y, edge, YK_PAPER, opa);
-    yk_draw_disc(layer, x, y, r, YK_CORAL, opa);
+void yk_draw_update_dot(lv_layer_t *layer, int x, int y, float k, lv_opa_t opa) {
+    yk_draw_disc(layer, x, y, (YK_APPS_UPDATE_R + YK_APPS_UPDATE_EDGE) * k, YK_PAPER, opa);
+    yk_draw_disc(layer, x, y, YK_APPS_UPDATE_R * k, YK_CORAL, opa);
 }
 
 /** The phone mark (voice-code handoff 2.1②): a sage disc in a paper ring, a paper phone on it (a rounded outline
  *  and a short line at its foot), like the download mark's sage and paper. */
-void yk_draw_phone_mark(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) {
-    int x, y;
-    float r, edge;
-    yk_apps_phone_mark(cx, cy, k, &x, &y, &r, &edge);
-    yk_draw_disc(layer, x, y, edge, YK_PAPER, opa);
-    yk_draw_disc(layer, x, y, r, YK_SAGE, opa);
+void yk_draw_phone_mark(lv_layer_t *layer, int x, int y, float k, lv_opa_t opa) {
+    yk_draw_disc(layer, x, y, (YK_APPS_PHONE_R + YK_APPS_PHONE_EDGE) * k, YK_PAPER, opa);
+    yk_draw_disc(layer, x, y, YK_APPS_PHONE_R * k, YK_SAGE, opa);
     if (k < 0.5f) return;
     const int w = (int)lroundf(10 * k), h = (int)lroundf(16 * k);
     lv_draw_rect_dsc_t d;
@@ -263,13 +262,52 @@ static void draw_gear(lv_layer_t *layer, int cx, int cy, float k, lv_opa_t opa) 
     }
 }
 
+void yk_draw_pressed(lv_layer_t *layer, int cx, int cy, float r, lv_opa_t opa) {
+    yk_draw_pressed_in(layer, cx, cy, r, opa, YK_SAGE);
+}
+
+void yk_draw_pressed_in(lv_layer_t *layer, int cx, int cy, float r, lv_opa_t opa, uint32_t color) {
+    lv_draw_arc_dsc_t a;
+    lv_draw_arc_dsc_init(&a);
+    a.center.x = cx;
+    a.center.y = cy;
+    a.radius = (uint16_t)lroundf(r);
+    a.width = YK_RINGS_PRESS_W;
+    a.start_angle = 0;
+    a.end_angle = 360;
+    a.color = lv_color_hex(color);
+    a.opa = opa;
+    lv_draw_arc(layer, &a);
+}
+
+lv_area_t yk_rings_words_area(void) {
+    // The glyphs' block (120 wide, three lines at most), its corners inside the middle's in-use ring (74 from the
+    // centre): repainting it repaints no part of that ring.
+    const int hw = YK_RINGS_WORDS_W / 2, hh = 42;
+    return (lv_area_t){YK_CX - hw, YK_CY - hh, YK_CX + hw - 1, YK_CY + hh - 1};
+}
+
+void yk_draw_words(lv_layer_t *layer, int n, const char *const lines[], const lv_font_t *const fonts[],
+                   const uint32_t colors[], lv_opa_t opa) {
+    int h[3] = {0};
+    if (n > 3) n = 3;
+    for (int i = 0; i < n; i++) h[i] = fonts[i] ? lv_font_get_line_height(fonts[i]) : YK_RINGS_NAME_PX + 8;
+    yk_box_t b[3] = {{0}};
+    yk_rings_words(n, h, b);
+    for (int i = 0; i < n; i++) {
+        // 4 px wider each side so LVGL never wraps a measured line
+        const lv_area_t a = {b[i].x - 4, b[i].y, b[i].x + b[i].w + 3, b[i].y + b[i].h - 1};
+        yk_draw_text(layer, lines[i], fonts[i], colors[i], opa, &a);
+    }
+}
+
 static void draw_sat(lv_layer_t *layer, int i) {
     const yk_apps_pose_t *p = &s.pose[i + 1];
     if (p->opa <= LV_OPA_MIN) return;
     const sat_t *t = &s.sat[i];
-    const float k = k_of(p);
-    const bool local = t->installed || t->cached;
-    yk_draw_disc(layer, p->cx, p->cy, YK_APPS_SAT_R * k, YK_PANEL, p->opa);
+    const float k = k_of(p), km = mark_k(i + 1, p);
+    const bool local = t->installed || t->cached, pressed = i + 1 == s.pressed && !s.moving;
+    yk_draw_disc(layer, p->cx, p->cy, YK_RINGS_SAT_R * k, YK_PANEL, p->opa);
     if (t->more) {
         for (int d = -1; d <= 1; d++) {
             const int x = p->cx + (int)lroundf(d * YK_APPS_DOT_GAP * k);
@@ -281,7 +319,7 @@ static void draw_sat(lv_layer_t *layer, int i) {
         lv_draw_image_dsc_t d;
         lv_draw_image_dsc_init(&d);
         d.src = t->icon;
-        d.scale_x = d.scale_y = p->scale;
+        d.scale_x = d.scale_y = (uint16_t)lroundf(256 * km);  // the ring's motion, not a press: no scaled copy each frame
         d.pivot.x = YK_CATALOG_ICON / 2, d.pivot.y = YK_CATALOG_ICON / 2;
         // the catalog's icons are dimmed already; the caller's are dimmed here
         d.opa = local || t->icon == &t->own ? p->opa : (lv_opa_t)(p->opa * YK_APPS_DIM_OPA / 255);
@@ -290,30 +328,45 @@ static void draw_sat(lv_layer_t *layer, int i) {
         lv_draw_image(layer, &d, &a);
     } else if (t->first[0] && s.first_font) {
         const int h = lv_font_get_line_height(s.first_font);
-        const lv_area_t a = {p->cx - YK_APPS_SAT_R, p->cy - h / 2, p->cx + YK_APPS_SAT_R - 1, p->cy - h / 2 + h - 1};
+        const lv_area_t a = {p->cx - YK_RINGS_SAT_R, p->cy - h / 2, p->cx + YK_RINGS_SAT_R - 1, p->cy - h / 2 + h - 1};
         yk_draw_text(layer, t->first, s.first_font, local ? YK_INK : yk_rim_mix(YK_INK, YK_PANEL, YK_APPS_DIM_OPA),
              text_opa(p, 0.6f), &a);
     }
-    if (t->current) yk_draw_in_use(layer, p->cx, p->cy, YK_APPS_SAT_R, k, p->opa);
+    if (pressed) yk_draw_pressed(layer, p->cx, p->cy, YK_RINGS_SAT_R * k, p->opa);
+    else if (t->current) yk_draw_in_use(layer, p->cx, p->cy, YK_RINGS_SAT_R, k, p->opa);
     const bool own = t->more || t->settings;  // the ring's own places: no marks, never dimmed
-    if (t->cached && !t->installed && !own) yk_draw_cached_mark(layer, p->cx, p->cy, k, p->opa);
-    else if (!local && !own) yk_draw_download_mark(layer, p->cx, p->cy, k, p->opa);
+    int mx, my;
+    float outer;
+    if (t->cached && !t->installed && !own) {
+        yk_rings_mark(YK_MARK_CACHED, p->cx, p->cy, km, &mx, &my, &outer);
+        yk_draw_cached_mark(layer, mx, my, km, p->opa);
+    } else if (!local && !own) {
+        yk_rings_mark(YK_MARK_DOWNLOAD, p->cx, p->cy, km, &mx, &my, &outer);
+        yk_draw_download_mark(layer, mx, my, km, p->opa);
+    }
     // A newer version (0.1.12): on an app in a slot, or on 「设置」 when Tikpal or any app has one (the main firmware's).
-    if (t->update && (t->installed || t->settings)) yk_draw_update_dot(layer, p->cx, p->cy, k, p->opa);
-    else if (t->phone) yk_draw_phone_mark(layer, p->cx, p->cy, k, p->opa);
-    const lv_area_t na = carried(&s.L.sat[i].name, s.L.sat[i].cx, s.L.sat[i].cy, p);
-    const uint32_t color = t->current ? YK_SAGE_TEXT : local || own ? YK_INK : YK_INK2;
-    yk_draw_text(layer, t->name, s.font, color, text_opa(p, 0.6f), &na);
+    if (t->update && (t->installed || t->settings)) {
+        yk_rings_mark(YK_MARK_UPDATE, p->cx, p->cy, km, &mx, &my, &outer);
+        yk_draw_update_dot(layer, mx, my, km, p->opa);
+    } else if (t->phone) {
+        yk_rings_mark(YK_MARK_PHONE, p->cx, p->cy, km, &mx, &my, &outer);
+        yk_draw_phone_mark(layer, mx, my, km, p->opa);
+    }
 }
 
 static void draw_cb(lv_event_t *e) {
     lv_layer_t *layer = lv_event_get_layer(e);
-    for (int i = 0; i < s.L.n; i++) draw_sat(layer, i);
+    s.press_drawn = true;
+    // LVGL draws a frame in bands of a few lines (CONFIG_YK_BOARD_LCD_BUFFER_LINES), calling this for each: what does
+    // not reach the band is not even asked for (every draw call costs a task, reached or not: a press's frame of two
+    // places took ~55 ms on the device before this, 0.1.18).
+    for (int i = 0; i < s.L.n; i++)
+        if (yk_reaches(layer, &s.drawn[i + 1])) draw_sat(layer, i);
     const yk_apps_pose_t *p = &s.pose[0];
-    if (p->opa <= LV_OPA_MIN) return;
+    if (p->opa <= LV_OPA_MIN || !yk_reaches(layer, &s.drawn[0])) return;
     const float k = k_of(p);
-    yk_draw_disc(layer, p->cx, p->cy, YK_APPS_CENTER_R * k, YK_PANEL, p->opa);
-    if (s.home) yk_draw_in_use(layer, p->cx, p->cy, YK_APPS_CENTER_R, k, p->opa);
+    yk_draw_disc(layer, p->cx, p->cy, YK_RINGS_CENTER_R * k, YK_PANEL, p->opa);
+    if (s.home) yk_draw_in_use(layer, p->cx, p->cy, YK_RINGS_CENTER_R, k, p->opa);
     if (s_home_update) {  // Tikpal has a newer version (the main firmware's)
         int x, y;
         float r, edge;
@@ -321,15 +374,27 @@ static void draw_cb(lv_event_t *e) {
         yk_draw_disc(layer, x, y, edge, YK_PAPER, p->opa);
         yk_draw_disc(layer, x, y, r, YK_CORAL, p->opa);
     }
-    const lv_area_t la = carried(&s.L.label, YK_CX, YK_CY, p);
-    yk_draw_text(layer, s.label, s.font, s.home ? YK_SAGE_TEXT : YK_INK, text_opa(p, 0.8f), &la);
-    // Yay is a child: drawn over this
+    // Pressed (the ring at rest): what is under the finger says its name here, in place of Yay.
+    if (s.moving || s.said < 0) return;  // Yay is a child: drawn over this
+    if (!s_words) return;  // no memory for the words: the middle stays as it is
+    const sat_t *t = s.said > 0 ? &s.sat[s.said - 1] : NULL;
+    const words_t *w = s_words;
+    const int i = t ? s.said - 1 : 0;
+    const char *lines[2] = {t ? w->name[i][0] : w->label[0], t ? w->name[i][1] : w->label[1]};
+    const int n = t ? w->lines[i] : w->label_lines;
+    const bool local = !t || t->installed || t->cached || t->more || t->settings;
+    const uint32_t ink = (t ? t->current : s.home) ? YK_SAGE_TEXT : local ? YK_INK : YK_INK2;
+    const lv_font_t *const fonts[2] = {s.font, s.font};
+    const uint32_t colors[2] = {ink, ink};
+    yk_draw_words(layer, n, lines, fonts, colors, p->opa);
 }
 
 // ---------------------------------------------------------------- motion
 
 /** Takes the poses: repaints what moved, sizes and fades Yay. */
-static void apply(const yk_apps_pose_t pose[YK_APPS_MAX + 1]) {
+/** Takes the poses: repaints what moved (true when anything did), sizes and fades Yay. */
+static bool apply(const yk_apps_pose_t pose[YK_APPS_MAX + 1]) {
+    bool any = false;
     for (int e = 0; e <= s.L.n; e++) {
         if (!memcmp(&pose[e], &s.pose[e], sizeof(pose[e]))) continue;
         s.pose[e] = pose[e];
@@ -337,12 +402,71 @@ static void apply(const yk_apps_pose_t pose[YK_APPS_MAX + 1]) {
         lv_obj_invalidate_area(s.root, &s.drawn[e]);
         lv_obj_invalidate_area(s.root, &a);
         s.drawn[e] = a;
+        any = true;
     }
     if (s.yay) {
         const float k = k_of(&s.pose[0]);
-        yk_yay_size(s.yay, (int)lroundf(YK_APPS_YAY * k));
-        yk_yay_move(s.yay, s.pose[0].cx, s.pose[0].cy + (int)lroundf(YK_APPS_YAY_DY * k));
-        lv_obj_set_style_opa(yk_yay_obj(s.yay), s.pose[0].opa, 0);
+        yk_yay_size(s.yay, (int)lroundf(YK_RINGS_FIGURE * k));
+        yk_yay_move(s.yay, s.pose[0].cx, s.pose[0].cy);
+        // Gone while the middle says what is under the finger. Only when it changes: LVGL repaints an object whenever
+        // a style is set, the same value or not (a press's every frame repainted Yay's square, 0.1.18).
+        const uint8_t opa = !s.moving && s.said >= 0 ? LV_OPA_TRANSP : s.pose[0].opa;
+        if (opa != s.yay_opa) {
+            s.yay_opa = opa;
+            lv_obj_set_style_opa(yk_yay_obj(s.yay), opa, 0);
+        }
+    }
+    return any;
+}
+
+/** The press as it is now (yk_rings_pressed): a place under the finger grows and says its name in the middle, the
+ *  others dim; the middle says its own words. Called on every touch event and from the timer while the ring is at
+ *  rest, so a press shows within a frame, and one held past YK_TAP_HOLD_MS lets go of its place within a tick. */
+static void press_update(void) {
+    if (!s.root || s.moving || s.closing) return;
+    const uint32_t now = lv_tick_get();
+    const int pressed = yk_rings_pressed(&s.touch, now);
+    // Each frame of a press repaints little (a frame of all five places and the middle took ~70 ms, 0.1.18): first the
+    // places alone (the one pressed gets its ring, the one let go its size back), then the middle alone (its words
+    // and Yay's square), then a step at a time (the pressed one grows, one other dims or lights).
+    if (pressed != s.pressed) {
+        yk_apps_pose_t pose[YK_APPS_MAX + 1];
+        memcpy(pose, s.pose, sizeof(pose));
+        const int was = s.pressed;
+        bool any = false;
+        if (was > 0) {
+            yk_apps_pose_t rest[YK_APPS_MAX + 1];
+            yk_apps_frame(&s.L, YK_APPS_OPEN_MS, false, rest);
+            pose[was].scale = rest[was].scale;
+            lv_obj_invalidate_area(s.root, &s.drawn[was]);
+            any = true;
+        }
+        s.pressed = pressed;
+        apply(pose);
+        if (pressed > 0) lv_obj_invalidate_area(s.root, &s.drawn[pressed]), any = true;
+        s.press_moving = true;
+        s.press_drawn = !any;  // nothing to draw: the middle at once
+        lv_timer_set_period(s.timer, FRAME_MS);
+        return;
+    }
+    // A step a drawn frame (the timer can tick twice before LVGL draws one).
+    if (!s.press_moving || !s.press_drawn) return;
+    if (s.said != s.pressed) {
+        s.said = s.pressed;
+        const lv_area_t words = yk_rings_words_area();  // not the whole middle (its disc and ring stay as they are)
+        lv_obj_invalidate_area(s.root, &words);
+        apply(s.pose);  // Yay's opacity: LVGL repaints its square
+        s.press_t0 = now;  // the pressed place grows from now
+        s.press_drawn = false;
+        return;
+    }
+    yk_apps_pose_t pose[YK_APPS_MAX + 1];
+    yk_apps_frame(&s.L, YK_APPS_OPEN_MS, false, pose);
+    const bool still = yk_rings_press(s.L.n, s.pressed, (int)(now - s.press_t0), &s.dim, pose);
+    if (apply(pose)) s.press_drawn = false;  // nothing to draw: the next step at once
+    if (still) {
+        s.press_moving = false;
+        lv_timer_set_period(s.timer, IDLE_CHECK_MS);
     }
 }
 
@@ -385,15 +509,35 @@ static void tick(lv_timer_t *t) {
         s_stats.open_ms = (int)((esp_timer_get_time() - s.opened_us) / 1000);
         s_stats.frames = s.frames;
         lv_timer_set_period(t, IDLE_CHECK_MS);
+        press_update();  // a finger that went down while it opened
     } else if (lv_tick_elaps(s.last_input) >= YK_APPS_IDLE_MS) {
         start_close(true, NULL, 0, 0);
+    } else {
+        press_update();
     }
+}
+
+/** The finger's point now (0, 0 without one). */
+static lv_point_t finger(void) {
+    lv_point_t p = {0};
+    lv_indev_t *indev = lv_indev_active();
+    if (indev) lv_indev_get_point(indev, &p);
+    return p;
 }
 
 static void on_press(lv_event_t *e) {
     (void)e;
     s.last_input = lv_tick_get();
-    yk_apps_touch_press(&s.touch);
+    const lv_point_t p = finger();
+    yk_apps_touch_press(&s.touch, yk_apps_hit(&s.L, p.x, p.y), p.x, p.y, s.last_input);
+    press_update();
+}
+
+static void on_pressing(lv_event_t *e) {
+    (void)e;
+    const lv_point_t p = finger();
+    yk_apps_touch_move(&s.touch, p.x, p.y);
+    press_update();
 }
 
 /** A swipe anywhere on it: closes towards the finger, nothing tapped. Its release goes nowhere (LVGL would still
@@ -414,14 +558,22 @@ static void on_gesture(lv_event_t *e) {
              go.dx < 0 ? "left" : go.dx > 0 ? "right" : go.dy < 0 ? "up" : "down");
 }
 
+/** The finger let go: a tap (yk_tap: down and up on the same app, still, not held) on what it hit, else nothing. */
 static void on_click(lv_event_t *e) {
     (void)e;
-    lv_point_t p = {0};
-    lv_indev_t *indev = lv_indev_active();
-    if (indev) lv_indev_get_point(indev, &p);
-    const yk_apps_go_t go = yk_apps_touch_click(&s.touch, &s.L, p.x, p.y);
+    const lv_point_t p = finger();
+    const yk_apps_go_t go = yk_apps_touch_click(&s.touch, &s.L, p.x, p.y, lv_tick_get());
+    char line[64];
+    puts(yk_tap_line(&s.touch.tap, "apps", line, sizeof(line)));
+    press_update();  // let go: as at rest (or folding back, for a tap)
     if (go.kind != YK_APPS_GO_TAP) return;
-    start_close(true, go.hit < 0 ? NULL : go.hit == 0 ? YK_APPS_HOME : s.sat[go.hit - 1].slug, 0, 0);
+    const char *hit = go.hit < 0 ? NULL : go.hit == 0 ? YK_APPS_HOME : s.sat[go.hit - 1].slug;
+    if (s_guard && s_guard(hit, s_guard_ctx)) {
+        yk_apps_touch_stays(&s.touch);
+        press_update();
+        return;
+    }
+    start_close(true, hit, 0, 0);
 }
 
 /** The root is going (closed, or its screen deleted): everything else goes with it. */
@@ -448,6 +600,14 @@ static void finish(void) {
 
 static int glyph_w(uint32_t cp, void *ctx) { return lv_font_get_glyph_width((const lv_font_t *)ctx, cp, 0); }
 
+/** A name for the middle, at YK_RINGS_NAME_PX: one line or two. */
+static int name_lines(const char *name, char *l1, char *l2, size_t size) {
+    if (s.font) return yk_rings_name_lines(name, glyph_w, (void *)s.font, YK_RINGS_WORDS_W, l1, size, l2, size);
+    snprintf(l1, size, "%s", name);
+    l2[0] = 0;
+    return name[0] ? 1 : 0;
+}
+
 /** The entry's icon as RGB565A8 in PSRAM (raw: a scratch buffer big enough for any format). */
 static const lv_image_dsc_t *catalog_icon(sat_t *t, const yk_catalog_entry_t *e, uint8_t *raw) {
     const size_t bytes = yk_catalog_icon_bytes(e->icon_format);
@@ -466,6 +626,19 @@ static const lv_image_dsc_t *catalog_icon(sat_t *t, const yk_catalog_entry_t *e,
 
 void yk_apps_home_update(bool on) { s_home_update = on; }
 
+void yk_apps_figure(const struct yk_figure *figure) {
+    words_t *w = figure ? words() : NULL;
+    s_has_figure = w != NULL;  // no memory for the copy: Pip
+    if (w) w->figure = *figure;
+    // The open ring at once: what it drew from the pack before goes now, so its bytes may go after the caller's switch.
+    if (s.yay && !yk_yay_figure(s.yay, s_has_figure ? &s_words->figure : NULL)) yk_yay_figure(s.yay, NULL);
+}
+
+void yk_apps_set_guard(yk_apps_guard_t guard, void *ctx) {
+    s_guard = guard;
+    s_guard_ctx = ctx;
+}
+
 static void teardown(void) {
     if (s.root) lv_obj_delete(s.root);  // on_delete clears `s`
 }
@@ -481,17 +654,25 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
     const bool en = yk_ui_is_english();
     s.cb = cb;
     s.ctx = ctx;
-    s.font = cjk_font_get(YK_APPS_NAME_SIZE);
-    s.first_font = cjk_font_get(YK_APPS_FIRST_SIZE);
-    s.line_h = s.font ? lv_font_get_line_height(s.font) : YK_APPS_NAME_SIZE + 6;
+    s.font = cjk_font_get(YK_RINGS_NAME_PX);
+    s.first_font = cjk_font_get(YK_RINGS_FIRST_PX);
+    s.line_h = s.font ? lv_font_get_line_height(s.font) : YK_RINGS_NAME_PX + 8;
     s.home = current && !strcmp(current, YK_APPS_HOME);
+    s.pressed = s.said = -1;
+    words_t *w = words();  // the names for the middle (NULL: none said there)
+    if (w) {
+        memset(w->name, 0, sizeof(w->name));
+        memset(w->lines, 0, sizeof(w->lines));
+        memset(w->label, 0, sizeof(w->label));
+        w->label_lines = 0;
+    }
 
     // The catalog (names and icons), read now and let go when the icons are made.
     yk_catalog_t *cat = heap_caps_malloc(sizeof(*cat), MALLOC_CAP_SPIRAM);
     const bool have_cat = cat && yk_catalog_read(cat) == ESP_OK;
     uint8_t *raw = NULL;
     const int64_t t_icons = esp_timer_get_time();
-    int name_w[YK_APPS_MAX] = {0}, slots[YK_APPS_MAX];
+    int slots[YK_APPS_MAX];
     yk_apps_item_slots(items, n, slots);
     for (int i = 0; i < n; i++) {
         sat_t *t = &s.sat[i];
@@ -505,13 +686,11 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
         t->current = current && !strcmp(t->slug, current);
         const yk_catalog_entry_t *e = have_cat && !t->more && !t->settings ? yk_catalog_find(cat, t->slug) : NULL;
         const char *name = items[i].name ? items[i].name
-                         : t->more        ? (en ? "More" : "更多")
-                         : t->settings    ? (en ? "Settings" : "设置")
+                         : t->more        ? (yk_word_in(en, YK_STR_YAYKIT_SETTINGS_MORE))
+                         : t->settings    ? (yk_word_in(en, YK_STR_YAYKIT_APPS_SETTINGS))
                          : e && e->name[0] ? e->name
                                            : t->slug;
-        const int room = yk_apps_name_room(slots[i], s.line_h);
-        if (s.font) name_w[i] = yk_text_fit(name, glyph_w, (void *)s.font, room, t->name, sizeof(t->name));
-        else snprintf(t->name, sizeof(t->name), "%s", name);
+        if (w) w->lines[i] = (uint8_t)name_lines(name, w->name[i][0], w->name[i][1], sizeof(w->name[i][0]));
         if (!t->more && !t->settings) yk_first_char(name, t->first);
         t->icon = t->more || t->settings ? NULL : items[i].icon;
         if (!t->icon && e && e->icon_format != YK_ICON_NONE) {
@@ -523,12 +702,9 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
     heap_caps_free(raw);
     heap_caps_free(cat);
     s_stats.icons_ms = (int)((esp_timer_get_time() - t_icons) / 1000);
-    const char *label = s.home ? "Tikpal" : en ? "Back to Tikpal" : "回到 Tikpal";
-    const int label_max = yk_apps_label_max(n, slots);
-    int label_w = label_max;
-    if (s.font) label_w = yk_text_fit(label, glyph_w, (void *)s.font, label_max, s.label, sizeof(s.label));
-    else snprintf(s.label, sizeof(s.label), "%s", label);
-    yk_apps_layout_at(n, slots, name_w, s.line_h, label_w, &s.L);
+    const char *label = s.home ? "Tikpal" : yk_word_in(en, YK_STR_YAYKIT_APPS_BACK_TO_TIKPAL);
+    if (w) w->label_lines = (uint8_t)name_lines(label, w->label[0], w->label[1], sizeof(w->label[0]));
+    yk_apps_layout_at(n, slots, &s.L);
     for (int i = 0; i < n; i++) s.L.sat[i].phone = s.sat[i].phone && !s.sat[i].update;
 
     // The paper over everything, one object; Yay in the middle.
@@ -543,17 +719,20 @@ bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const ch
     lv_obj_set_clickable(root, true);
     lv_obj_add_event_cb(root, draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(root, on_press, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(root, on_pressing, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(root, on_click, LV_EVENT_CLICKED, NULL);
+    yk_ui_own_taps(root);  // its CLICKED settles a drag too: not for yk_ui_taps_strict (F-1018)
     lv_obj_add_event_cb(root, on_gesture, LV_EVENT_GESTURE, NULL);
     lv_obj_add_event_cb(root, on_delete, LV_EVENT_DELETE, NULL);
     s.root = root;
     yk_apps_frame(&s.L, 0, false, s.pose);
     for (int e = 0; e <= s.L.n; e++) s.drawn[e] = element_area(e, &s.pose[e]);
-    // Transparent around Yay: blended with the disc's colour, its square's corners would stand out past the disc
-    // (r 56 against a 100 px square) and over the sage ring (seen on the device, 10-22).
-    s.yay = yk_yay_create(root, (int)lroundf(YK_APPS_YAY * k_of(&s.pose[0])), YK_CX, YK_CY + YK_APPS_YAY_DY,
-                          YK_YAY_TRANSPARENT);
-    if (s.yay) lv_obj_set_style_opa(yk_yay_obj(s.yay), s.pose[0].opa, 0);
+    // On the middle's colour, its square inside the disc (r 75 against a 104 px square: corners at 74): a buddy's pack
+    // draws on opaque paper only. (0.1.17's was transparent: a 100 px square on r 56 stood out past it, seen 10-22.)
+    // In an extension the user's buddy when the app already read its pack, else Pip: opening the ring never reads one.
+    s.yay = yk_yay_create_kept(root, (int)lroundf(YK_RINGS_FIGURE * k_of(&s.pose[0])), YK_CX, YK_CY, YK_PANEL);
+    if (s.yay && s_has_figure && !yk_yay_figure(s.yay, &s_words->figure)) yk_yay_figure(s.yay, NULL);  // else Pip
+    if (s.yay) lv_obj_set_style_opa(yk_yay_obj(s.yay), s.yay_opa = s.pose[0].opa, 0);
     s.timer = lv_timer_create(tick, FRAME_MS, NULL);
     s.t0 = s.last_input = lv_tick_get();
     s.moving = true;
@@ -589,7 +768,9 @@ bool yk_apps_tap(const char *slug) {
     return true;
 }
 
-// ---------------------------------------------------------------- 「回到 Yay 说？」
+bool yk_apps_on_paper(int x, int y) { return s.root && !s.closing && yk_apps_hit(&s.L, x, y) < 0; }
+
+// ---------------------------------------------------------------- 「回到主屏幕说？」
 
 #define ASK_CARD 0x1F2521  // the canvas's card colour (yay_pages' CARD)
 
@@ -657,9 +838,9 @@ bool yk_apps_ask(lv_obj_t *parent, yk_apps_cb_t cb, void *ctx) {
     lv_obj_set_style_bg_color(card, lv_color_hex(ASK_CARD), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_clickable(card, false);  // the tap is the paper's, anywhere
-    char ask[48];  // the buddy's name (YK_PREF_BUDDY): 「回到 Pip 说？」 until the main firmware sets another
-    ask_label(card, 22, 22, YK_INK, yk_apps_ask_text(yk_ui_buddy_name(), en, ask, sizeof(ask)));
-    ask_label(card, 62, YK_SIZE_MIN, YK_INK3, en ? "Tap to go · press to stay" : "点屏幕回去 · 短按留下");
+    ask_label(card, 22, 22, YK_INK, yk_apps_ask_text(en));  // 「回到主屏幕说？」: no buddy's name (kit 1.10)
+    ask_label(card, 62, YK_SIZE_MIN, YK_INK3, yk_word_in(en, YK_STR_YAYKIT_APPS_TAP_TO_GO));
+    yk_ui_tap_only(root);  // a tap anywhere: down and up on the screen, the finger still (a swipe or a drag is none)
     lv_obj_add_event_cb(root, ask_tapped, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(root, ask_deleted, LV_EVENT_DELETE, NULL);
     s_ask.root = root;
@@ -727,7 +908,7 @@ void yk_apps_leaving(const char *slug, const char *name) {
     lv_obj_set_scrollable(o, false);
     lv_obj_set_clickable(o, true);  // nothing under it takes a touch now
     // The prototype's baselines (214 and 252) for 16 and 24 px lines.
-    leaving_label(o, 196, YK_SIZE_MIN, YK_INK2, home ? (en ? "Back to" : "正在回到") : (en ? "Opening" : "正在打开"));
+    leaving_label(o, 196, YK_SIZE_MIN, YK_INK2, home ? (yk_word_in(en, YK_STR_YAYKIT_APPS_BACK_TO)) : (yk_word_in(en, YK_STR_YAYKIT_HOME_OPENING_NOW)));
     leaving_label(o, 226, YK_SIZE_HEADING, YK_INK, home ? "Tikpal" : name);
     ESP_LOGI(TAG, "leaving for %s", home ? YK_APPS_HOME : slug);
 }

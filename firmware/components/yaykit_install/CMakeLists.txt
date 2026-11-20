@@ -3,5 +3,5 @@
 idf_component_register(SRCS "yaykit_install.c" "yk_install_logic.c" "yk_install_keys.c"
     INCLUDE_DIRS "include"
     REQUIRES json esp_common
-    PRIV_REQUIRES yaykit_sig yaykit_app yaykit_link yaykit_wifi app_update bootloader_support esp_partition spi_flash
+    PRIV_REQUIRES yaykit_sig yaykit_strings yaykit_app yaykit_link yaykit_wifi app_update bootloader_support esp_partition spi_flash
                   esp_http_client mbedtls nvs_flash console esp_timer esp_driver_usb_serial_jtag)

@@ -33,15 +33,23 @@ static void test_home(void) {
 }
 
 static void test_is_home(void) {
-    CHECK(yk_app_is_home("yay", true));  // the main firmware, as yay/main/main.c writes it
-    CHECK(!yk_app_is_home("yay", false));
+    CHECK(yk_app_is_home("yay", true, 0));  // the main firmware in slot 1, as yay/main/main.c writes it
+    CHECK(!yk_app_is_home("yay", false, 0));
     // An app cannot make itself home: it would lose the app ring and the system pull-down.
-    CHECK(!yk_app_is_home("party-play", true));
-    CHECK(!yk_app_is_home("yay-clone", true));
-    CHECK(!yk_app_is_home("Yay", true));
-    CHECK(!yk_app_is_home("", true));
-    CHECK(!yk_app_is_home(NULL, true));
-    CHECK(!yk_app_is_home("party-play", false));
+    CHECK(!yk_app_is_home("party-play", true, 0));
+    CHECK(!yk_app_is_home("party-play", true, 1));
+    CHECK(!yk_app_is_home("yay-clone", true, 0));
+    CHECK(!yk_app_is_home("Yay", true, 0));
+    CHECK(!yk_app_is_home("", true, 0));
+    CHECK(!yk_app_is_home(NULL, true, 0));
+    CHECK(!yk_app_is_home("party-play", false, 0));
+    // Nor by making up "yay" and is_home at run time (0.1.17): only slot 1 is home. Slots 2 and 3, factory (-1) and
+    // anything else are not, whatever the slug says.
+    CHECK(!yk_app_is_home("yay", true, 1));
+    CHECK(!yk_app_is_home("yay", true, 2));
+    CHECK(!yk_app_is_home("yay", true, -1));
+    CHECK(!yk_app_is_home("yay", true, 3));
+    CHECK(!yk_app_is_home("yay", false, 1));
 }
 
 static void test_launch_accept(void) {
@@ -279,7 +287,7 @@ static void test_keys(void) {
     yk_keys_route(&k, TAP, 31080, false);
     // An app that takes the double click itself: no ring.
     CHECK(yk_keys_route(&k, DOUBLE, 40000, true) == YK_KEYS_APP && !k.ring);
-    // A hold the app did not use, in an app that does not talk: 「回到 Yay 说？」; one it used, or a talking app: no.
+    // A hold the app did not use, in an app that does not talk: 「回到主屏幕说？」; one it used, or a talking app: no.
     yk_keys_init(&k);
     CHECK(yk_keys_route(&k, DOWN, 1000, false) == YK_KEYS_APP);
     CHECK(yk_keys_route(&k, HOLD, 1300, false) == YK_KEYS_APP);
@@ -756,6 +764,56 @@ static void test_settings(void) {
     CHECK(s.volume == 0);
 }
 
+/** The folders' question (Yay 0.1.19 开发文档 4.6): it goes up only when nothing of the system's is; a press is 「这次先不
+ *  给」 and is eaten whole, a double click opens no ring; the app's press going on ends with the app. */
+static void test_keys_grant(void) {
+    yk_keys_t k;
+    yk_keys_init(&k);
+    CHECK(yk_keys_grant_open(&k) && k.grant && !yk_keys_idle(&k));
+    CHECK(!yk_keys_sheet_open(&k) && !yk_keys_ask(&k, false, false));  // no pull-down, no 「回到 Yay 说？」 over it
+    CHECK(yk_keys_route(&k, DOWN, 1000, false) == YK_KEYS_GRANT_CLOSE && !k.grant);
+    CHECK(yk_keys_route(&k, UP, 1080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, TAP, 1080, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    CHECK(yk_keys_route(&k, DOWN, 3000, false) == YK_KEYS_APP);  // the app's again
+    yk_keys_route(&k, UP, 3080, false);
+    yk_keys_route(&k, TAP, 3080, false);
+    // A double click while it is up: let go, and no ring.
+    CHECK(yk_keys_grant_open(&k));
+    CHECK(yk_keys_route(&k, DOWN, 5000, false) == YK_KEYS_GRANT_CLOSE);
+    CHECK(yk_keys_route(&k, UP, 5080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, DOWN, 5200, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, UP, 5280, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, DOUBLE, 5280, false) == YK_KEYS_EAT && yk_keys_idle(&k) && !k.ring);
+    // Held: let go, the hold and its release the system's.
+    CHECK(yk_keys_grant_open(&k));
+    CHECK(yk_keys_route(&k, DOWN, 8000, false) == YK_KEYS_GRANT_CLOSE);
+    CHECK(yk_keys_route(&k, HOLD, 8300, false) == YK_KEYS_EAT && !yk_keys_ask(&k, false, false));
+    CHECK(yk_keys_route(&k, UP, 9000, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    // Answered on the screen: the key is the app's at once.
+    CHECK(yk_keys_grant_open(&k));
+    yk_keys_grant_closed(&k);
+    CHECK(yk_keys_idle(&k) && yk_keys_route(&k, DOWN, 12000, false) == YK_KEYS_APP);
+    yk_keys_route(&k, UP, 12080, false);
+    yk_keys_route(&k, TAP, 12080, false);
+    // Not over the ring, the pull-down, the code.
+    yk_keys_route(&k, DOUBLE, 20000, false);
+    CHECK(k.ring && !yk_keys_grant_open(&k) && !k.grant);
+    yk_keys_init(&k);
+    CHECK(yk_keys_sheet_open(&k) && !yk_keys_grant_open(&k));
+    yk_keys_init(&k);
+    yk_keys_code(&k, true);
+    CHECK(!yk_keys_grant_open(&k));
+    // Asked while the app's press goes on (a hold on 「播放」): up at once; that press's UP is the app's, the next
+    // press lets it go.
+    yk_keys_init(&k);
+    CHECK(yk_keys_route(&k, DOWN, 30000, false) == YK_KEYS_APP);
+    CHECK(yk_keys_grant_open(&k));
+    CHECK(yk_keys_route(&k, UP, 30500, false) == YK_KEYS_APP && k.grant);
+    CHECK(yk_keys_route(&k, DOWN, 32000, false) == YK_KEYS_GRANT_CLOSE);
+    yk_keys_route(&k, UP, 32080, false);
+    CHECK(yk_keys_route(&k, TAP, 32080, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+}
+
 /** The system pull-down in an extension (docs/delivery/2026-11-02-system-pulldown.md): it opens only when nothing of the
  *  system's is up; a press closes it and all of that press is the system's; a double click to close it opens no ring. */
 static void test_keys_sheet(void) {
@@ -776,7 +834,7 @@ static void test_keys_sheet(void) {
     CHECK(yk_keys_route(&k, DOWN, 5200, false) == YK_KEYS_EAT);
     CHECK(yk_keys_route(&k, UP, 5280, false) == YK_KEYS_EAT);
     CHECK(yk_keys_route(&k, DOUBLE, 5280, false) == YK_KEYS_EAT && yk_keys_idle(&k) && !k.ring);
-    // Held: closes it, the hold and its release are the system's (no 「回到 Yay 说？」).
+    // Held: closes it, the hold and its release are the system's (no 「回到主屏幕说？」).
     CHECK(yk_keys_sheet_open(&k));
     CHECK(yk_keys_route(&k, DOWN, 8000, false) == YK_KEYS_SHEET_CLOSE);
     CHECK(yk_keys_route(&k, HOLD, 8300, false) == YK_KEYS_EAT && !yk_keys_ask(&k, false, false));
@@ -787,7 +845,7 @@ static void test_keys_sheet(void) {
     CHECK(yk_keys_idle(&k) && yk_keys_route(&k, DOWN, 12000, false) == YK_KEYS_APP);
     yk_keys_route(&k, UP, 12080, false);
     yk_keys_route(&k, TAP, 12080, false);
-    // Not over the ring, 「回到 Yay 说？」, the code, nor the rest of a press that closed one of them.
+    // Not over the ring, 「回到主屏幕说？」, the code, nor the rest of a press that closed one of them.
     yk_keys_route(&k, DOUBLE, 20000, false);
     CHECK(k.ring && !yk_keys_sheet_open(&k) && !k.sheet);
     yk_keys_route(&k, DOWN, 21000, false);  // closes the ring; its press goes on
@@ -802,6 +860,39 @@ static void test_keys_sheet(void) {
     yk_keys_route(&k, DOWN, 1000, false);
     yk_keys_route(&k, HOLD, 1300, false);
     CHECK(yk_keys_ask(&k, false, false) && !yk_keys_sheet_open(&k));
+    // The key down in the app (11-09): no pull-down until its UP, which is the app's (an app that opened the
+    // microphone at DOWN closes it at UP; eaten, it would listen on with no one on the key).
+    yk_keys_init(&k);
+    CHECK(yk_keys_route(&k, DOWN, 30000, false) == YK_KEYS_APP);
+    CHECK(!yk_keys_sheet_open(&k) && !k.sheet && yk_keys_idle(&k));
+    CHECK(yk_keys_route(&k, HOLD, 30300, false) == YK_KEYS_APP && !yk_keys_sheet_open(&k));
+    CHECK(yk_keys_route(&k, UP, 31000, false) == YK_KEYS_APP);
+    CHECK(yk_keys_sheet_open(&k) && k.sheet);  // up: it opens
+    CHECK(yk_keys_route(&k, DOWN, 32000, false) == YK_KEYS_SHEET_CLOSE);  // and a press closes it, as before
+    CHECK(yk_keys_route(&k, UP, 32080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, TAP, 32080, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    // The 应用码 up while the app's press goes on (the pull-down's button tapped as the key went down): that press's
+    // HOLD is the system's, its UP the app's; the code stays up, the next press hides it.
+    yk_keys_init(&k);
+    CHECK(yk_keys_route(&k, DOWN, 40000, false) == YK_KEYS_APP);
+    yk_keys_code(&k, true);
+    CHECK(yk_keys_route(&k, HOLD, 40300, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, UP, 41000, false) == YK_KEYS_APP && k.code);
+    CHECK(yk_keys_route(&k, DOWN, 42000, false) == YK_KEYS_CODE_CLOSE);
+    CHECK(yk_keys_route(&k, UP, 42080, false) == YK_KEYS_EAT);
+    CHECK(yk_keys_route(&k, TAP, 42080, false) == YK_KEYS_EAT && yk_keys_idle(&k));
+    // ... a short press: its UP the app's, its TAP (after the UP) the system's.
+    yk_keys_init(&k);
+    CHECK(yk_keys_route(&k, DOWN, 50000, false) == YK_KEYS_APP);
+    yk_keys_code(&k, true);
+    CHECK(yk_keys_route(&k, UP, 50080, false) == YK_KEYS_APP);
+    CHECK(yk_keys_route(&k, TAP, 50080, false) == YK_KEYS_EAT && k.code);
+    // 「回到主屏幕说？」 is as before: the release of the hold that asked is the card's (P23).
+    yk_keys_init(&k);
+    yk_keys_route(&k, DOWN, 60000, false);
+    yk_keys_route(&k, HOLD, 60300, false);
+    CHECK(yk_keys_ask(&k, false, false));
+    CHECK(yk_keys_route(&k, UP, 61000, false) == YK_KEYS_EAT && !k.app_down);
 }
 
 /** The way in from the top edge (8.4): a press on the edge's strip that goes far enough down, more down than sideways;
@@ -831,9 +922,236 @@ static void test_pull(void) {
     CHECK(!p.armed);
 }
 
+/** A tap at (x, y), press number `press`, down at `down` ms and up 80 ms later. */
+static yk_dtap_tap_t tap_at(int x, int y, uint32_t press, uint32_t down) {
+    return (yk_dtap_tap_t){.x = (int16_t)x, .y = (int16_t)y, .down_ms = down, .up_ms = down + 80, .press = press};
+}
+
+/** The tap's whole press, as yk_app_ring.c hands it on: its finger down (true: the held tap given then), then its
+ *  release. `*gave`: the held tap was given, at the press or at the release. */
+static yk_dtap_do_t dtap(yk_dtap_t *d, yk_keys_t *k, bool on, const yk_dtap_tap_t *t, bool *gave) {
+    bool at_press = false, at_release = false;
+    if (on) at_press = yk_dtap_press(d, t->x, t->y, t->down_ms, t->press);
+    const yk_dtap_do_t r = yk_dtap_route(d, k, on, t, &at_release);
+    if (gave) *gave = at_press || at_release;
+    return r;
+}
+
+/** The clock from `from` to `to` ms (one ms at a time): how many times the held tap was given. */
+static int dtap_clock(yk_dtap_t *d, uint32_t from, uint32_t to) {
+    int n = 0;
+    for (uint32_t t = from; t != to + 1; t++) n += yk_dtap_tick(d, t);
+    return n;
+}
+
+/** A double tap on the screen in an extension (kit 1.11, yk_app_config_t.double_tap_ring; Yay 0.1.20 dev doc 4.7): off,
+ *  every tap the app's at once; on, a first tap's clicks held for the window and given late, or, the second of two
+ *  quick near taps opening the ring, nobody's; with the ring up, a double tap on its paper closes it and gives the app
+ *  nothing (Yay 0.1.21, 项目总策划 11-18). */
+static void test_dtap(void) {
+    yk_dtap_t d;
+    yk_keys_t k;
+    bool gave;
+    // Off (the default): every tap the app's at once, however quick and near; nothing kept, the ring never.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    yk_dtap_tap_t a = tap_at(233, 233, 1, 1000), b = tap_at(236, 230, 2, 1180);
+    CHECK(dtap(&d, &k, false, &a, &gave) == YK_DTAP_APP && !gave);
+    CHECK(dtap(&d, &k, false, &b, &gave) == YK_DTAP_APP && !gave && !k.ring && !yk_dtap_waiting(&d));
+    CHECK(dtap_clock(&d, 1080, 3000) == 0);
+
+    // 1. On, one tap: held, and the app's a window late. Its finger let go at 1080: up to 1530 a second could still
+    // come (450 ms); at 1531 the clicks are the app's, once.
+    yk_dtap_init(&d);
+    CHECK(dtap(&d, &k, true, &a, &gave) == YK_DTAP_HOLD && !gave && yk_dtap_waiting(&d) && !k.ring);
+    CHECK(dtap_clock(&d, 1080, 1080 + YK_DTAP_MS) == 0 && yk_dtap_waiting(&d));
+    CHECK(yk_dtap_tick(&d, 1080 + YK_DTAP_MS + 1) && !yk_dtap_waiting(&d));
+    CHECK(dtap_clock(&d, 1532, 5000) == 0);
+
+    // 2. On, a double: the ring opens and the app gets neither tap's clicks (the first's held ones dropped, never given).
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    CHECK(dtap(&d, &k, true, &a, &gave) == YK_DTAP_HOLD && !gave);
+    CHECK(!yk_dtap_press(&d, b.x, b.y, b.down_ms, b.press) && d.second);  // it may be the second: still held
+    CHECK(dtap_clock(&d, 1180, 1200) == 0);  // held while the second's finger is down
+    CHECK(yk_dtap_route(&d, &k, true, &b, &gave) == YK_DTAP_RING && !gave && k.ring && !yk_dtap_waiting(&d));
+    CHECK(dtap_clock(&d, 1260, 5000) == 0);  // the first's never given
+    // The key's next press closes it.
+    CHECK(yk_keys_route(&k, DOWN, 2000, false) == YK_KEYS_RING_CLOSE && !k.ring);
+    yk_keys_route(&k, UP, 2080, false);
+    yk_keys_route(&k, TAP, 2080, false);
+    CHECK(yk_keys_idle(&k));
+
+    // 3. The ring up: a tap on its paper is the ring's (it closes it at once); the second of that double is nobody's.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    k.ring = true;
+    yk_dtap_tap_t p1 = tap_at(60, 233, 70, 60000), p2 = tap_at(64, 236, 71, 60250), p3 = tap_at(64, 236, 72, 60500);
+    p1.paper = true;
+    CHECK(dtap(&d, &k, true, &p1, &gave) == YK_DTAP_APP && !gave && d.armed && d.eat);
+    yk_keys_closed(&k);  // its CLICKED closed the ring (folded back in 180 ms)
+    CHECK(dtap(&d, &k, true, &p2, &gave) == YK_DTAP_EAT && !gave && !k.ring && !yk_dtap_waiting(&d));
+    CHECK(dtap(&d, &k, true, &p3, &gave) == YK_DTAP_HOLD);  // a third is a first again
+    // ... its second landing on the ring still folding back (still up, no paper then): the ring's, and over.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    k.ring = true;
+    CHECK(dtap(&d, &k, true, &p1, &gave) == YK_DTAP_APP && d.eat);
+    CHECK(dtap(&d, &k, true, &p2, &gave) == YK_DTAP_APP && !gave && !yk_dtap_waiting(&d));
+    yk_keys_closed(&k);
+    CHECK(dtap(&d, &k, true, &p3, &gave) == YK_DTAP_HOLD);  // a first, not the paper's second
+    // A single tap on the paper: the ring closes as ever, nothing is given late, the next tap (later) a first.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    k.ring = true;
+    CHECK(dtap(&d, &k, true, &p1, &gave) == YK_DTAP_APP);
+    yk_keys_closed(&k);
+    CHECK(dtap_clock(&d, 60080, 61000) == 0 && !yk_dtap_waiting(&d));
+    yk_dtap_tap_t later = tap_at(64, 236, 71, 61200);
+    CHECK(dtap(&d, &k, true, &later, &gave) == YK_DTAP_HOLD && !gave);
+    // A tap on a place on the ring (no paper): the ring's at once, as ever; no double across it.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    k.ring = true;
+    yk_dtap_tap_t place = tap_at(233, 60, 80, 70000), after = tap_at(233, 62, 81, 70200);
+    CHECK(dtap(&d, &k, true, &place, &gave) == YK_DTAP_APP && !d.armed);
+    yk_keys_closed(&k);
+    CHECK(dtap(&d, &k, true, &after, &gave) == YK_DTAP_HOLD && !k.ring);
+    // The paper with the switch off: nothing of this (the hook is not even there).
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    k.ring = true;
+    CHECK(dtap(&d, &k, false, &p1, &gave) == YK_DTAP_APP && !d.armed);
+
+    // A press that cannot be the second gives the held tap before it reaches anything: too far, too late, after
+    // another press. Its own tap is then a first, held.
+    yk_dtap_tap_t f = tap_at(200, 200, 20, 10000);  // up at 10080
+    yk_dtap_tap_t far = tap_at(200 + 41, 200, 21, 10200), near = tap_at(200 + 24, 200 + 32, 21, 10200);  // 41, 40 px
+    yk_dtap_tap_t in_time = tap_at(200, 200, 21, 10080 + YK_DTAP_MS), late = tap_at(200, 200, 21, 10080 + YK_DTAP_MS + 1);
+    yk_dtap_tap_t after_swipe = tap_at(200, 200, 22, 10200);
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &f, NULL);
+    CHECK(yk_dtap_press(&d, far.x, far.y, far.down_ms, far.press) && !d.armed);
+    CHECK(yk_dtap_route(&d, &k, true, &far, &gave) == YK_DTAP_HOLD && !gave && d.first.press == 21);
+    yk_dtap_init(&d);
+    dtap(&d, &k, true, &f, NULL);
+    CHECK(dtap(&d, &k, true, &near, &gave) == YK_DTAP_RING && !gave);
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &f, NULL);
+    CHECK(yk_dtap_press(&d, late.x, late.y, late.down_ms, late.press));  // 451 ms: given
+    CHECK(yk_dtap_route(&d, &k, true, &late, &gave) == YK_DTAP_HOLD && !gave && !k.ring);
+    yk_dtap_init(&d);
+    dtap(&d, &k, true, &f, NULL);
+    CHECK(dtap(&d, &k, true, &in_time, &gave) == YK_DTAP_RING && !gave);  // 450 ms: a double
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &f, NULL);
+    CHECK(dtap(&d, &k, true, &after_swipe, &gave) == YK_DTAP_HOLD && gave && !k.ring);  // a press came between
+    // The route alone (no press seen) judges the same.
+    yk_dtap_init(&d);
+    yk_dtap_route(&d, &k, true, &f, &gave);
+    CHECK(yk_dtap_route(&d, &k, true, &far, &gave) == YK_DTAP_HOLD && gave);
+
+    // A second press that turns out no tap: a drag gives the held one at its release; one held down gives it at
+    // YK_DTAP_SECOND_MS, and its release then gives nothing more.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &f, NULL);
+    CHECK(!yk_dtap_press(&d, near.x, near.y, near.down_ms, near.press));
+    CHECK(yk_dtap_other(&d) && !yk_dtap_waiting(&d) && !yk_dtap_other(&d));
+    yk_dtap_init(&d);
+    dtap(&d, &k, true, &f, NULL);
+    CHECK(!yk_dtap_press(&d, near.x, near.y, near.down_ms, near.press));
+    CHECK(dtap_clock(&d, 10200, 10200 + YK_DTAP_SECOND_MS - 1) == 0);
+    CHECK(yk_dtap_tick(&d, 10200 + YK_DTAP_SECOND_MS) && !yk_dtap_waiting(&d) && !yk_dtap_other(&d));
+    // A drag with nothing held: nothing.
+    yk_dtap_init(&d);
+    CHECK(!yk_dtap_press(&d, 10, 10, 100, 1) && !yk_dtap_other(&d));
+
+    // A third tap is a first again (held).
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    yk_dtap_tap_t t1 = tap_at(100, 100, 10, 5000), t2 = tap_at(100, 100, 11, 5200), t3 = tap_at(100, 100, 12, 5400);
+    dtap(&d, &k, true, &t1, NULL);
+    CHECK(dtap(&d, &k, true, &t2, &gave) == YK_DTAP_RING);
+    yk_keys_closed(&k);  // the ring went (a tap on it)
+    CHECK(dtap(&d, &k, true, &t3, &gave) == YK_DTAP_HOLD && !gave && d.armed);
+    // The clock wrapping between them, and under a held tap: still a double; still given a window late.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    yk_dtap_tap_t w1 = tap_at(50, 50, 30, 0xFFFFFF00u), w2 = tap_at(52, 50, 31, 0xFFFFFF00u + 300u);
+    dtap(&d, &k, true, &w1, NULL);
+    CHECK(dtap(&d, &k, true, &w2, &gave) == YK_DTAP_RING && !gave);
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &w1, NULL);  // up at 0xFFFFFF50
+    CHECK(dtap_clock(&d, 0xFFFFFF50u, 0xFFFFFF50u + YK_DTAP_MS) == 0);
+    CHECK(yk_dtap_tick(&d, 0xFFFFFF50u + YK_DTAP_MS + 1));
+
+    // Something of the system's up: no half of a double, before or after, the tap the app's at once (a tap on it is
+    // its own); a held one is given then. Once it goes, a pair again.
+    yk_dtap_tap_t s1 = tap_at(233, 233, 40, 20000), s2 = tap_at(233, 233, 41, 20200), s3 = tap_at(233, 233, 42, 20400);
+    yk_dtap_tap_t s4 = tap_at(233, 233, 43, 20600);
+    for (int which = 0; which < 5; which++) {
+        yk_dtap_init(&d);
+        yk_keys_init(&k);
+        if (which == 0) k.ring = true;
+        if (which == 1) k.ask = true;
+        if (which == 2) yk_keys_code(&k, true);
+        if (which == 3) yk_keys_sheet_open(&k);
+        if (which == 4) yk_keys_grant_open(&k);
+        CHECK(dtap(&d, &k, true, &s1, &gave) == YK_DTAP_APP && !d.armed);
+        CHECK(dtap(&d, &k, true, &s2, &gave) == YK_DTAP_APP && !d.armed);
+        yk_keys_init(&k);  // it went
+        CHECK(dtap(&d, &k, true, &s3, &gave) == YK_DTAP_HOLD && d.armed);  // a first, not a second
+        CHECK(dtap(&d, &k, true, &s4, &gave) == YK_DTAP_RING && k.ring);
+    }
+    // A held tap, then the pull-down (say) up before its second: that second is the pull-down's; the held one is
+    // the app's then.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &s1, NULL);
+    CHECK(yk_keys_sheet_open(&k));
+    CHECK(dtap(&d, &k, true, &s2, &gave) == YK_DTAP_APP && gave && !d.armed && !k.ring);
+    // The rest of a press that closed one (eat), and the app's own press of the side key going on: no ring.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    k.ring = true;
+    yk_keys_route(&k, DOWN, 30000, false);  // closes the ring; its UP and TAP still to come
+    CHECK(k.eat);
+    yk_dtap_tap_t e1 = tap_at(233, 233, 50, 30010), e2 = tap_at(233, 233, 51, 30200);
+    dtap(&d, &k, true, &e1, NULL);
+    CHECK(dtap(&d, &k, true, &e2, &gave) == YK_DTAP_APP && !k.ring);
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    CHECK(yk_keys_route(&k, DOWN, 40000, false) == YK_KEYS_APP && k.app_down);
+    yk_dtap_tap_t h1 = tap_at(233, 233, 60, 40100), h2 = tap_at(233, 233, 61, 40300);
+    CHECK(dtap(&d, &k, true, &h1, &gave) == YK_DTAP_APP);
+    CHECK(dtap(&d, &k, true, &h2, &gave) == YK_DTAP_APP && !k.ring);
+    // own_double (the app takes the key's double click) does not touch it: the switch alone says.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &a, NULL);
+    CHECK(dtap(&d, &k, true, &b, &gave) == YK_DTAP_RING);
+    CHECK(yk_keys_route(&k, DOWN, 50000, true) == YK_KEYS_RING_CLOSE);
+    // The app going (yk_dtap_forget): a held tap dropped, never given.
+    yk_dtap_init(&d);
+    yk_keys_init(&k);
+    dtap(&d, &k, true, &t1, NULL);
+    yk_dtap_forget(&d);
+    CHECK(!yk_dtap_waiting(&d) && dtap_clock(&d, 5080, 7000) == 0);
+    // The numbers are Yay's own (yay/main/yay_touch.h: YAY_TOUCH_DOUBLE_MS, YAY_TOUCH_DOUBLE_PX; yay/test/test_touch.c
+    // checks they stay the same); YK_DTAP_SECOND_MS is yaykit_ui's YK_TAP_HOLD_MS (its test_apps.c checks 1500).
+    CHECK(YK_DTAP_MS == 450 && YK_DTAP_PX == 40 && YK_DTAP_SECOND_MS == 1500);
+}
+
 int main(void) {
     test_keys();
+    test_dtap();
     test_keys_sheet();
+    test_keys_grant();
     test_pull();
     test_ring_tapped();
     test_app_events();

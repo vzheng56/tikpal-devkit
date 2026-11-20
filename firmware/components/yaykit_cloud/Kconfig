@@ -8,4 +8,12 @@ config YK_CLOUD_ORIGIN
         image signing ships (docs/architecture/device-platform.md 6.2), cloud firmware goes only to
         internal test builds, not public releases.
 
+config YK_CLOUD_HTTP_BUFFER_MIN
+    int "Smallest HTTP buffer, in bytes"
+    default 0
+    help
+        An HTTPS client's receive and send buffers are at least this. 0 leaves them as written (2 KB or less, in internal
+        RAM). Set it above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL to have them in PSRAM: about 3.5 KB less internal RAM for
+        each request. With a limit above it (16384, some firmware here) they stay internal and only grow.
+
 endmenu

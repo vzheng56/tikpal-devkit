@@ -1,14 +1,31 @@
-// Host tests only (test_me.c): the client's types; test_me.c answers the calls (none is made on the /me path).
+// Host tests only (test_me.c): the client's types; test_me.c answers the calls (none is made on the /me path; a
+// scripted response for yk_cloud_get_to's).
 #pragma once
 #include <stdbool.h>
 #include "esp_err.h"
 #define ESP_ERR_HTTP_EAGAIN 0x7007
 typedef enum { HTTP_METHOD_GET, HTTP_METHOD_POST, HTTP_METHOD_PUT, HTTP_METHOD_DELETE } esp_http_client_method_t;
 typedef struct esp_http_client *esp_http_client_handle_t;
-typedef enum { HTTP_EVENT_ERROR, HTTP_EVENT_ON_CONNECTED } esp_http_client_event_id_t;  // the two yk_http looks at
-typedef struct {
+// As ESP-IDF 5.5.5 has them (esp_http_client.h): the order of the events, and the event's fields.
+typedef enum {
+    HTTP_EVENT_ERROR = 0,
+    HTTP_EVENT_ON_CONNECTED,
+    HTTP_EVENT_HEADERS_SENT,
+    HTTP_EVENT_HEADER_SENT = HTTP_EVENT_HEADERS_SENT,
+    HTTP_EVENT_ON_HEADER,  // yk_cloud_get_to reads Content-Range here
+    HTTP_EVENT_ON_DATA,
+    HTTP_EVENT_ON_FINISH,
+    HTTP_EVENT_DISCONNECTED,
+    HTTP_EVENT_REDIRECT,
+} esp_http_client_event_id_t;
+typedef struct esp_http_client_event {
     esp_http_client_event_id_t event_id;
     esp_http_client_handle_t client;
+    void *data;
+    int data_len;
+    void *user_data;  // the config's
+    char *header_key;
+    char *header_value;
 } esp_http_client_event_t;
 typedef struct {
     const char *url;
@@ -19,6 +36,7 @@ typedef struct {
     int buffer_size_tx;
     bool keep_alive_enable;
     esp_err_t (*event_handler)(esp_http_client_event_t *event);
+    void *user_data;
 } esp_http_client_config_t;
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config);
 esp_err_t esp_http_client_open(esp_http_client_handle_t client, int write_len);

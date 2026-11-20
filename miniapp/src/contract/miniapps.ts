@@ -19,13 +19,23 @@
 import { z } from "zod";
 import { recordingAnswer, recordingDeleted, recordingId, recordingList, recordingText } from "./recordings.js";
 import { MINIAPP_PATH, type MiniappCapabilityName, capabilityLevelOf } from "./miniapp-capabilities.js";
+import { LINK } from "./device-link.js";
+import { gcjPoint } from "./navigation.js";
+import { MAP_ERRORS, mapGeocodeRequest, mapGeocodeResult, mapRegeoResult, mapRoute, mapRoutesRequest, mapRoutesResult, mapSavedResult, mapSearchRequest, mapSearchResult, mapStaticRequest, mapStaticResult, mapTipsRequest, mapTipsResult } from "./map.js";
+import { tripEnded, tripProgress, tripStart, tripStarted, tripStatus } from "./trip.js";
 
 export const MINIAPP = {
   /**
    * The level the apps' container offers: every method up to it. 2 since 「小程序容器 · 两端」 offers the first version's
-   * methods (the plan's 2.5), the apps' tests with it.
+   * methods (the plan's 2.5); 3 since App 1.1.0 (31), build 31 on, both apps (and 1.2.0), offers 能力套装 3's (用户
+   * 11-17: still named 1.1.0, 1.2 kept for 0.2; no background trip in it, and the map's and 设备通道's switches stay off
+   * on the platform). The kit says level 3 from 开发包 1.11, out with Yay 0.1.22's full release (项目总策划 11-19). 1.1.0
+   * (30) and before are level 2 (or 1), however they are named. An
+   * app says its own level with every download (GET /v1/miniapps?capabilityLevel=<N>) and
+   * gets the highest release its container runs (miniapps.ts choose), so an older app keeps the release before a level-3
+   * one, and an app none of whose releases it runs is not in its list. This is the level the kit checks a package against.
    */
-  capabilityLevel: 2,
+  capabilityLevel: 3,
   /** A package's files at most, and a path's length. */
   maxFiles: 200,
   maxPathLength: 120,
@@ -37,6 +47,8 @@ export const MINIAPP = {
   photoSide: 1600,
   photoChars: 1_500_000,
   photos: 4,
+  /** storage.*: keys of a 小程序 on this phone, a key's length, a value's length, all its values together (characters). */
+  storage: { keys: 100, keyChars: 64, valueChars: 4096, totalChars: 65_536 },
 } as const;
 
 export const miniappSlug = z.string().regex(/^[a-z][a-z0-9-]{1,40}$/);
@@ -65,6 +77,11 @@ export const miniappCapabilities = [
   "records",
   "settings",
   "user",
+  "device.link",
+  "trip",
+  "map",
+  "places.saved",
+  "storage",
 ] as const satisfies readonly MiniappCapabilityName[];
 export type MiniappCapability = (typeof miniappCapabilities)[number];
 
@@ -142,6 +159,13 @@ export const miniappEnv = z
      * there down, its title under the capsule, never beside it); `bottom` the system's own bar.
      */
     insets: z.object({ top: z.number().nonnegative(), bottom: z.number().nonnegative() }).strict(),
+    /**
+     * Level 3: how the page was opened. A 声波码 of this app's own action (voice-code.ts, actions 8–15: app.json
+     * voiceCode.own says what each means) gives its action and value; anything else (the app page, the drawer, actions
+     * 0–3) null. A page opened by a container below level 3 has no such field. While the page is open, another code of
+     * the same app comes as the voiceCode.scanned event instead.
+     */
+    launch: z.object({ from: z.literal("voiceCode"), action: z.number().int().min(8).max(15), value: z.number().int().min(0).max(0xffffff) }).strict().nullable().optional(),
   })
   .strict();
 export type MiniappEnv = z.infer<typeof miniappEnv>;
@@ -213,7 +237,33 @@ export const miniappServerErrors = [
   "MINIAPP_UNAVAILABLE",
   "RECORDS_OFF",
   "DEVICE_REQUIRED",
+  ...MAP_ERRORS,
 ] as const;
+
+// Level 3 (能力套装 3). The map methods are the map module's operations (map.ts), the app asking the platform for them
+// as the user, on this page's behalf; leaving out the start (`from`) or `near` (`point` for regeo) is 「我这里」:
+// the app finds the position once, which needs `location` declared and its card agreed, else NOT_DECLARED.
+const mapRoutesParams = z.object({ ...mapRoutesRequest.shape, from: gcjPoint.optional() }).strict();
+const mapTipsParams = mapTipsRequest;
+const mapSearchParams = mapSearchRequest;
+const mapRegeoParams = z.object({ point: gcjPoint.optional() }).strict();
+/** An app message on the device link: the app's own bytes, base64 (1 to LINK.frame.appMaxBytes). */
+const linkData = z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(Math.ceil(LINK.frame.appMaxBytes / 3) * 4);
+/**
+ * device.link.open: the device to talk to. `mark` from the 声波码 (env.launch's value, as the app's registration says);
+ * without it, the account's device with this app that the phone knows or finds nearby. Not connected: why. no_device:
+ * none of the account's devices with this app is near or open; several: more than one and no mark (the page asks the
+ * user to scan); no_key: the platform gave no key (offline the first time); key_mismatch: the device holds another key
+ * (「让 Tikpal Voice 连一下网再试」); bluetooth_off; denied: the user said no to the card or the system's Bluetooth.
+ */
+const linkOpened = z.union([
+  z.object({ connected: z.literal(true), name: z.string().min(1).max(32), mark: z.number().int().min(0).max(2 ** LINK.mark.bits - 1) }).strict(),
+  z.object({ connected: z.literal(false), reason: z.enum(["no_device", "several", "no_key", "key_mismatch", "bluetooth_off", "denied", "busy"]) }).strict(),
+]);
+/** The link as the page sees it: connecting, connected, lost (out of reach: the app reconnects by itself; or the device
+ * took the key no more and fetching again did not help: then it stays lost until the page opens it again), closed. */
+const linkState = z.object({ state: z.enum(["connecting", "connected", "lost", "closed"]) }).strict();
+const storageKey = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
 
 /**
  * Every bridge method: its capability (null: every page has it), the level it came in with, what it takes and what it
@@ -274,6 +324,25 @@ export const MINIAPP_BRIDGE = {
     params: z.object({ type: z.enum(["image/png", "image/jpeg"]), data: z.string().min(1).max(6_000_000) }).strict(),
     result: z.object({ saved: z.boolean() }).strict(),
   },
+  "device.link.open": { capability: "device.link", level: 3, params: z.object({ mark: z.number().int().min(0).max(2 ** LINK.mark.bits - 1).optional() }).strict(), result: linkOpened },
+  /** One app message to the device (at most LINK.frame.appPerSecond a second; more is BAD_PARAMS). Not connected: FAILED. */
+  "device.link.send": { capability: "device.link", level: 3, params: z.object({ data: linkData }).strict(), result: none },
+  "device.link.close": { capability: "device.link", level: 3, params: none, result: none },
+  "trip.start": { capability: "trip", level: 3, params: tripStart, result: tripStarted },
+  "trip.status": { capability: "trip", level: 3, params: none, result: tripStatus },
+  "trip.stop": { capability: "trip", level: 3, params: none, result: none },
+  "map.routes": { capability: "map", level: 3, params: mapRoutesParams, result: mapRoutesResult },
+  "map.tips": { capability: "map", level: 3, params: mapTipsParams, result: mapTipsResult },
+  "map.search": { capability: "map", level: 3, params: mapSearchParams, result: mapSearchResult },
+  "map.geocode": { capability: "map", level: 3, params: mapGeocodeRequest, result: mapGeocodeResult },
+  "map.regeo": { capability: "map", level: 3, params: mapRegeoParams, result: mapRegeoResult },
+  "map.static": { capability: "map", level: 3, params: mapStaticRequest, result: mapStaticResult },
+  "places.saved": { capability: "places.saved", level: 3, params: none, result: mapSavedResult },
+  /** The page's own value for a key, or null (MINIAPP.storage: past its limits storage.set is BAD_PARAMS). */
+  "storage.get": { capability: "storage", level: 3, params: z.object({ key: storageKey }).strict(), result: z.object({ value: z.string().max(MINIAPP.storage.valueChars).nullable() }).strict() },
+  "storage.set": { capability: "storage", level: 3, params: z.object({ key: storageKey, value: z.string().max(MINIAPP.storage.valueChars) }).strict(), result: none },
+  "storage.remove": { capability: "storage", level: 3, params: z.object({ key: storageKey }).strict(), result: none },
+  "storage.keys": { capability: "storage", level: 3, params: none, result: z.object({ keys: z.array(storageKey).max(MINIAPP.storage.keys) }).strict() },
 } as const;
 export type MiniappMethod = keyof typeof MINIAPP_BRIDGE;
 export const miniappMethods = Object.keys(MINIAPP_BRIDGE) as MiniappMethod[];
@@ -304,10 +373,20 @@ export const bridgeResponse = z.union([
   z.object({ id: bridgeRequest.shape.id, ok: z.literal(true), result: z.unknown() }).strict(),
   z.object({ id: bridgeRequest.shape.id, ok: z.literal(false), error: bridgeError }).strict(),
 ]);
-/** What the app says unasked: the audio's progress (about every second while playing, and when it changes) and env changes. */
+/**
+ * What the app says unasked: the audio's progress (about every second while playing, and when it changes) and env
+ * changes; level 3: the link's state and the device's app messages, a trip's progress (once a second while the page is
+ * in front), its new route and its end, and a 声波码 of this app's own action scanned while the page is open.
+ */
 export const bridgeEvent = z.union([
   z.object({ event: z.literal("audio.state"), data: audioState }).strict(),
   z.object({ event: z.literal("env.changed"), data: miniappEnv }).strict(),
+  z.object({ event: z.literal("device.link.state"), data: linkState }).strict(),
+  z.object({ event: z.literal("device.link.message"), data: z.object({ data: linkData }).strict() }).strict(),
+  z.object({ event: z.literal("trip.progress"), data: tripProgress }).strict(),
+  z.object({ event: z.literal("trip.rerouted"), data: z.object({ route: mapRoute }).strict() }).strict(),
+  z.object({ event: z.literal("trip.ended"), data: tripEnded }).strict(),
+  z.object({ event: z.literal("voiceCode.scanned"), data: z.object({ action: z.number().int().min(8).max(15), value: z.number().int().min(0).max(0xffffff) }).strict() }).strict(),
 ]);
 
 /**

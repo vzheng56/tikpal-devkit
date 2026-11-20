@@ -1,6 +1,7 @@
 // Pure C parts of the app ring, the app catalog and the hint arrow (yk_apps_logic.h). No LVGL, no ESP-IDF: host
 // tested with test/run.sh.
 #include "yk_apps_logic.h"
+#include "yaykit_ui.h"  // yk_ui_tap_t, yk_ui_tap_pair_line
 
 #include <math.h>
 #include <stdio.h>
@@ -8,6 +9,7 @@
 #include <string.h>
 
 #include "yk_round.h"
+#include "yk_words.h"
 
 // ---------------------------------------------------------------- the ring's geometry
 
@@ -34,33 +36,8 @@ static bool box_in_circle(const yk_box_t *b, int r) {
 static void slot_centre(int slot, int16_t *cx, int16_t *cy) {
     const bool six = slot >= YK_APPS_SIX;
     const double a = (six ? (slot - YK_APPS_SIX) * 60.0 : slot * 72.0) * 3.14159265358979 / 180.0;  // from 12, clockwise
-    const double r = six ? YK_APPS_R6 : YK_APPS_R;
-    *cx = (int16_t)lround(YK_CX + r * sin(a));
-    *cy = (int16_t)lround(YK_CY - r * cos(a));
-}
-
-int yk_apps_name_room(int slot, int name_h) {
-    int16_t cx, cy;
-    slot_centre(slot, &cx, &cy);
-    // How wide the circle is across the glyphs' farther edge.
-    const int top = cy + YK_APPS_SAT_R + YK_APPS_NAME_GAP + YK_APPS_INK_TOP - YK_CY;
-    const int bottom = cy + YK_APPS_SAT_R + YK_APPS_NAME_GAP + name_h - YK_APPS_INK_BOTTOM - YK_CY;
-    const int far = abs(top) > abs(bottom) ? abs(top) : abs(bottom);
-    if (far >= YK_R_CONTENT) return 0;
-    const int half = (int)floor(sqrt((double)YK_R_CONTENT * YK_R_CONTENT - (double)far * far));
-    int lo = YK_CX - half, hi = YK_CX + half;
-    // The lower two share the bottom of the circle: each keeps to its side. On the 6-place ring a disc stands at the
-    // bottom between them: they keep beside it (and its in-use ring), not under it.
-    const int apart = slot >= YK_APPS_SIX ? YK_APPS_SAT_R + YK_APPS_RING_W + 2 : YK_APPS_NAME_APART / 2;
-    if (cy > YK_CY && cx > YK_CX) lo = YK_CX + apart;
-    if (cy > YK_CY && cx < YK_CX) hi = YK_CX - apart;
-    // The widest w whose middle can sit within the disc's width (|middle - cx| < SAT_R) inside lo..hi.
-    int best = 0;
-    for (int w = 1; w <= YK_APPS_NAME_MAX_W && w <= hi - lo; w++) {
-        const int mid = cx < lo + w / 2 ? lo + w / 2 : cx > hi - (w - w / 2) ? hi - (w - w / 2) : cx;
-        if (abs(mid - cx) < YK_APPS_SAT_R) best = w;
-    }
-    return best;
+    *cx = (int16_t)lround(YK_CX + YK_RINGS_R * sin(a));
+    *cy = (int16_t)lround(YK_CY - YK_RINGS_R * cos(a));
 }
 
 static bool is(const yk_apps_item_t *item, const char *slug) { return item->slug && !strcmp(item->slug, slug); }
@@ -85,14 +62,10 @@ void yk_apps_item_slots(const yk_apps_item_t *items, int n, int slots[YK_APPS_MA
     for (int i = 0; i < YK_APPS_MAX; i++) slots[i] = i < n - 1 ? i : i == n - 1 ? YK_APPS_MORE_PLACE : -1;
 }
 
-void yk_apps_layout(int n, const int name_w[], int name_h, int label_w, yk_apps_layout_t *out) {
+void yk_apps_layout(int n, yk_apps_layout_t *out) {
     int slots[YK_APPS_MAX];
     yk_apps_slots(n, slots);
-    yk_apps_layout_at(n, slots, name_w, name_h, label_w, out);
-}
-
-int yk_apps_label_max(int n, const int slots[]) {
-    return n > 0 && slots && slots[n - 1] == YK_APPS_SETTINGS_PLACE ? YK_APPS_LABEL_MAX_W6 : YK_APPS_LABEL_MAX_W;
+    yk_apps_layout_at(n, slots, out);
 }
 
 void yk_apps_update_dot(int cx, int cy, float k, int *x, int *y, float *r, float *edge_r) {
@@ -116,32 +89,79 @@ void yk_apps_phone_mark(int cx, int cy, float k, int *x, int *y, float *r, float
     *edge_r = (YK_APPS_PHONE_R + YK_APPS_PHONE_EDGE) * k;
 }
 
-void yk_apps_layout_at(int n, const int slots[], const int name_w[], int name_h, int label_w, yk_apps_layout_t *out) {
+void yk_apps_layout_at(int n, const int slots[], yk_apps_layout_t *out) {
     memset(out, 0, sizeof(*out));
     out->n = n < 0 ? 0 : n > YK_APPS_MAX ? YK_APPS_MAX : n;
-    const int label_max = yk_apps_label_max(out->n, slots);
-    if (label_w > label_max) label_w = label_max;
-    out->label = (yk_box_t){(int16_t)(YK_CX - label_w / 2), (int16_t)(YK_CY + YK_APPS_LABEL_DY), (int16_t)label_w,
-                            (int16_t)name_h};
     for (int i = 0; i < out->n; i++) {
         yk_apps_sat_t *s = &out->sat[i];
         s->slot = slots[i];
         slot_centre(s->slot, &s->cx, &s->cy);
-        const int room = yk_apps_name_room(s->slot, name_h);
-        int w = name_w ? name_w[i] : 0;
-        if (w > room) w = room;
-        s->name = (yk_box_t){(int16_t)(s->cx - w / 2), (int16_t)(s->cy + YK_APPS_SAT_R + YK_APPS_NAME_GAP), (int16_t)w,
-                             (int16_t)name_h};
-        // Towards the middle until the glyphs are in the circle (the lower two: about 25 px).
-        const int dir = s->cx > YK_CX ? -1 : 1;
-        for (int k = 0; k < YK_APPS_R; k++) {
-            const yk_box_t ink = {s->name.x, (int16_t)(s->name.y + YK_APPS_INK_TOP), s->name.w,
-                                  (int16_t)(s->name.h - YK_APPS_INK_TOP - YK_APPS_INK_BOTTOM)};
-            if (box_in_circle(&ink, YK_R_CONTENT) || s->name.x + s->name.w / 2 == YK_CX) break;
-            s->name.x = (int16_t)(s->name.x + dir);
-            s->name_shift++;
-        }
     }
+}
+
+// ---------------------------------------------------------------- both rings
+
+void yk_rings_mark(yk_mark_kind_t kind, int cx, int cy, float k, int *x, int *y, float *outer) {
+    // Where a YK_MARK_DISC_R disc has it, out to the rings' disc edge; as big as it was made.
+    static const struct { int8_t d, up; float r; } M[] = {
+        [YK_MARK_UPDATE] = {YK_APPS_UPDATE_D, 1, YK_APPS_UPDATE_R + YK_APPS_UPDATE_EDGE},
+        [YK_MARK_PHONE] = {YK_APPS_PHONE_D, 1, YK_APPS_PHONE_R + YK_APPS_PHONE_EDGE},
+        [YK_MARK_CACHED] = {YK_APPS_CACHE_D, 0, YK_APPS_CACHE_R},
+        [YK_MARK_DOWNLOAD] = {YK_APPS_BADGE_D, 0, YK_APPS_BADGE_R},
+    };
+    const int c = kind < 0 || kind > YK_MARK_DOWNLOAD ? YK_MARK_UPDATE : kind;
+    const float d = (float)M[c].d * YK_RINGS_SAT_R / YK_MARK_DISC_R * k;
+    *x = cx + (int)lroundf(d);
+    *y = cy + (M[c].up ? -1 : 1) * (int)lroundf(d);
+    *outer = M[c].r * k;
+}
+
+void yk_rings_words(int n, const int line_h[], yk_box_t out[]) {
+    if (n < 0) n = 0;
+    if (n > 3) n = 3;
+    int all = 0;
+    for (int i = 0; i < n; i++) all += line_h[i];
+    int y = YK_CY - all / 2;
+    for (int i = 0; i < n; i++) {
+        out[i] = (yk_box_t){(int16_t)(YK_CX - YK_RINGS_WORDS_W / 2), (int16_t)y, YK_RINGS_WORDS_W, (int16_t)line_h[i]};
+        y += line_h[i];
+    }
+}
+
+int yk_rings_name_lines(const char *name, yk_glyph_width_fn width, void *ctx, int max_w, char *line1, size_t size1,
+                        char *line2, size_t size2) {
+    if (size1) line1[0] = 0;
+    if (size2) line2[0] = 0;
+    if (!name || !name[0] || !size1) return 0;
+    // The first line: as many characters as fit, back to the last space among them when there is one.
+    int w = 0, len, cut = 0, space = -1;
+    const char *p = name;
+    for (; *p; p += len) {
+        const uint32_t cp = yk_utf8_next(p, &len);
+        const int cw = width(cp, ctx);
+        if (w + cw > max_w) break;
+        w += cw;
+        if (cp == ' ') space = (int)(p - name);
+        cut = (int)(p - name) + len;
+    }
+    if (!*p) {  // all of it
+        snprintf(line1, size1, "%s", name);
+        return 1;
+    }
+    if (space > 0) cut = space;
+    if (cut <= 0) yk_utf8_next(name, &cut);  // not even one fits: one anyway (the drawing cuts it)
+    snprintf(line1, size1, "%.*s", cut, name);
+    const char *rest = name + cut;
+    while (*rest == ' ') rest++;
+    if (!rest[0]) return 1;
+    if (size2) yk_text_fit(rest, width, ctx, max_w, line2, size2);
+    return 2;
+}
+
+int yk_rings_pressed(const yk_apps_touch_t *t, uint32_t now_ms) {
+    const yk_tap_t *p = &t->tap;
+    if (t->closing || t->swiped || !p->down || p->off || p->hit < 0) return -1;
+    return (uint32_t)(now_ms - p->t0) >= YK_TAP_HOLD_MS ? -1 : p->hit;
 }
 
 // ---------------------------------------------------------------- motion
@@ -190,49 +210,151 @@ bool yk_apps_frame_away(const yk_apps_layout_t *L, int t_ms, int dx, int dy, yk_
     return t >= YK_APPS_AWAY_MS;
 }
 
-void yk_apps_touch_press(yk_apps_touch_t *t) { t->swiped = false; }
+bool yk_rings_press(int n, int pressed, int t_ms, uint32_t *dim, yk_apps_pose_t pose[]) {
+    if (n > 32) n = 32;
+    const bool place = pressed >= 1 && pressed <= n;
+    const uint32_t all = n >= 32 ? 0xFFFFFFFFu : (1u << n) - 1;
+    const uint32_t want = place ? all & ~(1u << (pressed - 1)) : 0;
+    *dim &= all;
+    // One place a frame, clockwise from the pressed one (from the top when none is).
+    for (int k = 0; k < n && *dim != want; k++) {
+        const int i = ((place ? pressed - 1 : 0) + k) % n;
+        const uint32_t bit = 1u << i;
+        if ((*dim & bit) != (want & bit)) {
+            *dim ^= bit;
+            break;
+        }
+    }
+    bool grown_done = true;
+    if (place) {
+        const float k = ease_out(clamp01((float)(t_ms < 0 ? 0 : t_ms) / YK_RINGS_PRESS_MS));
+        const float grown = (float)YK_RINGS_PRESS_R / YK_RINGS_SAT_R;
+        pose[pressed].scale = (uint16_t)lroundf(pose[pressed].scale * (1 + (grown - 1) * k));
+        grown_done = t_ms >= YK_RINGS_PRESS_MS;
+    }
+    for (int e = 1; e <= n; e++)
+        if (*dim & 1u << (e - 1)) pose[e].opa = (uint8_t)(pose[e].opa * YK_RINGS_DIM_OPA / 255);
+    return grown_done && *dim == want;
+}
+
+void yk_tap_press(yk_tap_t *t, int hit, int x, int y, uint32_t now_ms) {
+    *t = (yk_tap_t){.down = true, .hit = hit, .up_hit = hit, .x0 = (int16_t)x, .y0 = (int16_t)y, .t0 = now_ms};
+}
+
+bool yk_tap_move(yk_tap_t *t, int x, int y) {
+    if (t->down && !t->off && (abs(x - t->x0) > YK_TAP_SLOP || abs(y - t->y0) > YK_TAP_SLOP)) {
+        t->off = true;
+        t->why = YK_TAP_MOVED;
+    }
+    return t->down && !t->off;
+}
+
+void yk_tap_cancel(yk_tap_t *t) {
+    if (!t->off) t->why = YK_TAP_SWIPED;
+    t->off = true;
+}
+
+bool yk_tap_release(yk_tap_t *t, int hit, int x, int y, uint32_t now_ms) {
+    t->up_hit = hit;
+    if (!t->down) t->why = YK_TAP_OTHER;  // no press seen here: it went down somewhere else
+    else if (yk_tap_move(t, x, y)) {
+        if (hit != t->hit) t->why = YK_TAP_OTHER;
+        else if ((uint32_t)(now_ms - t->t0) >= YK_TAP_HOLD_MS) t->why = YK_TAP_HELD;
+    }
+    t->down = false;
+    return t->why == YK_TAP_YES;
+}
+
+bool yk_tap_strict(yk_tap_t *t, bool same, bool over, bool swiped, int x, int y, uint32_t now_ms) {
+    if (!same || !t->down) {  // not the press it went down with: no tap
+        t->down = false;
+        t->why = YK_TAP_OTHER;
+        return false;
+    }
+    if (swiped) yk_tap_cancel(t);
+    return yk_tap_release(t, over ? t->hit : t->hit - 1, x, y, now_ms);
+}
+
+const char *yk_tap_why_name(int why) {
+    static const char *const NAMES[] = {"tap", "other", "moved", "held", "swiped"};
+    return why >= 0 && why < (int)(sizeof(NAMES) / sizeof(NAMES[0])) ? NAMES[why] : "?";
+}
+
+int yk_ui_tap_pair_line(char *out, size_t size, const char *where, const yk_ui_tap_t *first, const yk_ui_tap_t *second,
+                        bool twice, const char *busy, int window_ms, int px) {
+    if (!out || !size || !first || !second) return 0;
+    const uint32_t gap = second->down_ms - first->up_ms;  // (the clock wraps: unsigned)
+    if (gap >= YK_UI_TAP_PAIR_MS) return 0;
+    const int dx = second->x - first->x, dy = second->y - first->y;
+    const int d2 = dx * dx + dy * dy;
+    const char *why = twice                                ? "double"
+                      : second->press != first->press + 1 ? "between"
+                      : (int)gap > window_ms              ? "slow"
+                      : d2 > px * px                      ? "far"
+                      : busy                              ? busy
+                                                          : "third";
+    const int n = snprintf(out, size, "YAY_TAP_PAIR where=%s gap_ms=%u dist_px=%d hold1_ms=%u hold2_ms=%u double=%d why=%s",
+                           where ? where : "?", (unsigned)gap, (int)lroundf(sqrtf((float)d2)),
+                           (unsigned)(first->up_ms - first->down_ms), (unsigned)(second->up_ms - second->down_ms), twice,
+                           why);
+    return n < 0 ? 0 : n;
+}
+
+const char *yk_tap_line(const yk_tap_t *t, const char *where, char *out, size_t size) {
+    snprintf(out, size, "YK_TAP %s %s down=%d up=%d", where, yk_tap_why_name(t->why), t->hit, t->up_hit);
+    return out;
+}
+
+void yk_apps_touch_press(yk_apps_touch_t *t, int hit, int x, int y, uint32_t now_ms) {
+    t->swiped = false;
+    yk_tap_press(&t->tap, hit, x, y, now_ms);
+}
+
+void yk_apps_touch_move(yk_apps_touch_t *t, int x, int y) { yk_tap_move(&t->tap, x, y); }
 
 yk_apps_go_t yk_apps_touch_swipe(yk_apps_touch_t *t, int dx, int dy) {
     if (t->closing || (!dx && !dy)) return (yk_apps_go_t){.kind = YK_APPS_GO_NONE};
     t->swiped = t->closing = true;
+    yk_tap_cancel(&t->tap);
     return (yk_apps_go_t){.kind = YK_APPS_GO_AWAY, .dx = (int8_t)(dx > 0 ? 1 : dx < 0 ? -1 : 0),
                           .dy = (int8_t)(dx ? 0 : dy > 0 ? 1 : -1)};
 }
 
-yk_apps_go_t yk_apps_touch_click(yk_apps_touch_t *t, const yk_apps_layout_t *L, int x, int y) {
-    if (t->closing || t->swiped) return (yk_apps_go_t){.kind = YK_APPS_GO_NONE};
+yk_apps_go_t yk_apps_touch_up(yk_apps_touch_t *t, int hit, int x, int y, uint32_t now_ms) {
+    const bool tap = yk_tap_release(&t->tap, hit, x, y, now_ms);
+    if (t->closing || t->swiped || !tap) return (yk_apps_go_t){.kind = YK_APPS_GO_NONE};
     t->closing = true;
-    return (yk_apps_go_t){.kind = YK_APPS_GO_TAP, .hit = yk_apps_hit(L, x, y)};
+    return (yk_apps_go_t){.kind = YK_APPS_GO_TAP, .hit = hit};
+}
+
+yk_apps_go_t yk_apps_touch_click(yk_apps_touch_t *t, const yk_apps_layout_t *L, int x, int y, uint32_t now_ms) {
+    return yk_apps_touch_up(t, yk_apps_hit(L, x, y), x, y, now_ms);
 }
 
 void yk_apps_touch_closing(yk_apps_touch_t *t) { t->closing = true; }
 
-static bool in_box(const yk_box_t *b, int x, int y, int pad) {
-    return x >= b->x - pad && x < b->x + b->w + pad && y >= b->y - pad && y < b->y + b->h + pad;
-}
+void yk_apps_touch_stays(yk_apps_touch_t *t) { t->closing = false; }
 
 int yk_apps_hit(const yk_apps_layout_t *L, int x, int y) {
+    int best = -1, best_d = 0;
     for (int i = 0; i < L->n; i++) {
-        const int dx = x - L->sat[i].cx, dy = y - L->sat[i].cy;
-        if (dx * dx + dy * dy <= YK_APPS_HIT_R * YK_APPS_HIT_R || in_box(&L->sat[i].name, x, y, 4)) return i + 1;
-        if (L->sat[i].phone) {
+        const int dx = x - L->sat[i].cx, dy = y - L->sat[i].cy, d = dx * dx + dy * dy;
+        bool on = d <= YK_APPS_HIT_R * YK_APPS_HIT_R;
+        if (!on && L->sat[i].phone) {
             int mx, my;
-            float r, edge;
-            yk_apps_phone_mark(L->sat[i].cx, L->sat[i].cy, 1.0f, &mx, &my, &r, &edge);
-            const int ex = x - mx, ey = y - my, R = (int)ceilf(edge) + 2;
-            if (ex * ex + ey * ey <= R * R) return i + 1;
+            float outer;
+            yk_rings_mark(YK_MARK_PHONE, L->sat[i].cx, L->sat[i].cy, 1.0f, &mx, &my, &outer);
+            const int ex = x - mx, ey = y - my, R = (int)ceilf(outer) + 2;
+            on = ex * ex + ey * ey <= R * R;
         }
+        if (on && (best < 0 || d < best_d)) best = i + 1, best_d = d;
     }
+    if (best > 0) return best;
     const int dx = x - YK_CX, dy = y - YK_CY;
-    if (dx * dx + dy * dy <= YK_APPS_CENTER_HIT_R * YK_APPS_CENTER_HIT_R || in_box(&L->label, x, y, 4)) return 0;
-    return -1;
+    return dx * dx + dy * dy <= YK_APPS_CENTER_HIT_R * YK_APPS_CENTER_HIT_R ? 0 : -1;
 }
 
-const char *yk_apps_ask_text(const char *buddy, bool english, char *out, size_t size) {
-    if (!buddy || !buddy[0]) buddy = yk_buddy_name(0);
-    snprintf(out, size, english ? "Talk in %s?" : "回到 %s 说？", buddy);
-    return out;
-}
+const char *yk_apps_ask_text(bool english) { return yk_word_in(english, YK_STR_YAYKIT_APPS_TALK_IN); }
 
 int yk_apps_pick(const yk_apps_slot_t *installed, int n, const yk_catalog_t *cat, yk_apps_item_t *out, int max) {
     if (max > YK_APPS_MAX) max = YK_APPS_MAX;
@@ -559,9 +681,9 @@ bool yk_hint_shown(yk_hint_state_t *s, yk_hint_kind_t kind) {
 const char *yk_hint_text(yk_hint_kind_t kind, bool english) {
     switch (kind) {
     case YK_HINT_TALK:
-    case YK_HINT_BACK: return english ? "Hold here to talk" : "按住这里说话";
-    case YK_HINT_TAP: return english ? "Hold the key to talk" : "按侧键说话";
-    case YK_HINT_APPS: return english ? "Double-press: apps, home" : "双击：应用和回家";
+    case YK_HINT_BACK: return yk_word_in(english, YK_STR_YAYKIT_HINT_HOLD_HERE);
+    case YK_HINT_TAP: return yk_word_in(english, YK_STR_YAYKIT_HINT_HOLD_KEY);
+    case YK_HINT_APPS: return yk_word_in(english, YK_STR_YAYKIT_HINT_DOUBLE_PRESS);
     default: return "";
     }
 }

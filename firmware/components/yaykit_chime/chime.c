@@ -175,12 +175,14 @@ static void pa_set(bool on)
     }
 }
 
-/* Only the pins in use are driven. Tikpal configured both candidates (43 and 46) on every init, which drove
- * GPIO46 (a strapping pin whose net on this board is not documented) low for no reason; it is now touched only
- * while `soundtest` tries it. A pin given up goes back to its reset state. */
+/* Only the pins in use are driven. Tikpal configured both candidates (43 and 46) on every init. GPIO46 is no
+ * amplifier pin: it drives the vibration motor (GPIO46 -> R24 -> Q1 -> M2, measured on unit 2 11-13,
+ * docs/delivery/2026-11-13-本事和规矩-振动和姿态.md 1), it is yaykit_haptic's alone, and a strapping pin; it is never
+ * touched here, whatever chime_set_pa_pins() is given. A pin given up goes back to its reset state. */
+#define VIBRATION_PIN 46
 static void pa_pin_setup(int pin)
 {
-    if (pin < 0) return;
+    if (pin < 0 || pin == VIBRATION_PIN) return;
     gpio_reset_pin(pin);
     gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT); /* input too, so it can be read back */
     gpio_set_level(pin, 0);
@@ -188,6 +190,8 @@ static void pa_pin_setup(int pin)
 
 void chime_set_pa_pins(int a, int b)
 {
+    if (a == VIBRATION_PIN) a = -1;
+    if (b == VIBRATION_PIN) b = -1;
     for (int i = 0; i < PA_MAX_PINS; i++) {
         const int old = s_pa_pins[i];
         if (old >= 0 && old != a && old != b) gpio_reset_pin(old);
@@ -391,21 +395,20 @@ void chime_play(chime_kind_t kind)
     }
 }
 
-/* Plays the same tone four times with a different amplifier-enable pin each
- * time, so a listener can tell which pin actually opens the speaker. */
+/* Plays the same tone with the amplifier pin and without it, so a listener can tell the amplifier opens the
+ * speaker. Tikpal's also tried GPIO46, which set the vibration motor going: that pin is not the amplifier's. */
 void chime_soundtest(void)
 {
     static const struct { int a, b; const char *label; } steps[] = {
         { 43, -1, "GPIO43 high" },
-        { 46, -1, "GPIO46 high" },
-        { 43, 46, "GPIO43 + GPIO46 high" },
         { -1, -1, "no amplifier pin (codec only)" },
     };
+    const int n = sizeof(steps) / sizeof(steps[0]);
     int saved_a, saved_b;
     chime_get_pa_pins(&saved_a, &saved_b);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < n; i++) {
         chime_set_pa_pins(steps[i].a, steps[i].b);
-        printf("SOUNDTEST %d/4: %s\n", i + 1, steps[i].label);
+        printf("SOUNDTEST %d/%d: %s\n", i + 1, n, steps[i].label);
         chime_play_tone(1000, 1000, 80);
         vTaskDelay(pdMS_TO_TICKS(900));
     }

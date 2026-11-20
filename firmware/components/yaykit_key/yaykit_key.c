@@ -27,8 +27,13 @@ static struct {
     void *ctx;
 } s_subs[MAX_SUBS], s_grab;  // s_grab.cb set: every event goes to it alone
 static volatile int64_t s_edge_us;     // first edge since the task last looked, 0 = none
-static QueueHandle_t s_sim;            // simulated presses waiting to start (hold ms each)
+typedef struct {
+    int hold_ms;
+    bool lost_up;  // its release edge never comes (yk_key_simulate_lost_up)
+} sim_t;
+static QueueHandle_t s_sim;            // simulated presses waiting to start
 static int64_t s_sim_release_ms = -1;  // when the simulated press in progress ends
+static bool s_sim_lost_up;             // ... and it ends with no edge: only the level readings can see it
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 static bool level_pressed(void) { return gpio_get_level(KEY_GPIO) == 0; }
@@ -93,6 +98,8 @@ static void handle_edge(void) {
     if (level_pressed() != s_sm.pressed) feed_edge(!s_sm.pressed, moved ? now_ms() : first);
 }
 
+/** Wakes at each edge and at yk_key_sm_deadline(): while the key is down that is at least every 25 ms (100 ms after
+ *  HOLD), and each wake reads the level for yk_key_sm_align(), so a release whose edge was lost still ends the press. */
 static void key_task(void *arg) {
     (void)arg;
     for (;;) {
@@ -111,24 +118,28 @@ static void key_task(void *arg) {
         }
         if (s_sim_release_ms >= 0 && now_ms() >= s_sim_release_ms) {
             s_sim_release_ms = -1;
-            feed_edge(false, now_ms());
+            if (s_sim_lost_up) s_sim_lost_up = false;  // no edge: the level (the real key's, up) says it
+            else feed_edge(false, now_ms());
         }
-        int hold;  // the next simulated press, once the key is free
-        if (s_sim_release_ms < 0 && !s_sm.pressed && xQueueReceive(s_sim, &hold, 0) == pdTRUE) {
+        sim_t sim;  // the next simulated press, once the key is free
+        if (s_sim_release_ms < 0 && !s_sm.pressed && xQueueReceive(s_sim, &sim, 0) == pdTRUE) {
             const int64_t t = now_ms();
-            s_sim_release_ms = t + hold;
+            s_sim_release_ms = t + sim.hold_ms;
+            s_sim_lost_up = sim.lost_up;
             feed_edge(true, t);
             xTaskNotify(s_task, NOTE_SIM, eSetBits);  // look again after this one
         }
+        // A simulated press reads down until it ends; the real key otherwise.
+        const bool down = s_sim_release_ms >= 0 || level_pressed();
         yk_key_event_t ev[YK_KEY_SM_MAX_EVENTS];
-        dispatch(ev, yk_key_sm_tick(&s_sm, now_ms(), ev));
+        dispatch(ev, yk_key_sm_align(&s_sm, down, now_ms(), ev));
     }
 }
 
 esp_err_t yk_key_init(const yk_key_config_t *cfg) {
     if (s_task) return ESP_OK;
     yk_key_sm_init(&s_sm, cfg);
-    s_sim = xQueueCreate(4, sizeof(int));
+    s_sim = xQueueCreate(4, sizeof(sim_t));
     if (!s_sim) return ESP_ERR_NO_MEM;
     const gpio_config_t io = {
         .pin_bit_mask = 1ULL << KEY_GPIO,
@@ -187,10 +198,14 @@ bool yk_key_wait_release(int timeout_ms) {
     return true;
 }
 
-esp_err_t yk_key_simulate(int hold_ms) {
+static esp_err_t simulate(int hold_ms, bool lost_up) {
     if (!s_task) return ESP_ERR_INVALID_STATE;
-    if (hold_ms <= 0) return ESP_ERR_INVALID_ARG;
-    if (xQueueSend(s_sim, &hold_ms, 0) != pdTRUE) return ESP_ERR_NO_MEM;
+    const sim_t sim = {.hold_ms = hold_ms, .lost_up = lost_up};
+    if (xQueueSend(s_sim, &sim, 0) != pdTRUE) return ESP_ERR_NO_MEM;
     xTaskNotify(s_task, NOTE_SIM, eSetBits);
     return ESP_OK;
 }
+
+esp_err_t yk_key_simulate(int hold_ms) { return hold_ms > 0 ? simulate(hold_ms, false) : ESP_ERR_INVALID_ARG; }
+
+esp_err_t yk_key_simulate_lost_up(int hold_ms) { return hold_ms >= 0 ? simulate(hold_ms, true) : ESP_ERR_INVALID_ARG; }

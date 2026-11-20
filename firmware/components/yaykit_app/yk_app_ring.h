@@ -1,4 +1,4 @@
-// yaykit_app's side key in an extension (P23): the app ring and 「回到 Yay 说？」 (yk_app_ring.c); and what yaykit_app.c
+// yaykit_app's side key in an extension (P23): the app ring and 「回到主屏幕说？」 (yk_app_ring.c); and what yaykit_app.c
 // and yk_app_power.c (0.1.13) ask of each other. Private.
 #pragma once
 
@@ -7,12 +7,13 @@
 #include "yaykit_app.h"
 
 /** From yk_app_start(). `active`: an extension in a slot (Yay has its own ring; the recovery has nowhere to go):
- *  the double click opens the ring and a hold may ask. Otherwise the key only goes on to the app's yk_app_on_key. */
-void yk_app_ring_start(const char *slug, bool talks, bool own_double, bool active);
+ *  the double click opens the ring and a hold may ask. Otherwise the key only goes on to the app's yk_app_on_key.
+ *  `double_tap`: yk_app_config_t.double_tap_ring (kit 1.11): with `active`, a double tap on the screen opens it too. */
+void yk_app_ring_start(const char *slug, bool talks, bool own_double, bool double_tap, bool active);
 /** Every key event (yaykit_app's subscriber, in the key task). */
 void yk_app_ring_key(const yk_key_event_t *ev);
 void yk_app_ring_on_key(yk_app_key_fn fn, void *ctx);
-/** Development (`yay ring <slug>|yay|paper`): a tap on the open ring or 「回到 Yay 说？」. -1: not an extension's. */
+/** Development (`yay ring <slug>|yay|paper`): a tap on the open ring or 「回到主屏幕说？」. -1: not an extension's. */
 int yk_app_ring_dev_tap(const char *what);
 /** This extension has a 应用码 to show (its app.json's voiceCode, yaykit_voicecode linked, a number): the system
  *  pull-down offers 「在手机上打开」 (docs/delivery/2026-11-02-system-pulldown.md 8). */
@@ -23,7 +24,7 @@ void yk_app_ring_show_code(void);
 /** yk_app_ready(): the app's screen is up; in an extension, the system pull-down's top edge is made (yk_app_sheet.c). */
 void yk_app_ring_ready(void);
 /** Going for good (the battery's sleep, yk_app_power.c): from now on the key does nothing, in the app or here. The ring
- *  and 「回到 Yay 说？」 are closed by the caller, under the board lock (yk_apps_close, yk_apps_ask_close). */
+ *  and 「回到主屏幕说？」 are closed by the caller, under the board lock (yk_apps_close, yk_apps_ask_close). */
 void yk_app_ring_quit(void);
 
 // ---------------------------------------------------------------- the system pull-down (yk_app_sheet.c)
@@ -41,6 +42,21 @@ int yk_app_sheet_dev(int argc, char **argv);
 bool yk_app_ring_sheet_opening(void);
 /** ... it went by a touch or with its screen: the key back to the app. */
 void yk_app_ring_sheet_closed(void);
+/** The volume dial (yk_app_sheet.c, 0.1.20 F-1077) turned to `level` (0..10), any task: the speaker set and the level
+ *  kept for every firmware (yk_app_set_volume: NVS, so in our task, whose stack is in internal RAM). Turns faster than
+ *  the task are folded into the last. */
+void yk_app_ring_volume(int level);
+/** The folders' question (yk_app_grant.c) is to go up: true when it may (nothing of the system's up), and the key is
+ *  ours until yk_app_ring_grant_closed(): its next press lets the question go (yk_app_grant_let_go_async). */
+bool yk_app_ring_grant_opening(void);
+void yk_app_ring_grant_closed(void);
+/** In the LVGL task (lv_async_call): the side key let the question go, 「not now」. */
+void yk_app_grant_let_go_async(void *arg);
+/** yaykit_app.c: the app asked for LVGL's own CLICKED (yk_app_config_t.loose_taps); else yk_app_sheet_attach() turns
+ *  yk_ui_taps_strict on for the app's objects. */
+bool yk_app_loose_taps(void);
+/** This app's slug, as yk_app_ring_start() had it ("" before). */
+const char *yk_app_ring_slug(void);
 
 // ---------------------------------------------------------------- yaykit_app.c, for yk_app_power.c
 

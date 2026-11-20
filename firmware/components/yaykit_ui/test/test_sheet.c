@@ -1,8 +1,10 @@
 // Host tests for the system pull-down's words (yk_sheet_logic.c): the battery, Wi-Fi and phone rows, in Chinese and
-// English, and which of them are coral. Run: bash test/run.sh
+// English, and which of them are coral; and its taps (0.1.18), which are yk_tap's (yk_ui_tap_only on the dimmed layer
+// and the button). Run: bash test/run.sh
 #include <stdio.h>
 #include <string.h>
 
+#include "yk_apps_logic.h"
 #include "yk_sheet.h"
 
 static int failures, checks;
@@ -89,7 +91,29 @@ static void test_clock(void) {
     CHECK(!strcmp(yk_sheet_clock_text(t + 21 * 3600, 480, b, sizeof(b)), "08:30"));  // past midnight there
 }
 
+/** Its taps: yk_ui_tap_only() keeps a press on the dimmed layer (or the button) as a yk_tap, 0 on it, -1 off it (the
+ *  topmost clickable thing under the finger is another: the panel over the layer). */
+static void test_taps(void) {
+    yk_tap_t t = {0};
+    // The dimmed part below the panel, down and up there: it closes.
+    yk_tap_press(&t, 0, 233, 400, 1000);
+    CHECK(yk_tap_release(&t, 0, 236, 398, 1090));
+    // Down on the dimmed part, let go on the panel just above (a few px: still within the slop): no tap.
+    yk_tap_press(&t, 0, 233, 322, 1000);
+    CHECK(!yk_tap_release(&t, -1, 233, 315, 1090));
+    // The button: down on it and slid off before letting go, no tap; a swipe up across it, no tap.
+    yk_tap_press(&t, 0, 233, 260, 1000);
+    yk_tap_move(&t, 233, 300);
+    CHECK(!yk_tap_release(&t, -1, 233, 300, 1200));
+    yk_tap_press(&t, 0, 233, 260, 1000);
+    yk_tap_move(&t, 233, 200);
+    CHECK(!yk_tap_release(&t, 0, 233, 255, 1150));
+    yk_tap_press(&t, 0, 233, 260, 1000);
+    CHECK(yk_tap_release(&t, 0, 233, 262, 1100));
+}
+
 int main(void) {
+    test_taps();
     test_clock();
     test_battery();
     test_wifi();

@@ -29,6 +29,7 @@
 
 #include "cJSON.h"
 #include "esp_err.h"
+#include "yk_install_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,17 +37,6 @@ extern "C" {
 
 #define YK_INSTALL_BOARD "tikpal-r1"
 #define YK_INSTALL_LAYOUT "yaykit-v1"
-
-/** What to install: app.install's fields, or a /device/v1/apps item. */
-typedef struct {
-    char slug[32];
-    char name[48];        // for people ("呼吸之间"); may be empty
-    char version[32];
-    uint32_t size;
-    char sha256[65];      // 64 lowercase hex
-    char url[384];        // https:// (development builds: http:// too); empty: from the package cache only
-    char signature[112];  // "yks1.<key id>.<r‖s>" (firmware/signing/README.md)
-} yk_install_manifest_t;
 
 typedef enum {
     YK_INSTALL_IDLE,
@@ -101,8 +91,8 @@ typedef struct {
     char replace_version[32];  // the version there now (update or replaces)
     char replace_sha256[65];   // that image's SHA-256 when this component installed it (the build in the slot is still
                                // the one it noted), else "": not known without reading the whole slot
-    bool replace_signed;  // a signed copy of that very image is in the package cache: it can come back any time
-    bool cached;          // this exact image is in the package cache: no download
+    bool replace_signed;  // a signed copy of that very image is in the package cache or on the card: it can come back any time
+    bool cached;          // this exact image is in the package cache, or on the card as far as is known: no download
     const char *error;    // NO_FREE_SLOT, SLOT_IN_USE, BAD_REQUEST
 } yk_install_plan_t;
 
@@ -175,14 +165,6 @@ void yk_install_status_json(cJSON *obj);
 /** A short sentence for people (≤ 10 characters in Chinese): "没有通过校验" for any check that failed. */
 const char *yk_install_error_text(const char *code, bool english);
 
-/** One image in the package cache. */
-typedef struct {
-    char slug[32];
-    char name[48];
-    char version[32];
-    uint32_t size;
-} yk_install_cached_t;
-
 /** The cached images, most recently used first; not the backups without a signature. Returns how many (≤ max). */
 int yk_install_cache_list(yk_install_cached_t *out, int max);
 /** The newest signed cached image of `slug` as a manifest with no URL: to install it again with no network.
@@ -247,6 +229,16 @@ esp_err_t yk_install_fetch_room(const yk_install_manifest_t *m, uint32_t beside,
 const char *yk_install_cache_check(const char *slug, const char *sha256, uint32_t beside, bool make_room);
 /** yk_install_cache_check with the room `beside` may make (yk_fetch_room_t, as yk_install_fetch_room's). */
 const char *yk_install_cache_check_room(const char *slug, const char *sha256, uint32_t beside, yk_fetch_room_t room);
+
+/**
+ * Stage ① into `sink` instead of the package cache (the TF card, docs/delivery/2026-11-06-固件公共能力.md 3.6): `m` checked
+ * (yk_install_check) first, then from the package cache when it holds the image, so with no network and no TLS, else
+ * downloaded with resuming, as an install's. No slot is written and the cache keeps what it has. The sink checks what came
+ * (size, SHA-256). Status and listener as yk_install_fetch's, a cancel stops it; ESP_ERR_INVALID_STATE while an install runs.
+ * It takes one 4 KB buffer of internal RAM less than yk_install_fetch: nothing is written to flash here.
+ */
+esp_err_t yk_install_fetch_to(const yk_install_manifest_t *m, const yk_install_sink_t *sink, void *sink_ctx,
+                              yk_install_listener_t listener, void *ctx);
 
 /** After esp_console_init(). `install <slot 0-2> <size> <sha256> [slug]`: an image streamed raw over USB (the
  *  launcher's protocol, used by yay_dev.py and the desktop app; no signature, not cached: whoever holds the USB cable

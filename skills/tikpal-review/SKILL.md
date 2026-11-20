@@ -5,7 +5,7 @@ description: 交审之前，照 Tikpal 的审核规则（devkit/docs/review-rule
 
 # 交审之前自审
 
-Tikpal 审核时会让 AI 照 `devkit/docs/review-rules.md` 读你的源码、小程序和商店素材，出一份报告给审核的人看。这个 skill 让你用自己的 AI 先照同一份规则审一遍，问题先改掉；没改的写进 `ai-selfreview.json`，审核台会把它和我们的报告并排看。不花 Tikpal 的点数，也不是必须的。
+Tikpal 审核时会让 AI 照 `devkit/docs/review-rules.md` 读你的源码、小程序和商店素材，每个问题写出文件、行、规则和怎么改。这个 skill 让你用自己的 AI 先照同一份规则审一遍，问题先改掉；没改的写进 `ai-selfreview.json`，审核时会把它和我们的结果并排看。不花 Tikpal 的点数，也不是必须的。
 
 ## 先读
 
@@ -14,8 +14,8 @@ Tikpal 审核时会让 AI 照 `devkit/docs/review-rules.md` 读你的源码、�
 | 审核规则（每条查什么、正反例子、怎么改，还有「报告的样子」） | `devkit/docs/review-rules.md`；英文 `devkit/docs/review-rules.en.md` |
 | 应用清单 | `app.json` |
 | 机器审能查出来的 | 先跑 `./kit check`，看它的输出；规则里说了机器已经查的，不重复报 |
-| 商店素材 | 开发者平台「商店素材」页：四种语言的名字、一句话、介绍、使用要求，分类，年龄分级，收集哪些数据。仓库里没有，请开发者贴给你；没给就跳过 S 那一组，在 `summary` 里写明 |
-| 批了的能力、是不是给孩子用的 | 开发者平台「能力和权限」页，同样请开发者告诉你；没给就跳过 M-02、M-05、S-02、S-04，写明 |
+| 商店素材 | 开发者平台「商店素材」：四种语言的名字、一句话、介绍、使用要求，分类，年龄分级，收集哪些数据。接了开发者平台的 MCP 就用 `get_store_listing` 读草稿；没接，仓库里也没有，请开发者贴给你；都没有就跳过 S 那一组，在 `summary` 里写明 |
+| 批了的能力、是不是给孩子用的 | 开发者平台「能力和权限」：MCP 的 `list_capabilities`，或者请开发者告诉你；都没有就跳过 M-02、M-05、S-02、S-04，写明 |
 
 ## 审什么
 
@@ -48,4 +48,6 @@ Tikpal 审核时会让 AI 照 `devkit/docs/review-rules.md` 读你的源码、�
 
 - 能改的先改，改完再审一遍，`ai-selfreview.json` 只留还没改的和你认为不算问题的（在 `why` 里写清楚为什么）。
 - `./kit submit` 会把它放进提交包的 `report/ai-selfreview.json`。它不用提交进 git。
-- 自审只是参考：最后通过还是退回，由 Tikpal 的审核人定。
+- 自审只是参考：最后通过还是退回，由 Tikpal 的审核定。
+- 交审：`./kit submit --notes …`（先 `./kit login`），或者 MCP（`devkit/AGENTS.md` 第 4 步）。交了以后 `./kit status` 看进度。
+- 被退回、被挂起：拦下的问题以 `./kit status` 列的、MCP 的 `get_findings` 给的为准，照它一条一条改，不要拿自审的结果去猜审核会说什么；改完再自审一遍，再交。

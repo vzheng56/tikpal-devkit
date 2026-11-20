@@ -33,6 +33,26 @@ bool yk_inst_hex32(const char *hex, uint8_t out[32]);
 /** Image project names are yaykit_<slug with underscores>. */
 bool yk_inst_project_matches(const char *project, const char *slug);
 
+// ---------------------------------------------------------------- the TF card (yk_install_source_t)
+
+/** Where the new image comes from: the package cache first, it is the quickest and needs nothing else; then the card, then
+ *  the network. An image on no card with no URL is NOT_CACHED. */
+typedef enum { YK_INST_FROM_CACHE, YK_INST_FROM_CARD, YK_INST_FROM_NET, YK_INST_FROM_NOWHERE } yk_inst_from_t;
+yk_inst_from_t yk_inst_from(bool cached, bool on_card, bool has_url);
+
+/** What keeps the slot's app while it is written over. A signed copy on the card is as good as one in the cache, and saves
+ *  the 3 MB and the 13 seconds of a backup; but nothing can be put back from the card by itself: no record is left, and
+ *  should the write fail the slot stays empty, with both apps on the card (development doc 3.5). */
+typedef struct {
+    bool backup;  // copy it into the package cache first (②)
+    bool record;  // leave the record that puts it back (yk_replace_t)
+} yk_inst_keep_t;
+yk_inst_keep_t yk_inst_keep(bool old_present, bool in_cache, bool on_card);
+
+/** The write from the card did not end well: the network brings the image instead. Not when the slot's flash failed (the
+ *  network would meet the same flash), and not with no URL. */
+bool yk_inst_card_retry(const char *error, bool has_url);
+
 // ---------------------------------------------------------------- where an app goes
 
 /** Slot 0 (位置 1) holds the main firmware ("yay"), and the main firmware lives nowhere else: NULL when `slug` may go
@@ -209,6 +229,25 @@ typedef struct {
 bool yk_inst_cancel(yk_inst_flags_t *f);
 /** The start of ③: false when a cancel came first (the install ends CANCELLED, the slot untouched). */
 bool yk_inst_begin_write(yk_inst_flags_t *f);
+
+// ---------------------------------------------------------------- USB install (`install <slot> <size> <sha256>`)
+
+// Each chunk is answered with YK_ACK <bytes written>. An ACK the host never saw (the console's USB ring full while the
+// host was busy: the recovery's Wi-Fi logs, 11-18) left it waiting and the device waiting for the next chunk, until
+// USB_TIMEOUT and an empty slot. Now, with nothing of the next chunk this long after an ACK, the same count goes again
+// as YK_ACK_AGAIN <bytes> (a new word: a host before #2407 reads only lines that start "YK_ACK ", and failed on an
+// ACK whose count was not what it had sent), and again each time this long passes. Hosts take it when the count is
+// what they sent, and skip a smaller one.
+#define YK_INST_USB_AGAIN_MS 1000
+// No byte at all this long: USB_TIMEOUT, as before.
+#define YK_INST_USB_IDLE_MS 5000
+
+typedef enum { YK_INST_USB_WAIT, YK_INST_USB_AGAIN, YK_INST_USB_TIMEOUT } yk_inst_usb_t;
+
+/** A read came back with nothing: `quiet_ms` since the last byte came or the last ACK went, `got` bytes of this chunk
+ *  in, `acked` bytes acknowledged so far (0: no ACK yet, nothing to say again), `since_ack_ms` since the last YK_ACK
+ *  or YK_ACK_AGAIN went. Waiting with part of a chunk in: the host is sending, nothing to say. */
+yk_inst_usb_t yk_inst_usb_quiet(uint32_t quiet_ms, uint32_t got, uint32_t acked, uint32_t since_ack_ms);
 
 // ---------------------------------------------------------------- writer
 

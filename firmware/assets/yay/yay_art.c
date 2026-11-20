@@ -4,10 +4,14 @@
 #include <stddef.h>
 #include <string.h>
 
-/* Each .bin is embedded whole (EMBED_FILES in yay_art.cmake): a 12-byte LVGL header, then the image data. */
+/* Each .bin is embedded whole (EMBED_FILES in yay_art.cmake): a 12-byte LVGL header, then the image data.
+ * YAY_ART_PACKED (yaykit_ui's CONFIG_YK_UI_PIP_BUILTIN off): only the 132 px ones are embedded (the fallback,
+ * YAY_ART_FALLBACK_EMBED_FILES); the others have no data here and come from Pip's pack at run time (yk_yay_pip). */
 #define YAY_ART_HEADER_BYTES 12
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_ready_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_ready_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -16,10 +20,14 @@ const lv_image_dsc_t yay_ready_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_ready_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_listening_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_listening_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -28,10 +36,14 @@ const lv_image_dsc_t yay_listening_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_listening_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_thinking_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_thinking_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -40,10 +52,14 @@ const lv_image_dsc_t yay_thinking_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_thinking_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_working_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_working_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -52,10 +68,14 @@ const lv_image_dsc_t yay_working_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_working_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_approval_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_approval_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -64,10 +84,14 @@ const lv_image_dsc_t yay_approval_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_approval_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_done_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_done_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -76,10 +100,14 @@ const lv_image_dsc_t yay_done_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_done_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_reminder_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_reminder_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -88,10 +116,14 @@ const lv_image_dsc_t yay_reminder_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_reminder_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_help_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_help_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -100,10 +132,14 @@ const lv_image_dsc_t yay_help_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_help_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_resting_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_resting_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -112,10 +148,14 @@ const lv_image_dsc_t yay_resting_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_resting_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_speaking_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_speaking_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -124,10 +164,14 @@ const lv_image_dsc_t yay_speaking_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_speaking_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_ack_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_ack_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -136,10 +180,14 @@ const lv_image_dsc_t yay_ack_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_ack_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_greet_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_greet_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -148,10 +196,14 @@ const lv_image_dsc_t yay_greet_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_greet_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_working_laptop_176_bin_start[];
+#endif
 const lv_image_dsc_t yay_working_laptop_176 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -160,10 +212,14 @@ const lv_image_dsc_t yay_working_laptop_176 = {
     .header.h = 176,
     .header.stride = 176,
     .data_size = 32000,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_working_laptop_176_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_ready_264_bin_start[];
+#endif
 const lv_image_dsc_t yay_ready_264 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -172,10 +228,14 @@ const lv_image_dsc_t yay_ready_264 = {
     .header.h = 264,
     .header.stride = 264,
     .data_size = 70720,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_ready_264_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_resting_264_bin_start[];
+#endif
 const lv_image_dsc_t yay_resting_264 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -184,10 +244,14 @@ const lv_image_dsc_t yay_resting_264 = {
     .header.h = 264,
     .header.stride = 264,
     .data_size = 70720,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_resting_264_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
+#ifndef YAY_ART_PACKED
 extern const uint8_t _binary_yay_greet_264_bin_start[];
+#endif
 const lv_image_dsc_t yay_greet_264 = {
     .header.magic = LV_IMAGE_HEADER_MAGIC,
     .header.cf = LV_COLOR_FORMAT_I8,
@@ -196,7 +260,9 @@ const lv_image_dsc_t yay_greet_264 = {
     .header.h = 264,
     .header.stride = 264,
     .data_size = 70720,
+#ifndef YAY_ART_PACKED
     .data = _binary_yay_greet_264_bin_start + YAY_ART_HEADER_BYTES,
+#endif
 };
 
 extern const uint8_t _binary_yay_greet_132_bin_start[];

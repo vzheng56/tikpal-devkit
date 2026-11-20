@@ -1,14 +1,16 @@
 // The app ring (docs/design/device-controls.md 4, plan P23): a double click in any firmware opens it. Yay sits in
-// the middle (r 56, "Tikpal" under it in the main firmware, "回到 Tikpal" in an extension); around it up to 5 places on a circle of
-// r 142, clockwise from 12 o'clock every 72 degrees, each a dark disc (r 38) with its 64 x 64 icon and its name. The
-// app in use has a sage ring and a sage name; one in the package cache a small hollow sage ring on the disc's lower
+// the middle (r 75); around it up to 5 places on a circle of r 150, clockwise from 12 o'clock every 72 degrees, each a
+// dark disc (r 54) with its 64 x 64 icon and nothing else (0.1.18, dev doc 4.7, the user's 方案一: the settings ring is
+// the same size). A finger down on a place grows it with a sage ring and dims the others, and the middle says its name in
+// Yay's place; down on the middle, its own words ("Tikpal" in the main firmware, "回到 Tikpal" in an extension). The
+// app in use has a sage ring (its name sage in the middle); one in the package cache a small hollow sage ring on the disc's lower
 // right; one on neither (to download) is dimmed to 42 % with a small sage download mark; one with a newer version
 // (`update`, the main firmware's only) a coral dot on the disc's upper right; a place with `phone` a small sage phone
 // mark there instead (an extension's own place had it when it had a 应用码, voice-code handoff 2.1②, until 0.1.14:
 // the code is the system pull-down's now, and no ring sets it). Since the app ecosystem's
 // stage 1 (docs/design/app-ecosystem.md 4.5) the fifth place is 「更多」 (three dots): yk_apps_pick_ring() gives up
 // to 4 apps and 「更多」 last; the callback then reports YK_APPS_MORE. From 0.1.6 to 0.1.13 (docs/delivery/2026-10-25-
-// settings-u.md 5) 「设置」 (a gear) came after it, on a ring of 6 places every 60 degrees at r 128: apps from 12 o'clock,
+// settings-u.md 5) 「设置」 (a gear) came after it, on a ring of 6 places every 60 degrees (r 150; r 128 then): apps from 12,
 // 「更多」 lower left, 「设置」 upper left. Since 0.1.14 the ring holds apps only (docs/delivery/2026-11-02-system-pulldown.md
 // 2: the settings are the main screen's swipe to the left), and yk_apps_pick_ring() no longer gives 「设置」; the 6 places
 // are still drawn for items that end with it.
@@ -18,7 +20,8 @@
 // 300 ms in all. Closing: back into the centre, 180 ms. Untouched for 8 s it closes by itself. A swipe anywhere on it
 // (docs/delivery/2026-10-31-round-screen-gestures.md 5.2, 7) closes it towards the finger (everything slides 160 px
 // that way and fades, 200 ms) and is never a tap: wherever the finger lets go, on an app or the one in use, nothing
-// is opened or installed.
+// is opened or installed. A tap (0.1.18) goes down on an app (the middle, the paper) and lets go on the same one, the
+// finger moving no more than 10 px and held under 1.5 s; down on one and up on another, or a slow drag, does nothing.
 //
 // Objects exist only while it is open (one drawing object and Yay); icons are made in PSRAM when it opens and freed
 // when it closes. Where an item gives no icon, the shared app catalog (yk_catalog.h) is asked; without one the
@@ -95,15 +98,30 @@ typedef void (*yk_apps_cb_t)(const char *slug, void *ctx);
  *  The items are copied. Already open: closes that one at once (no callback) and opens anew. */
 bool yk_apps_open(lv_obj_t *parent, const yk_apps_item_t *items, int n, const char *current, yk_apps_cb_t cb,
                   void *ctx);
+/** Asked before a tap on the open ring does anything (the first setup teaches the swipe on the real ring and nothing there
+ *  may open): `slug` as the callback would get it; true keeps the ring open and the tap goes nowhere. NULL, the default:
+ *  every tap goes as ever. Only added: an app that does not set it sees no change. Called on LVGL's task. */
+typedef bool (*yk_apps_guard_t)(const char *slug, void *ctx);
+void yk_apps_set_guard(yk_apps_guard_t guard, void *ctx);
+
 /** The main firmware's (0.1.14, BOSS-2 11-02): Tikpal itself has a newer version, and the middle carries the apps'
  *  coral update dot on its disc's upper right (as `update` on an app: the main firmware fills it, an extension's ring
  *  never knows and leaves it off, the default). Set before yk_apps_open(); it stays for the next opens. Since the ring
  *  holds no 「设置」 (whose dot said so before), this is where the ring shows it. */
 void yk_apps_home_update(bool on);
+/** The account's buddy in the middle (0.1.18, dev doc 4.7; the main firmware's: an extension's ring keeps Pip): its pack
+ *  (yk_figure.h), copied, its bytes not, on the open ring at once and on every ring from now on; NULL: Pip. The caller
+ *  calls it wherever its own screen's buddy changes (the same pack, the same rule for its bytes: kept until another took
+ *  its place). Under board_lock(). */
+struct yk_figure;
+void yk_apps_figure(const struct yk_figure *figure);
 /** Closes it without a callback: folding back in 180 ms (`animated`) or at once. Nothing when it is closed. */
 void yk_apps_close(bool animated);
 /** Open, or still folding back. */
 bool yk_apps_is_open(void);
+/** (x, y) is on the open ring's paper: on no place and not the middle, the ring not folding back (a tap there closes
+ *  it). False when no ring is open. yaykit_app's double tap on the paper (Yay 0.1.21). Under board_lock(). */
+bool yk_apps_on_paper(int x, int y);
 
 /** What the screen shows from a tap on the ring until the restart into the other firmware (design 4): 「正在打开」 and
  *  the app's name on black, or 「正在回到」 「Tikpal」 for YK_APPS_HOME (the prototype's), over everything (LVGL's top
@@ -113,9 +131,9 @@ void yk_apps_leaving(const char *slug, const char *name);
 /** Takes it away again: the restart did not happen (yk_app_open or yk_return_home failed). Under board_lock(). */
 void yk_apps_leaving_clear(void);
 
-/** 「回到 Yay 说？」 (device-controls.md 1.3): a hold in an app that has no conversation of its own and did not use
- *  it. The name is the buddy's (yk_ui_buddy_name(), the shared YK_PREF_BUDDY: 「回到 Wow 说？」), Yay until the main
- *  firmware sets another. A card on paper over the app (the prototype's): 「点屏幕回去 · 短按留下」. A tap anywhere calls back
+/** 「回到主屏幕说？」 (device-controls.md 1.3): a hold in an app that has no conversation of its own and did not use
+ *  it. No buddy's name since kit 1.10 (it was 「回到 Pip 说？」, the shared YK_PREF_BUDDY's): the user's may be any of
+ *  four. A card on paper over the app (the prototype's): 「点屏幕回去 · 短按留下」. A tap anywhere calls back
  *  YK_APPS_HOME; 8 s untouched, NULL; either way it is gone by then. yk_apps_ask_close() (the key: stay) does not call
  *  back. Under board_lock(). */
 bool yk_apps_ask(lv_obj_t *parent, yk_apps_cb_t cb, void *ctx);
@@ -123,7 +141,7 @@ void yk_apps_ask_close(void);
 bool yk_apps_ask_is_open(void);
 
 /** Development: as if `slug` were tapped on the open ring (YK_APPS_HOME the middle, NULL the paper around them; a slug
- *  it does not show counts as the paper), or anywhere on 「回到 Yay 说？」, so the device can be driven without a
+ *  it does not show counts as the paper), or anywhere on 「回到主屏幕说？」, so the device can be driven without a
  *  finger (`yay ring`). False when neither is open. Under board_lock(). */
 bool yk_apps_tap(const char *slug);
 

@@ -170,9 +170,17 @@ export function checkPackage(files: Map<string, Buffer>, options: { zipBytes?: n
   if (manifest.capabilityLevel > MINIAPP.capabilityLevel)
     warnings.push(`capabilityLevel 是 ${manifest.capabilityLevel}：现在的 App 只到第 ${MINIAPP.capabilityLevel} 级，打不开这个包，要等容器做到第 ${manifest.capabilityLevel} 级`);
   for (const capability of manifest.capabilities) {
-    const only = (MINIAPP_CAPABILITY[capability] as { only?: readonly string[] }).only;
-    if (only && !only.includes(manifest.slug)) problems.push(`能力 "${capability}" 只给 ${only.join("、")}，${manifest.slug} 不能声明`);
+    const info = MINIAPP_CAPABILITY[capability] as { only?: readonly string[]; review: boolean; level: number | null };
+    if (info.only && !info.only.includes(manifest.slug)) problems.push(`能力 "${capability}" 只给 ${info.only.join("、")}，${manifest.slug} 不能声明`);
+    // Level 3's asked-for ones: the map module until Amap's terms for others' apps are settled (MAP_OPEN_TO_ALL), and
+    // trip and places.saved, which a person also looks at in every version that uses them.
+    else if (info.review && capability === "map")
+      warnings.push('"map" 现在要在开发者平台「能力和权限」页申请，批了才开通（高德对第三方使用的条件确认之前，见 docs/miniapp.md 第 3.9 节）');
+    else if (info.review && (info.level ?? 0) >= 3)
+      warnings.push(`"${capability}" 要在开发者平台「能力和权限」页申请，人看过才批；用它的每一版交审都会有人看（审核规则「需申请的能力」）`);
   }
+  if (manifest.capabilities.includes("map" as never) && !manifest.capabilities.includes("location" as never))
+    warnings.push('声明了 "map" 没声明 "location"：map.routes 不写 from、map.tips 和 map.search 不写 near、map.regeo 不写 point 都是「我这里」，要 location；只用给定的点就不用管');
   if (!files.has(manifest.entry)) problems.push(`入口 ${manifest.entry} 不在包里`);
 
   const code: string[] = [];

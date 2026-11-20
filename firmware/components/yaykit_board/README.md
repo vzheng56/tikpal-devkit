@@ -33,7 +33,7 @@ esptool_py_flash_to_partition(flash "fonts" "${CMAKE_CURRENT_LIST_DIR}/../../com
 
 音频：`audio_init()` 就是 `audio_init_rate(24000)`；要 16 kHz 就调用 `audio_init_rate(16000)`。放音和录音共用时钟，开起来以后不能换采样率：再按另一个采样率启动会得到 `ESP_ERR_INVALID_STATE`（`audio_init()` 也一样），打开 codec 设备时用 `audio_sample_rate()`。I2S 默认每个 DMA 帧 20 ms，8 帧共 160 ms 余量；`audio_init_cfg()` 可以设帧长和帧数（低延迟 4 × 5 ms，P13），收发共用一个设置。
 
-共享设置（P10）：`board_pref_*()` 读写 NVS `yk_pref` 的 `volume`、`bright`、`screen_off`，0.1.12 起还有伙伴 `buddy`（`YK_PREF_BUDDY`，u8：0 Yay、1 Wow、2 Aha，不认识的值当 Yay；只由主固件写，扩展只读；只加不改，`YK_API_LEVEL` 不变）；第一次读音量时，如果 `yk_pref` 里还没有，就从主固件原来的 `yay/volume` 搬一次。`board_display_start_opts()` 的 `start_dark` 让屏幕起来时保持黑（初始化序列里亮度写 0），应用画完第一帧再调亮度；`board_brightness_raw_set(0..255)` 直接写面板刻度。息屏默认 30 秒（P22 起；以前是 180 秒）。
+共享设置（P10）：`board_pref_*()` 读写 NVS `yk_pref` 的 `volume`、`bright`、`screen_off`，0.1.12 起还有伙伴 `buddy`（`YK_PREF_BUDDY`，u8：0 Pip、3 Mote、4 Dial、5 Bloom，1、2 作废，不认识的值当 Pip；只由主固件写，扩展只读；只加不改，`YK_API_LEVEL` 不变），0.1.17 起还有这台的语言 `lang`（平台的写法，只由主固件写）；第一次读音量时，如果 `yk_pref` 里还没有，就从主固件原来的 `yay/volume` 搬一次。`board_display_start_opts()` 的 `start_dark` 让屏幕起来时保持黑（初始化序列里亮度写 0），应用画完第一帧再调亮度；`board_brightness_raw_set(0..255)` 直接写面板刻度。息屏默认 30 秒（P22 起；以前是 180 秒）。
 
 息屏（P22）：`board_display_sleep()` 把亮度降到 0、SH8601 关显示（`0x28`），并关掉 LVGL 的重画（`lv_display_enable_invalidation`，是计数，和 `lv_qrcode` 自己的开关不冲突）；触摸芯片不再读，息屏期间 `board_touch_read()` 返回 `ESP_ERR_INVALID_STATE`。`board_display_wake(percent)` 开显示、设亮度（`-1` 用共享亮度）、整屏重画，触摸马上照常读。CST820 不进深度休眠：深度休眠只能靠复位脚出来，真机上亮屏时的这次复位和开麦撞在同一条 I2C 上，5 次里 3 次 ES7210 读写出错，1 次麦克风没打开（2026-10-21）。不读它时，芯片没被触摸就自己进低功耗扫描。
 

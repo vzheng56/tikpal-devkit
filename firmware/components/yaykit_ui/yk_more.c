@@ -26,15 +26,17 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "yk_apps_logic.h"
+#include "yaykit_ui.h"
 #include "yk_more_logic.h"
 #include "yk_round.h"
 #include "yk_ui_priv.h"
+#include "yk_words.h"
 
 static const char *TAG = "yk_more";
 
 #define FRAME_MS 16
 #define DEV_DRAG_MS 300  // yk_more_drag(): as quick a drag as a finger's
-#define DISC_N 56        // disc masks by diameter / 2: even diameters up to 110
+#define DISC_N 64        // disc masks by diameter / 2: even diameters up to 126 (the middle one, 116, and its halo)
 #define GLYPHS YK_MORE_GLYPHS  // the first character's sizes (yk_more_size_class, yk_more_glyph_px)
 #define PREP_US 8000     // an idle tick makes first characters for this long at most (all made in about a second)
 #define BOXES_MAX 24     // more apps shown than this: the band is redrawn in strips (LVGL keeps 32 areas a frame)
@@ -43,9 +45,9 @@ static const char *TAG = "yk_more";
 #else
 #define STRIP 24
 #endif
-// The band the apps are drawn in: their centres' band and the biggest one's radius around it.
+// The band the apps are drawn in: from their topmost centre less the biggest one's radius, down to the rim band.
 #define BAND_TOP (YK_MORE_TOP - YK_MORE_SIZE_0 / 2 - 4)
-#define BAND_BOTTOM (YK_MORE_BOTTOM + YK_MORE_SIZE_0 / 2 + 4)
+#define BAND_BOTTOM (YK_CY + YK_R_BAND)
 
 static const int GLYPH_PX[GLYPHS] = {36, 32, 28, 24, 22, 20, 18, 16};  // fonts Yay already has (no new size)
 #define PANEL_LIT 0x3C4439  // autofocus: the middle one's disc, a shade lighter than YK_PANEL
@@ -94,6 +96,7 @@ static struct {
     bool moving;
     bool pressed, dragging, dragged;
     lv_point_t press_at;
+    yk_tap_t tap;  // a tap is down and up on the same app (0.1.18)
     float press_ox, press_oy;
     bool dev_drag;               // yk_more_drag(): a finger's drag played by the timer
     int dev_dx, dev_dy;
@@ -104,10 +107,12 @@ static struct {
     lv_draw_buf_t **arrow;       // PSRAM, DISC_N: the download mark's arrow, by its app's diameter / 2
     float *icon_tmp;             // PSRAM: yk_more_icon_scale's scratch, and its picture (made when the first is)
     uint8_t *icon_px;
-    mask_t line[3];              // the title, the middle one's name, where it is
+    mask_t line[2];              // the middle one's name, and where it is: above the honeycomb (0.1.18)
+    uint8_t line_opa[2];         // ... as they are drawn now (yk_more_fade): a new name fades in, a drag dims them
+    uint32_t fade_at;            // the tick they were last faded at
     const lv_font_t *glyph_font[GLYPHS];
-    const lv_font_t *title_font, *name_font, *state_font;
-    char title[40], name[96], state[64];
+    const lv_font_t *name_font, *state_font;
+    char name[96], state[64];
     yk_more_cb_t cb;
     void *ctx;
     int64_t opened_us;
@@ -116,6 +121,8 @@ static struct {
 } s;
 
 static yk_more_stats_t s_stats;
+static yk_more_focus_cb_t s_focus_cb;  // yk_more_on_focus(): another app came to the middle
+static void *s_focus_ctx;
 static uint8_t s_halo_opa = YK_MORE_HALO_OPA;  // yk_more_dev_halo() changes it for the comparison pictures
 static int64_t s_frame_sum_us;
 static int s_bands, s_px, s_draw_us;            // this frame's
@@ -170,7 +177,7 @@ static float to_segment(float px, float py, float ax, float ay, float bx, float 
 static const lv_draw_buf_t *arrow_mask(int h) {
     if (h < 1 || h >= DISC_N) return NULL;
     if (s.arrow[h]) return s.arrow[h];
-    const float k = (float)h / YK_APPS_SAT_R, w = 2.4f * k / 2;
+    const float k = (float)h / YK_MARK_DISC_R, w = 2.4f * k / 2;
     const int E = (int)ceilf(5 * k + w + 1);
     lv_draw_buf_t *b = lv_draw_buf_create(2 * E, 2 * E, LV_COLOR_FORMAT_A8, LV_STRIDE_AUTO);
     if (!b) return NULL;
@@ -430,7 +437,7 @@ static void frame_at(void) {
 static void draw_app(lv_layer_t *layer, int i) {
     const app_t *a = &s.app[i];
     lv_opa_t opa = s.app[i].opa;
-    const float size = s.app[i].size, r = size / 2, k = r / YK_APPS_SAT_R;
+    const float size = s.app[i].size, r = size / 2, k = r / YK_MARK_DISC_R;
     const int cx = s.app[i].cx, cy = s.app[i].cy;
     if (!reaches(&layer->_clip_area, cx, cy, reach(r, a->current))) return;
     const bool middle = i == s.focus;
@@ -467,7 +474,7 @@ static void draw_app(lv_layer_t *layer, int i) {
         s.prep = true;
         if (s.timer) lv_timer_resume(s.timer);
     }
-    if (a->current) yk_draw_in_use(layer, cx, cy, YK_APPS_SAT_R, k, opa);
+    if (a->current) yk_draw_in_use(layer, cx, cy, YK_MARK_DISC_R, k, opa);
     if (size <= 50 || soon) return;  // the marks only on the bigger ones (the design's); none on one coming soon
     if (a->update && a->where == YK_MORE_SLOT) {
         // a newer version (0.1.12): a coral dot in a paper ring, upper right (as on the ring)
@@ -506,17 +513,11 @@ static void draw_cb(lv_event_t *e) {
     // Grey for what is not on the device yet (to download, coming soon), sage for what is
     const bool cloud = s.n && (s.app[s.focus].where == YK_MORE_CLOUD || s.app[s.focus].where == YK_MORE_SOON) &&
                        !s.app[s.focus].current;
-    const struct {
-        const lv_font_t *font;
-        int y;
-        uint32_t color;
-    } lines[3] = {
-        {s.title_font, YK_MORE_TITLE_Y, YK_INK2},
-        {s.name_font, YK_MORE_NAME_Y, YK_INK},
-        {s.state_font, YK_MORE_STATE_Y, cloud ? YK_INK2 : YK_SAGE_TEXT},
-    };
-    for (int i = 0; i < 3; i++)
-        if (s.line[i].buf) blit(layer, s.line[i].buf, YK_CX + s.line[i].dx, lines[i].y + s.line[i].dy, lines[i].color, LV_OPA_COVER);
+    static const int Y[2] = {YK_MORE_NAME_Y, YK_MORE_STATE_Y};
+    const uint32_t color[2] = {YK_INK, cloud ? YK_INK2 : YK_SAGE_TEXT};
+    for (int i = 0; i < 2; i++)
+        if (s.line[i].buf && s.line_opa[i])
+            blit(layer, s.line[i].buf, YK_CX + s.line[i].dx, Y[i] + s.line[i].dy, color[i], s.line_opa[i]);
     s_draw_us += (int)(esp_timer_get_time() - t0);
 }
 
@@ -569,41 +570,75 @@ static void invalidate_band(void) {
     if (shown > BOXES_MAX) invalidate_strips();
 }
 
-/** The two lines below: the middle one's name and where it is (made into masks here: not while drawing). */
+/** Where the two lines are drawn now: redrawn there. */
+static void invalidate_lines(void) {
+    static const int Y[2] = {YK_MORE_NAME_Y, YK_MORE_STATE_Y};
+    for (int i = 0; i < 2; i++) {
+        const mask_t *m = &s.line[i];
+        if (!m->buf) continue;
+        const lv_area_t a = {YK_CX + m->dx, Y[i] + m->dy, YK_CX + m->dx + (int)m->buf->header.w - 1,
+                             Y[i] + m->dy + (int)m->buf->header.h - 1};
+        lv_obj_invalidate_area(s.root, &a);
+    }
+}
+
+/** The two lines above the honeycomb (0.1.18: up there a thumb sliding from below never covers them): the middle
+ *  one's name and where it is, made into masks here (not while drawing). A new name fades in (yk_more_fade). */
 static void set_lines(void) {
     const bool en = yk_ui_is_english();
     const app_t *a = s.n ? &s.app[s.focus] : NULL;
-    const char *name = a ? a->name : en ? "No apps yet" : "还没有应用";
+    const char *name = a ? a->name : yk_word_in(en, YK_STR_YAYKIT_MORE_NO_APPS);
     char line[64] = "";
     if (a) yk_more_state_line(a->where, a->current, a->preview, a->bytes, a->eta_s, en, line, sizeof(line));
-    const char *state = line;
+    char fit_name[sizeof(s.name)], fit_state[sizeof(s.state)];
     if (s.name_font) {
         const int room = yk_more_line_room(YK_MORE_NAME_Y, lv_font_get_line_height(s.name_font));
-        yk_text_fit(name, glyph_w, (void *)s.name_font, room, s.name, sizeof(s.name));
+        yk_text_fit(name, glyph_w, (void *)s.name_font, room, fit_name, sizeof(fit_name));
     } else {
-        snprintf(s.name, sizeof(s.name), "%s", name);
+        snprintf(fit_name, sizeof(fit_name), "%s", name);
     }
     if (s.state_font) {
         const int room = yk_more_line_room(YK_MORE_STATE_Y, lv_font_get_line_height(s.state_font));
-        yk_text_fit(state, glyph_w, (void *)s.state_font, room, s.state, sizeof(s.state));
+        yk_text_fit(line, glyph_w, (void *)s.state_font, room, fit_state, sizeof(fit_state));
     } else {
-        snprintf(s.state, sizeof(s.state), "%s", state);
+        snprintf(fit_state, sizeof(fit_state), "%s", line);
     }
-    // Redrawn where the words were and where they are.
-    static const int Y[3] = {YK_MORE_TITLE_Y, YK_MORE_NAME_Y, YK_MORE_STATE_Y};
-    for (int pass = 0; pass < 2; pass++) {
-        if (pass) {
-            text_mask(s.name, s.name_font, YK_MORE_LINE_W, &s.line[1]);
-            text_mask(s.state, s.state_font, YK_MORE_LINE_W, &s.line[2]);
-        }
-        for (int i = 1; i < 3; i++) {
-            const mask_t *m = &s.line[i];
-            if (!m->buf) continue;
-            const lv_area_t a = {YK_CX + m->dx, Y[i] + m->dy, YK_CX + m->dx + (int)m->buf->header.w - 1,
-                                 Y[i] + m->dy + (int)m->buf->header.h - 1};
-            lv_obj_invalidate_area(s.root, &a);
-        }
+    const bool new_name = strcmp(fit_name, s.name) || !s.line[0].buf;
+    if (!new_name && !strcmp(fit_state, s.state) && s.line[1].buf) return;
+    invalidate_lines();  // where the words were
+    snprintf(s.name, sizeof(s.name), "%s", fit_name);
+    snprintf(s.state, sizeof(s.state), "%s", fit_state);
+    text_mask(s.name, s.name_font, YK_MORE_LINE_W, &s.line[0]);
+    text_mask(s.state, s.state_font, YK_MORE_LINE_W, &s.line[1]);
+    if (new_name) {  // in from nothing, on the timer
+        s.line_opa[0] = s.line_opa[1] = 0;
+        s.fade_at = lv_tick_get();
+        if (s.timer) lv_timer_resume(s.timer);
     }
+    invalidate_lines();  // and where they are
+}
+
+/** The lines' opacities a tick on: towards full, or towards the drag's (55 %, 40 %) while a finger drags. True while
+ *  they are still on their way. */
+static bool fade_lines(void) {
+    const bool dragging = s.dragging || s.dev_drag;
+    const uint8_t want[2] = {dragging ? YK_MORE_DRAG_NAME_OPA : 255, dragging ? YK_MORE_DRAG_STATE_OPA : 255};
+    const uint32_t now = lv_tick_get();
+    const int dt = (int)(now - s.fade_at);
+    s.fade_at = now;
+    bool moved = false;
+    for (int i = 0; i < 2; i++) {
+        const uint8_t v = yk_more_fade(s.line_opa[i], want[i], dt);
+        moved |= v != s.line_opa[i];
+        s.line_opa[i] = v;
+    }
+    if (moved) invalidate_lines();
+    return s.line_opa[0] != want[0] || s.line_opa[1] != want[1];
+}
+
+/** Another app is in the middle now: the caller's tick (Yay's 「嗒」, the settings dial's). */
+static void focus_changed(void) {
+    if (s_focus_cb) s_focus_cb(s.focus, s_focus_ctx);
 }
 
 // ---------------------------------------------------------------- motion and touches
@@ -613,6 +648,7 @@ static void move_to(int i) {
     s.shaking = false;
     s.from = s.focus;
     s.focus = i;
+    if (s.from != i) focus_changed();
     s.k = s.from == i ? 1 : 0;
     s.ax = s.ox, s.ay = s.oy;
     yk_more_offset_for(i, &s.bx, &s.by);
@@ -641,9 +677,11 @@ static void follow_focus(void) {
     s.focus = s.from = f;
     s.k = 1;
     set_lines();
+    focus_changed();
 }
 
 static void tick(lv_timer_t *t) {
+    const bool fading = fade_lines();
     if (s.shaking) {
         if (lv_tick_elaps(s.t0) >= YK_MORE_SHAKE_MS) s.shaking = false;  // its last frame: back in place
         invalidate_band();
@@ -665,7 +703,7 @@ static void tick(lv_timer_t *t) {
     }
     if (!s.moving) {
         if (!s.pressed && s.prep) s.prep = prep_step();
-        if (!s.prep) lv_timer_pause(t);
+        if (!s.prep && !fading) lv_timer_pause(t);
         return;
     }
     const int ms = (int)lv_tick_elaps(s.t0);
@@ -692,6 +730,9 @@ static void on_press(lv_event_t *e) {
         invalidate_band();
     }
     s.press_ox = s.ox, s.press_oy = s.oy;
+    // What it went down on, where the honeycomb is now (a motion under way stopped above).
+    yk_tap_press(&s.tap, yk_more_hit(s.n, s.focus, s.ox, s.oy, s.press_at.x, s.press_at.y), s.press_at.x, s.press_at.y,
+                 lv_tick_get());
 }
 
 static void on_pressing(lv_event_t *e) {
@@ -700,9 +741,14 @@ static void on_pressing(lv_event_t *e) {
     if (!in || !s.pressed) return;
     lv_point_t p;
     lv_indev_get_point(in, &p);
+    yk_tap_move(&s.tap, p.x, p.y);
     const int dx = p.x - s.press_at.x, dy = p.y - s.press_at.y;
     // A drag from LVGL's own threshold on (as a scroll starts): a tap below it.
     if (!s.dragging && abs(dx) <= LV_INDEV_DEF_SCROLL_LIMIT && abs(dy) <= LV_INDEV_DEF_SCROLL_LIMIT) return;
+    if (!s.dragging) {  // the lines dim while it drags (the timer fades them)
+        s.fade_at = lv_tick_get();
+        lv_timer_resume(s.timer);
+    }
     s.dragging = true;
     float ox = s.press_ox + (float)dx, oy = s.press_oy + (float)dy;
     yk_more_clamp(s.n, &ox, &oy);
@@ -724,7 +770,7 @@ static void on_release(lv_event_t *e) {
 static void tapped(int i) {
     if (i < 0) return;
     // Not the middle one: on the device, opened at once; to download or coming soon, to the middle first so that its
-    // line below (要下载 · 约 40 秒, 即将推出) is seen (the delivery 2.6 C).
+    // line below (约 40 秒, 即将推出) is seen (the delivery 2.6 C).
     if (i != s.focus && !yk_more_opens_at_once(s.app[i].where)) {
         move_to(i);
         return;
@@ -740,14 +786,19 @@ static void tapped(int i) {
     if (s.cb) s.cb(i, s.ctx);
 }
 
+/** The finger let go: a tap (yk_tap: down and up on the same app, still, not held) on that app, else nothing. */
 static void on_click(lv_event_t *e) {
     (void)e;
-    if (s.dragged) return;
     lv_indev_t *in = lv_indev_active();
     if (!in) return;
     lv_point_t p;
     lv_indev_get_point(in, &p);
-    tapped(yk_more_hit(s.n, s.focus, s.ox, s.oy, p.x, p.y));
+    const int hit = yk_more_hit(s.n, s.focus, s.ox, s.oy, p.x, p.y);
+    const bool tap = yk_tap_release(&s.tap, hit, p.x, p.y, lv_tick_get());
+    char line[64];
+    puts(yk_tap_line(&s.tap, "more", line, sizeof(line)));
+    if (!tap || s.dragged) return;
+    tapped(hit);
 }
 
 /** The frames while it moves (yay perf has the rest): render and send, between the display's two events. */
@@ -800,7 +851,7 @@ static void on_delete(lv_event_t *e) {
         heap_caps_free(s.rows[h]);
     }
     heap_caps_free(s.disc);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 2; i++)
         if (s.line[i].buf) lv_draw_buf_destroy(s.line[i].buf);
     heap_caps_free(s.app);
     memset(&s, 0, sizeof(s));
@@ -843,17 +894,9 @@ bool yk_more_open(lv_obj_t *parent, const yk_more_item_t *items, int n, yk_more_
     s.cb = cb;
     s.ctx = ctx;
     for (int g = 0; g < GLYPHS; g++) s.glyph_font[g] = cjk_font_get(GLYPH_PX[g]);
-    s.title_font = cjk_font_get(18);
-    s.name_font = cjk_font_get(22);
-    s.state_font = cjk_font_get(16);
-    const bool en = yk_ui_is_english();
-    char title[40];
-    snprintf(title, sizeof(title), en ? "My apps · %d" : "我的应用 · %d", n);
-    if (s.title_font)
-        yk_text_fit(title, glyph_w, (void *)s.title_font,
-                    yk_more_line_room(YK_MORE_TITLE_Y, lv_font_get_line_height(s.title_font)), s.title, sizeof(s.title));
-    else
-        snprintf(s.title, sizeof(s.title), "%s", title);
+    // No title any more (0.1.18): the middle one's name is up there. 24 and 22: body sizes Yay has anyway.
+    s.name_font = cjk_font_get(24);
+    s.state_font = cjk_font_get(22);
 
     lv_obj_t *root = lv_obj_create(parent);
     lv_obj_remove_style_all(root);
@@ -869,6 +912,7 @@ bool yk_more_open(lv_obj_t *parent, const yk_more_item_t *items, int n, yk_more_
     lv_obj_add_event_cb(root, on_pressing, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(root, on_release, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(root, on_click, LV_EVENT_CLICKED, NULL);
+    yk_ui_own_taps(root);  // its CLICKED settles a drag too: not for yk_ui_taps_strict (F-1018)
     lv_obj_add_event_cb(root, on_delete, LV_EVENT_DELETE, NULL);
     s.root = root;
     s.canvas = lv_canvas_create(root);
@@ -885,7 +929,6 @@ bool yk_more_open(lv_obj_t *parent, const yk_more_item_t *items, int n, yk_more_
         lv_display_add_event_cb(d, on_refr, LV_EVENT_REFR_START, NULL);
         lv_display_add_event_cb(d, on_refr, LV_EVENT_REFR_READY, NULL);
     }
-    text_mask(s.title, s.title_font, YK_MORE_LINE_W, &s.line[0]);
     // Every disc an app passes through as it moves (made while drawing, a big one would cost a frame ~1 ms).
     for (int d = YK_MORE_SIZE_FAR; d <= YK_MORE_SIZE_0; d += 2) disc_mask((float)d);
     // The first characters of those shown now; the rest while nothing moves.
@@ -897,6 +940,7 @@ bool yk_more_open(lv_obj_t *parent, const yk_more_item_t *items, int n, yk_more_
     s.prep = n > 0;
     if (s.prep) lv_timer_resume(s.timer);
     set_lines();
+    s.line_opa[0] = s.line_opa[1] = 255;  // the first name is there with the page, not faded in
     s.opened_us = t_start;
     s_stats.setup_ms = (int)((esp_timer_get_time() - t_start) / 1000);
     ESP_LOGI(TAG, "open: %d apps, setup %d ms", n, s_stats.setup_ms);
@@ -910,6 +954,11 @@ void yk_more_close(void) {
 bool yk_more_is_open(void) { return s.root != NULL; }
 
 int yk_more_focus(void) { return s.root ? s.focus : -1; }
+
+void yk_more_on_focus(yk_more_focus_cb_t cb, void *ctx) {
+    s_focus_cb = cb;
+    s_focus_ctx = ctx;
+}
 
 bool yk_more_tap(int index) {
     if (!s.root || index < 0 || index >= s.n) return false;

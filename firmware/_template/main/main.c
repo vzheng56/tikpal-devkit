@@ -1,11 +1,14 @@
 // Extension firmware template (yaykit/docs/development/firmware-guide.md 6, yay-device.md 6.10). It shows the
 // order every extension firmware follows: NVS (never erased) -> yaykit_app (crash loop guard) -> board -> side
-// key -> Yaykit Link -> screen -> console -> yk_app_ready(). The app itself is a tap counter: tap adds one, hold resets, a double
-// click opens the app ring (yaykit_app), and the first time in the app the hint arrow says so (yk_hint APPS). A button
+// key -> Yaykit Link -> screen -> console -> yk_app_ready(). The app itself is a tap counter: a tap on the screen adds
+// one, a hold of the side key resets. The side key means what it means in every app (the round-screen design 6): a
+// tap turns this main screen off and on again, a double click opens the app ring (yaykit_app), and the first time in
+// the app the hint arrow says so (yk_hint APPS). A button
 // shows the app's 应用码 for the Tikpal app to scan (yaykit_voicecode, API level 4; devkit docs/voice-code.md): the same
 // page code the system pull-down shows, here to show how; drop it if the app has no use for it. Copy this directory,
 // rename the slug and the project, then replace the counter with your app.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "board.h"
@@ -15,6 +18,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -22,6 +26,7 @@
 #include "yaykit_key.h"
 #include "yaykit_link.h"
 #include "yaykit_ui.h"
+#include "yk_apps.h"
 #include "yk_hint.h"
 #include "yk_vc_view.h"
 
@@ -31,17 +36,37 @@ static const char *TAG = "template";
 static counter_t s_count;
 static int s_rounds, s_best_round = -1;  // rounds ended with a hold, and which one was the best (0-based)
 static lv_obj_t *s_value;
-static volatile bool s_tapped, s_held;  // set in the key task, acted on in the LVGL task
+static volatile bool s_key_tap, s_held;  // set in the key task, acted on in the LVGL task
+static bool s_counted;                   // the screen was tapped (LVGL task, as the timer)
+static lv_point_t s_press_at;            // where and when the finger went down
+static int64_t s_press_us;
 
-/** Through yaykit_app (yk_app_on_key): returns whether the event was used. A hold an app does not use asks
- *  「回到 Pip 说？」; this one uses both. */
+/** Through yaykit_app (yk_app_on_key): returns whether the event was used. The side key keeps its meaning in every
+ *  app (the round-screen design 6: an app may leave a gesture unused, never give it another use): a tap stops or goes
+ *  back, and on the main screen (the template has only that) turns the screen off, and on again; a hold talks or ends
+ *  a practice: here it ends the round. A hold an app does not use asks 「回到主屏幕说？」; this one uses both. */
 static bool on_key(const yk_key_event_t *ev, void *ctx) {
     (void)ctx;
-    if (yk_vc_on_key(ev)) return true;  // a tap while the code shows hides it, and counts nothing
-    if (ev->type == YK_KEY_TAP) s_tapped = true;
+    if (yk_vc_on_key(ev)) return true;  // a tap while the code shows hides it, and nothing else
+    if (ev->type == YK_KEY_TAP) s_key_tap = true;
     else if (ev->type == YK_KEY_HOLD) s_held = true;
     // YK_KEY_DOUBLE is yaykit_app's: the app ring.
     return ev->type == YK_KEY_TAP || ev->type == YK_KEY_HOLD;
+}
+
+/** The screen: a tap adds one. A tap as the kit has it (devkit docs/app-guide.md 6): up within 10 px of where it went
+ *  down and within 1.5 s; LVGL's CLICKED alone also comes after a slow drag. (yk_ui_button() judges its own: the button
+ *  below takes its taps, the screen does not get them.) */
+static void on_screen(lv_event_t *e) {
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        s_press_at = p;
+        s_press_us = esp_timer_get_time();
+    } else if (abs(p.x - s_press_at.x) <= 10 && abs(p.y - s_press_at.y) <= 10 &&
+               esp_timer_get_time() - s_press_us < 1500000) {
+        s_counted = true;
+    }
 }
 
 static void show(void) {
@@ -50,11 +75,28 @@ static void show(void) {
     lv_label_set_text(s_value, text);
 }
 
-/** LVGL timer: runs with the board lock held, so it may touch the screen. */
+/** LVGL timer: runs with the board lock held, so it may touch the screen (and turn it off and on). */
 static void tick(lv_timer_t *timer) {
     (void)timer;
-    if (s_tapped) {
-        s_tapped = false;
+    if (board_display_asleep()) {
+        // Off: only the side key lights it (touch is not read), and the press that does is only that. A double click
+        // opens the app ring over this screen: lit for it too, or the ring opens dark.
+        if (s_key_tap || s_held || yk_apps_is_open()) {
+            s_key_tap = s_held = false;
+            board_display_wake(yk_app_brightness());  // the main firmware's, capped while the battery is low
+            lv_display_trigger_activity(NULL);
+            printf("TEMPLATE_SCREEN on\n");
+        }
+        return;
+    }
+    if (s_key_tap) {
+        s_key_tap = false;
+        board_display_sleep();
+        printf("TEMPLATE_SCREEN off\n");
+        return;
+    }
+    if (s_counted) {
+        s_counted = false;
         counter_tap(&s_count);
         printf("TEMPLATE_TAP count=%d\n", s_count.taps);
         show();
@@ -181,9 +223,11 @@ void app_main(void) {
     lv_obj_set_scrollable(screen, false);
     // The round-screen spec's colours and sizes (yk_round.h): the same on every firmware.
     lv_obj_set_style_bg_color(screen, lv_color_hex(YK_PAPER), 0);
+    lv_obj_add_event_cb(screen, on_screen, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(screen, on_screen, LV_EVENT_CLICKED, NULL);
     yk_ui_label(screen, "计数", 0, 100, 466, YK_SIZE_STATUS, YK_SAGE_TEXT);
     s_value = yk_ui_label(screen, "", 0, 190, 466, 44, YK_INK);
-    yk_ui_label(screen, "短按加一 · 按住清零", 0, 318, 466, YK_SIZE_MIN, YK_INK2);
+    yk_ui_label(screen, "点屏幕加一 · 按住侧键清零", 0, 318, 466, YK_SIZE_MIN, YK_INK2);
     yk_ui_button(screen, "在手机上打开", 148, 352, 170, 44, on_code, NULL, YK_PANEL);
     show();
     lv_screen_load(screen);

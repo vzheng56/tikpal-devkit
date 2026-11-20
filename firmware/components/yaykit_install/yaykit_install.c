@@ -30,6 +30,7 @@
 #include "yaykit_wifi.h"
 #include "yk_install_keys.h"
 #include "yk_install_logic.h"
+#include "yk_words.h"
 
 static const char *TAG = "yk_install";
 
@@ -115,6 +116,11 @@ static void set_done(uint32_t done) {
     if (esp_timer_get_time() - s_last_publish >= PROGRESS_US) publish();
 }
 
+// yaykit_haptic's stop, weak (only a firmware with the vibration component has it): an install writes flash, the cache
+// is off while it does, and the timer that ends a pulse would run late. The motor stops as an install starts, and stays
+// still while it runs (yaykit_haptic reads yk_install_busy() weakly).
+void yk_haptic_stop(void) __attribute__((weak));
+
 /** One install at a time. `from_cache`: it starts as COPYING rather than DOWNLOADING (the ring's first words). */
 static bool claim(int slot, const char *slug, const char *version, uint32_t total, bool from_cache,
                   yk_install_listener_t listener, void *ctx) {
@@ -134,6 +140,7 @@ static bool claim(int slot, const char *slug, const char *version, uint32_t tota
         copy(s_status.version, sizeof(s_status.version), version);
     }
     unlock();
+    if (ok && yk_haptic_stop) yk_haptic_stop();
     return ok;
 }
 
@@ -187,27 +194,31 @@ void yk_install_status_json(cJSON *obj) {
 const char *yk_install_error_text(const char *code, bool en) {
     if (!code) return "";
     static const struct {
-        const char *code, *zh, *en;
+        const char *code;
+        yk_str_t word;
     } TEXTS[] = {
-        {"NO_WIFI", "没连上网络", "No network"},
-        {"NOT_FOUND", "找不到这个应用", "App not found"},
-        {"DOWNLOAD_FAILED", "下载没成功", "Download failed"},
-        {"NOT_CACHED", "要联网下载", "Needs the network"},
-        {"NO_FREE_SLOT", "没有空位置", "No free place"},
-        {"HOME_SLOT_RESERVED", "位置 1 只放主固件", "Place 1 is for the Tikpal firmware"},
-        {"TOO_LARGE", "应用太大了", "App too large"},
-        {"NO_SPACE", "存储空间不够", "Not enough storage"},
-        {"UPDATING", "主固件正在更新，等一会儿再装", "Tikpal is updating: try again soon"},
-        {"BUSY", "正在装别的", "Another install"},
-        {"CANCELLED", "已经取消", "Cancelled"},
-        {"FLASH_ERROR", "写入没成功", "Could not write"},
-        {"NO_MEMORY", "内存不够", "Out of memory"},
-        {"LOW_BATTERY", "电量不够，充上电再装", "Battery low: charge first"},
+        {"NO_WIFI", YK_STR_YAYKIT_INSTALL_ERROR_NO_WIFI},
+        {"NOT_FOUND", YK_STR_YAYKIT_INSTALL_ERROR_NOT_FOUND},
+        {"DOWNLOAD_FAILED", YK_STR_YAYKIT_INSTALL_ERROR_DOWNLOAD_FAILED},
+        {"NOT_CACHED", YK_STR_YAYKIT_INSTALL_ERROR_NOT_CACHED},
+        {"NO_FREE_SLOT", YK_STR_YAYKIT_INSTALL_ERROR_NO_FREE_SLOT},
+        {"HOME_SLOT_RESERVED", YK_STR_YAYKIT_INSTALL_ERROR_HOME_SLOT},
+        {"TOO_LARGE", YK_STR_YAYKIT_INSTALL_ERROR_TOO_LARGE},
+        {"NO_SPACE", YK_STR_YAYKIT_INSTALL_ERROR_NO_SPACE},
+        {"UPDATING", YK_STR_YAYKIT_INSTALL_ERROR_UPDATING},
+        {"BUSY", YK_STR_YAYKIT_INSTALL_ERROR_BUSY},
+        {"CANCELLED", YK_STR_YAYKIT_INSTALL_ERROR_CANCELLED},
+        {"FLASH_ERROR", YK_STR_YAYKIT_INSTALL_ERROR_FLASH_ERROR},
+        {"NO_MEMORY", YK_STR_YAYKIT_INSTALL_ERROR_NO_MEMORY},
+        {"LOW_BATTERY", YK_STR_YAYKIT_INSTALL_ERROR_LOW_BATTERY},
+        // The card did not read and there is no network to turn to (yk_inst_card_retry): as NOT_CACHED to whoever taps.
+        {"SOURCE_FAILED", YK_STR_YAYKIT_INSTALL_ERROR_NOT_CACHED},
         // BAD_SIGNATURE, SIZE_MISMATCH, HASH_MISMATCH, BAD_IMAGE, WRONG_APP, NOT_HTTPS, BAD_REQUEST: the default.
     };
+    // In the screens' language (yaykit_strings, Yay 0.1.19): `en` false is Chinese, true the screens' when not Chinese.
     for (size_t i = 0; i < sizeof(TEXTS) / sizeof(TEXTS[0]); i++)
-        if (!strcmp(code, TEXTS[i].code)) return en ? TEXTS[i].en : TEXTS[i].zh;
-    return en ? "Check failed" : "没有通过校验";
+        if (!strcmp(code, TEXTS[i].code)) return yk_word_in(en, TEXTS[i].word);
+    return yk_word_in(en, YK_STR_YAYKIT_INSTALL_ERROR_CHECK_FAILED);
 }
 
 // ---------------------------------------------------------------- flash
@@ -662,11 +673,9 @@ void yk_install_cache_json(cJSON *obj) {
 const char *yk_install_check(const yk_install_manifest_t *m) {
     const char *error = yk_inst_check_fields(m->slug, m->version, m->size, m->sha256, m->url, m->signature, ALLOW_HTTP);
     if (error) return error;
-    size_t count;
-    const uint8_t (*keys)[YK_SIG_KEY_BYTES] = yk_install_keys(&count);
     const yk_sig_image_t image = {.slug = m->slug, .version = m->version, .size = m->size, .sha256 = m->sha256,
                                   .board = YK_INSTALL_BOARD, .layout = YK_INSTALL_LAYOUT};
-    const yk_sig_result_t verdict = yk_sig_verify(&image, m->signature, keys, count);
+    const yk_sig_result_t verdict = yk_install_verify(&image, m->signature);  // a key for extensions only: not Yay
     if (verdict == YK_SIG_OK) return NULL;
     printf("YK_INSTALL_SIGNATURE %s slug=%s version=%s\n", yk_sig_result_name(verdict), m->slug, m->version);
     return "BAD_SIGNATURE";
@@ -714,6 +723,14 @@ static __attribute__((noinline)) bool cache_has(const yk_install_manifest_t *m) 
     return cache_lookup(m, &hit);
 }
 
+static const yk_install_source_t *s_source;  // the TF card, in the firmware that has one (yk_install_types.h)
+static void *s_source_ctx;
+
+void yk_install_set_source(const yk_install_source_t *source, void *ctx) {
+    s_source_ctx = ctx;
+    s_source = source;
+}
+
 void yk_install_plan(const yk_install_manifest_t *m, const char *replace, yk_install_plan_t *out) {
     yk_inst_slot_t slots[YK_INST_SLOTS];
     read_slots(slots);
@@ -725,12 +742,13 @@ void yk_install_plan(const yk_install_manifest_t *m, const char *replace, yk_ins
     out->replaces = choice.replaces;
     copy(out->replace, sizeof(out->replace), choice.replace);
     out->error = choice.error;
-    out->cached = cache_has(m);
+    out->cached = cache_has(m) || (s_source && s_source->known(s_source_ctx, m->slug, m->sha256));
     yk_slot_t s;
     if ((out->update || out->replaces) && yk_slot_read(out->slot, &s) == ESP_OK) {
         copy(out->replace_version, sizeof(out->replace_version), s.version);
         out->replace_signed = slot_note_sha(out->slot, s.slug, out->replace_sha256) &&
-                              cache_signed_copy(s.slug, out->replace_sha256);
+                              (cache_signed_copy(s.slug, out->replace_sha256) ||
+                               (s_source && s_source->known(s_source_ctx, s.slug, out->replace_sha256)));
     }
 }
 
@@ -752,6 +770,10 @@ typedef struct {
     yk_replace_t rec;      // yk_install_resume: the record it acts on, and how
     yk_replace_step_t resume;
     yk_cache_entry_t backup;
+    const yk_install_sink_t *sink;  // yk_install_fetch_to: where the bytes go instead of the cache
+    void *sink_ctx;
+    uint32_t sink_written;
+    bool touched;          // the slot's first write went through: what it held is gone
     uint32_t beside;       // yk_install_fetch: bytes that must still fit beside the image
     yk_fetch_room_t room;  // ... and what may go for their room
     char in_slot[3][32];   // YK_FETCH_ROOM_APPS_LAST: the apps in the slots (their copies go last)
@@ -771,10 +793,19 @@ static const char *feed_slot(job_t *j, const uint8_t *data, uint32_t len) {
         const char *error = slot_begin(&j->to_slot, j->slot, j->m.size, j->head, j->scratch);
         if (error) return error;
         j->begun = true;
+        j->touched = true;
     }
     const char *error = yk_writer_write(&j->to_slot, data, len);
     set_done(j->base + j->to_slot.written);
     return error;
+}
+
+/** One chunk into the sink (yk_install_fetch_to): stopped by a cancel, as a download into the cache. */
+static const char *feed_sink(job_t *j, const uint8_t *data, uint32_t len) {
+    const char *error = j->sink->write(j->sink_ctx, data, len);
+    j->sink_written += len;
+    set_done(j->sink_written);
+    return error ? error : s_cancel ? "CANCELLED" : NULL;
 }
 
 /** The entries `before` had that `after` has not, on the console: what went for room. */
@@ -854,7 +885,20 @@ static bool fail_injected(void) {
     return false;
 }
 
-/** Downloads into the cache (①); resumes with a range request after a dropped connection. */
+/** How much of the image came, wherever it goes. */
+static uint32_t got(const job_t *j) { return j->sink ? j->sink_written : j->to_cache.written; }
+
+/** The range was ignored: from the first byte. */
+static const char *feed_restart(job_t *j) {
+    if (!j->sink) {
+        yk_writer_restart(&j->to_cache);
+        return NULL;
+    }
+    j->sink_written = 0;
+    return j->sink->restart(j->sink_ctx);
+}
+
+/** Downloads into the cache (①) or the sink; resumes with a range request after a dropped connection. */
 static const char *download(job_t *j) {
     if (!yk_wifi_wait_connected(20000)) return "NO_WIFI";
     esp_http_client_config_t cfg = {
@@ -868,10 +912,10 @@ static const char *download(job_t *j) {
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     const char *error = client ? NULL : "NO_MEMORY";
     int failures = 0;
-    while (!error && j->to_cache.written < j->m.size) {
+    while (!error && got(j) < j->m.size) {
         char range[32];
-        if (j->to_cache.written) {
-            snprintf(range, sizeof(range), "bytes=%u-", (unsigned)j->to_cache.written);
+        if (got(j)) {
+            snprintf(range, sizeof(range), "bytes=%u-", (unsigned)got(j));
             esp_http_client_set_header(client, "Range", range);
         } else {
             esp_http_client_delete_header(client, "Range");
@@ -892,17 +936,18 @@ static const char *download(job_t *j) {
             error = "NOT_FOUND";
             break;
         }
-        if (code == 200 && j->to_cache.written) yk_writer_restart(&j->to_cache);  // the range ignored: from the start
-        if (code == 200 || code == 206) {
+        if (code == 200 && got(j)) error = feed_restart(j);  // the range ignored: from the start
+        if (!error && (code == 200 || code == 206)) {
             int n;
-            while (!error && (n = esp_http_client_read(client, (char *)j->buf, CHUNK)) > 0) error = feed_cache(j, j->buf, n);
+            while (!error && (n = esp_http_client_read(client, (char *)j->buf, CHUNK)) > 0)
+                error = j->sink ? feed_sink(j, j->buf, n) : feed_cache(j, j->buf, n);
         }
         esp_http_client_close(client);
-        if (!error && j->to_cache.written < j->m.size) {
+        if (!error && got(j) < j->m.size) {
             if (++failures > 5) {
                 error = "DOWNLOAD_FAILED";
             } else {
-                ESP_LOGW(TAG, "download interrupted at %u (HTTP %d), retrying", (unsigned)j->to_cache.written, code);
+                ESP_LOGW(TAG, "download interrupted at %u (HTTP %d), retrying", (unsigned)got(j), code);
                 vTaskDelay(pdMS_TO_TICKS(1000 * failures));
                 if (!yk_wifi_wait_connected(30000)) error = "NO_WIFI";
                 if (!error && s_cancel) error = "CANCELLED";
@@ -939,6 +984,26 @@ static const char *write_from_cache(job_t *j, const yk_cache_entry_t *e, const u
 }
 
 /** What went wrong could be the cached copy rather than the image: drop it and download instead. */
+/** The slot written from the card's open image, then checked. A read that fails is SOURCE_FAILED: the slot is as far as it
+ *  got. The card is left open: the caller closes it. */
+static const char *write_from_source(job_t *j) {
+    const char *error = NULL;
+    copy_gate_t gate;
+    copy_gate_begin(&gate);
+    for (uint32_t at = 0; !error && at < j->m.size; at += CHUNK) {
+        const uint32_t n = j->m.size - at < CHUNK ? j->m.size - at : CHUNK;
+        error = s_source->read(s_source_ctx, j->buf, n) ? feed_slot(j, j->buf, n) : "SOURCE_FAILED";
+        copy_gate(&gate);
+    }
+    if (!error) {
+        set_phase(YK_INSTALL_VERIFYING, NULL);
+        error = slot_finish(&j->to_slot, j->slot, j->sha256, j->m.slug);
+    }
+    if (j->begun) yk_writer_end(&j->to_slot);
+    j->begun = false;
+    return error;
+}
+
 static bool cache_was_bad(const char *error) {
     return !strcmp(error, "FLASH_ERROR") || !strcmp(error, "SIZE_MISMATCH") || !strcmp(error, "HASH_MISMATCH") ||
            !strcmp(error, "BAD_IMAGE") || !strcmp(error, "WRONG_APP");
@@ -1159,6 +1224,24 @@ static yk_install_old_t put_back(job_t *j, yk_replace_t *rec, const yk_cache_ent
     return became;
 }
 
+/** ① over the network into the cache: `hit` its entry; `cache` for the log. */
+static const char *fetch_into_cache(job_t *j, yk_cache_entry_t *hit, const char **cache) {
+    set_from_cache(false);
+    set_stage(j, YK_INSTALL_STAGE_FETCH, YK_INSTALL_DOWNLOADING);
+    const char *error = cache_reserve(j);
+    if (!error) error = download(j);
+    if (!error) error = yk_writer_check(&j->to_cache, j->sha256);
+    if (j->caching) yk_writer_end(&j->to_cache);
+    j->caching = false;
+    if (!error) {
+        cache_commit(j, hit);
+        *cache = "stored";
+        yk_cache_keep_add(&j->keep, j->m.sha256);
+    }
+    j->base += j->m.size;
+    return error;
+}
+
 static void install_task(void *arg) {
     job_t *j = arg;
     const int64_t started = esp_timer_get_time();
@@ -1180,44 +1263,51 @@ static void install_task(void *arg) {
         error = NULL;
     }
     bool backed = old.present && cache_lookup_image(old.slug, old.sha256, &backup);
+    // A signed copy on the card keeps the slot's app as well as one in the cache, and the card may have the new image: read
+    // whole before anything is decided by them. No source (the recovery), or a card that fails: as if neither were there.
+    const bool old_on_card = !error && old.present && !backed && s_source &&
+                             s_source->known(s_source_ctx, old.slug, old.sha256) &&
+                             s_source->holds(s_source_ctx, old.slug, old.sha256);
+    bool card = !error && !have && s_source && s_source->known(s_source_ctx, j->m.slug, j->m.sha256) &&
+                s_source->open(s_source_ctx, j->m.slug, j->m.sha256, j->m.size);
+    yk_inst_keep_t keep = yk_inst_keep(old.present, backed, old_on_card);
     if (old.present) {
         yk_cache_keep_add(&j->keep, old.sha256);
         slot_note_save(j->slot, old.slug, old.version, old.sha256);  // what it holds, known now
-        set_old(YK_INSTALL_OLD_KEPT, old.slug, backed && !yk_cache_is_backup(&backup));
+        set_old(YK_INSTALL_OLD_KEPT, old.slug, old_on_card || (backed && !yk_cache_is_backup(&backup)));
     }
     if (have) yk_cache_keep_add(&j->keep, j->m.sha256);
-    uint32_t backup_len = old.present && !backed ? old.len : 0;
-    if (!error) error = room_for(j, have ? 0 : j->m.size, backup_len);
-    if (!error) set_total((have ? 0 : j->m.size) + backup_len + j->m.size);
-    // ① The new image into the cache, whole and checked (or found there).
-    if (!error && have) {
+    uint32_t backup_len = keep.backup ? old.len : 0;
+    const bool arrives = have || card;  // nothing to make room for in the cache
+    if (!error) error = room_for(j, arrives ? 0 : j->m.size, backup_len);
+    if (!error) set_total((arrives ? 0 : j->m.size) + backup_len + j->m.size);
+    // ① The new image into the cache, whole and checked (or found there, or on the card, read straight into the slot in ③).
+    switch (error ? YK_INST_FROM_NOWHERE : yk_inst_from(have, card, j->m.url[0])) {
+    case YK_INST_FROM_CACHE:
         from = "cache";
         cache = "hit";
         set_from_cache(true);
-    } else if (!error && !j->m.url[0]) {
-        error = "NOT_CACHED";
-    } else if (!error) {
-        set_from_cache(false);
-        set_stage(j, YK_INSTALL_STAGE_FETCH, YK_INSTALL_DOWNLOADING);
-        error = cache_reserve(j);
-        if (!error) error = download(j);
-        if (!error) error = yk_writer_check(&j->to_cache, j->sha256);
-        if (j->caching) yk_writer_end(&j->to_cache);
-        j->caching = false;
-        if (!error) {
-            cache_commit(j, &hit);
-            cache = "stored";
-            have = true;
-            yk_cache_keep_add(&j->keep, j->m.sha256);
-        }
-        j->base += j->m.size;
+        break;
+    case YK_INST_FROM_CARD:
+        from = "card";
+        set_from_cache(true);
+        break;
+    case YK_INST_FROM_NET:
+        error = fetch_into_cache(j, &hit, &cache);
+        have = !error;
         // The same image as the slot's (installed again): the copy just made is its backup too, not a second one.
-        if (!error && old.present && !backed && (backed = cache_lookup_image(old.slug, old.sha256, &backup)))
+        if (!error && keep.backup && (backed = cache_lookup_image(old.slug, old.sha256, &backup))) {
+            keep.backup = false;
             set_total(j->base + j->m.size);
+        }
+        break;
+    default:
+        if (!error) error = "NOT_CACHED";
+        break;
     }
     // ② The app the slot holds, when the cache has no copy of it; and whichever copy it is, read back before the slot
     //    is written over: a bad one is dropped and made again (once).
-    for (int round = 0; !error && old.present && round < 2; round++) {
+    for (int round = 0; !error && keep.record && round < 2; round++) {
         if (!backed) {
             set_stage(j, YK_INSTALL_STAGE_BACKUP, YK_INSTALL_COPYING);
             error = backup_slot(j, &old, &backup);
@@ -1233,7 +1323,7 @@ static void install_task(void *arg) {
         set_total(j->base + old.len + j->m.size);
         if (round) error = bad;  // made again and still bad: the slot is not touched
     }
-    if (!error && old.present) set_old(YK_INSTALL_OLD_KEPT, old.slug, !yk_cache_is_backup(&backup));
+    if (!error && keep.record) set_old(YK_INSTALL_OLD_KEPT, old.slug, !yk_cache_is_backup(&backup));
     // ③ The slot, from the cache: not cancelled, leaving refused. Should it fail, the old app goes back at once; a power
     //   cut leaves the record for the next start (yk_install_resume).
     yk_install_old_t became = old.present ? YK_INSTALL_OLD_KEPT : YK_INSTALL_OLD_NONE;
@@ -1245,30 +1335,53 @@ static void install_task(void *arg) {
         copy(rec.old_sha256, sizeof(rec.old_sha256), old.sha256);
         if (!begin_writing()) {
             error = "CANCELLED";  // asked just before: the slot is untouched
-        } else if (old.present && !replace_save(&rec)) {
+        } else if (keep.record && !replace_save(&rec)) {
             error = "FLASH_ERROR";  // no record, no writing over the app
         } else {
             slot_note_clear(j->slot);
             set_stage(j, YK_INSTALL_STAGE_WRITE, YK_INSTALL_COPYING);
-            error = write_from_cache(j, &hit, j->sha256, j->m.slug);
+            if (card) {
+                error = write_from_source(j);
+                s_source->close(s_source_ctx);
+                card = false;
+                // The card gave out with the slot begun: the network brings the image, and the user only sees it take longer.
+                if (yk_inst_card_retry(error, j->m.url[0])) {
+                    printf("YK_INSTALL %s from the card: over the network\n", error);
+                    from = "card+net";
+                    error = room_for(j, j->m.size, 0);
+                    if (!error) error = fetch_into_cache(j, &hit, &cache);
+                    have = !error;
+                    if (!error) {
+                        set_stage(j, YK_INSTALL_STAGE_WRITE, YK_INSTALL_COPYING);
+                        error = write_from_cache(j, &hit, j->sha256, j->m.slug);
+                    }
+                }
+            } else {
+                error = write_from_cache(j, &hit, j->sha256, j->m.slug);
+            }
             if (!error) {
                 became = old.present ? YK_INSTALL_OLD_REPLACED : YK_INSTALL_OLD_NONE;
                 slot_note_save(j->slot, j->m.slug, j->m.version, j->m.sha256);
                 cache_touch(j->m.slug, j->m.sha256);
                 cache_drop_older(j->m.slug, j->m.sha256);
-                if (old.present) {
+                if (keep.record) {
                     cache_drop_backup(old.slug, old.sha256);  // first the backup, then the record
                     replace_clear();
                 }
-            } else if (old.present) {
+            } else if (keep.record) {
                 printf("YK_INSTALL %s writing slot=%d: %s goes back\n", error, j->slot, old.slug);
-                if (cache_was_bad(error) && strcmp(error, "FLASH_ERROR")) cache_drop_image(j->m.slug, j->m.sha256);
+                if (have && cache_was_bad(error) && strcmp(error, "FLASH_ERROR")) cache_drop_image(j->m.slug, j->m.sha256);
                 became = put_back(j, &rec, &backup);
+            } else if (old.present && j->touched) {
+                // Nothing to put back from: the slot is empty, and the app is on the card, for the next tap (3.5).
+                printf("YK_INSTALL %s writing slot=%d: %s is on the card\n", error, j->slot, old.slug);
+                became = YK_INSTALL_OLD_LOST;
             }
         }
         end_writing();
     }
-    if (old.present) set_old(became, old.slug, cache_signed_copy(old.slug, old.sha256));
+    if (card) s_source->close(s_source_ctx);
+    if (old.present) set_old(became, old.slug, old_on_card || cache_signed_copy(old.slug, old.sha256));
     printf("YK_INSTALL %s slot=%d slug=%s version=%s bytes=%u ms=%d from=%s cache=%s erased=%u skipped=%u old=%s%s%s "
            "stack_left=%u\n",
            error ? error : "OK", j->slot, j->m.slug, j->m.version, (unsigned)j->m.size,
@@ -1440,6 +1553,79 @@ static void fetch_task(void *arg) {
     free(j);
     release(error);
     vTaskDelete(NULL);
+}
+
+/** The image into the sink from the package cache: no network, no TLS. */
+static const char *sink_from_cache(job_t *j, const yk_cache_entry_t *e) {
+    const char *error = NULL;
+    for (uint32_t at = 0; !error && at < e->size; at += CHUNK) {
+        const uint32_t n = e->size - at < CHUNK ? e->size - at : CHUNK;
+        error = esp_partition_read(s_cache_part, e->offset + at, j->buf, n) == ESP_OK ? feed_sink(j, j->buf, n) : "FLASH_ERROR";
+        vTaskDelay(1);  // no idle task starved (#555)
+    }
+    return error;
+}
+
+/** Stage ① into a sink: the image checked, from the cache or the network, no slot and no cache written. */
+static void fetch_to_task(void *arg) {
+    job_t *j = arg;
+    const int64_t started = esp_timer_get_time();
+    const char *from = "net";
+    const char *error = yk_install_check(&j->m);  // in this task: ECDSA wants ~3 KB of stack
+    if (!error) error = j->sink->begin(j->sink_ctx, &j->m);
+    if (error && !strcmp(error, YK_INSTALL_SINK_HAVE)) {
+        error = NULL;
+        from = "have";
+    } else if (!error) {
+        set_total(j->m.size);
+        set_from_cache(false);
+        set_stage(j, YK_INSTALL_STAGE_FETCH, YK_INSTALL_DOWNLOADING);
+        yk_cache_entry_t hit;
+        if (cache_lookup(&j->m, &hit)) {
+            from = "cache";
+            error = sink_from_cache(j, &hit);
+        } else {
+            error = j->m.url[0] ? download(j) : "NOT_CACHED";
+        }
+        const char *end = j->sink->finish(j->sink_ctx, !error);
+        if (!error) error = end;
+    }
+    printf("YK_INSTALL_FETCH_TO %s slug=%s version=%s bytes=%u ms=%d from=%s stack_left=%u\n", error ? error : "OK", j->m.slug,
+           j->m.version, (unsigned)j->m.size, (int)((esp_timer_get_time() - started) / 1000), from,
+           (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    free(j->buf);
+    free(j);
+    release(error);
+    vTaskDelete(NULL);
+}
+
+esp_err_t yk_install_fetch_to(const yk_install_manifest_t *m, const yk_install_sink_t *sink, void *sink_ctx,
+                              yk_install_listener_t listener, void *ctx) {
+    if (!sink) return ESP_ERR_INVALID_ARG;
+    if (!claim(-1, m->slug, m->version, m->size, false, listener, ctx)) return ESP_ERR_INVALID_STATE;
+    const char *error =
+        yk_inst_check_fields(m->slug, m->version, m->size, m->sha256, m->url, m->signature, ALLOW_HTTP);
+    if (!error && m->size > YK_INST_MAX_IMAGE) error = "TOO_LARGE";
+    // No flash is written: no head or scratch, a job in PSRAM and the one buffer the network reads into.
+    job_t *j = error ? NULL : job_alloc();
+    if (j) j->buf = internal_buffer();
+    if (!error && (!j || !j->buf)) error = "NO_MEMORY";
+    if (!error) {
+        j->m = *m;
+        j->slot = -1;
+        j->sink = sink;
+        j->sink_ctx = sink_ctx;
+    }
+    // TLS and ECDSA on an internal-RAM stack, as an install's.
+    if (!error && xTaskCreate(fetch_to_task, "install", 8192, j, 4, NULL) != pdPASS) error = "NO_MEMORY";
+    if (error) {
+        if (j) free(j->buf), free(j);
+        printf("YK_INSTALL_FETCH_TO %s slug=%s\n", error, m->slug);
+        release(error);
+        return !strcmp(error, "NO_MEMORY") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    }
+    publish();
+    return ESP_OK;
 }
 
 esp_err_t yk_install_fetch(const yk_install_manifest_t *m, uint32_t beside, bool make_room,
@@ -1754,11 +1940,25 @@ esp_err_t yk_install_cache_manifest_sha(const char *slug, const char *sha256, yk
 
 // ---------------------------------------------------------------- USB
 
+/** YK_ACK or YK_ACK_AGAIN <bytes>: straight into the USB driver, with up to a second for room. Through the console a
+ *  character finds no room within 50 ms is dropped, and every one after it until there is room again: an ACK lost
+ *  whole or cut short while the host was busy (11-18). Under stdout's lock, so that no other task's line goes into
+ *  the middle of it, after what stdout holds. */
+static void usb_ack(const char *word, uint32_t bytes) {
+    char line[40];
+    const int n = snprintf(line, sizeof(line), "%s %u\r\n", word, (unsigned)bytes);
+    flockfile(stdout);
+    fflush(stdout);
+    usb_serial_jtag_write_bytes(line, (size_t)n, pdMS_TO_TICKS(1000));
+    funlockfile(stdout);
+}
+
 /**
  * install <slot> <size> <sha256> [slug]
- * Prints YK_INSTALL_READY, then reads the image as raw bytes in 4 KB chunks, answering each with YK_ACK <bytes>. Ends
- * with YK_INSTALL OK|<code>. The launcher's protocol (launcher/tools/install_usb.py), for bench tools and the desktop
- * app. The console's USB receive ring needs room for a chunk (8 KB).
+ * Prints YK_INSTALL_READY, then reads the image as raw bytes in 4 KB chunks, answering each with YK_ACK <bytes>, and
+ * with YK_ACK_AGAIN <bytes> once a second while nothing of the next chunk comes (yk_inst_usb_quiet). Ends with
+ * YK_INSTALL OK|<code>. The launcher's protocol (launcher/tools/install_usb.py), for bench tools, the desktop app and
+ * the web page. The console's USB receive ring needs room for a chunk (8 KB).
  */
 static int usb_install_cmd(int argc, char **argv) {
     uint8_t sha[32];
@@ -1791,13 +1991,25 @@ static int usb_install_cmd(int argc, char **argv) {
         while (usb_serial_jtag_read_bytes(buf, CHUNK, pdMS_TO_TICKS(20)) > 0) {}
         printf("YK_INSTALL_READY chunk=%d\n", CHUNK);
         fflush(stdout);
+        int64_t acked_at = esp_timer_get_time() / 1000;  // the last YK_ACK or YK_ACK_AGAIN (READY: as an ACK)
         while (!error && w.written < size) {
             const uint32_t want = size - w.written < CHUNK ? size - w.written : CHUNK;
             uint32_t got = 0;
+            int64_t heard = acked_at;  // the last byte in, or the last YK_ACK out (not an AGAIN: no endless wait)
             while (got < want) {
-                const int n = usb_serial_jtag_read_bytes(buf + got, want - got, pdMS_TO_TICKS(5000));
-                if (n <= 0) break;
-                got += n;
+                const int n = usb_serial_jtag_read_bytes(buf + got, want - got, pdMS_TO_TICKS(100));
+                const int64_t t = esp_timer_get_time() / 1000;
+                if (n > 0) {
+                    got += n;
+                    heard = t;
+                    continue;
+                }
+                const yk_inst_usb_t q = yk_inst_usb_quiet((uint32_t)(t - heard), got, w.written, (uint32_t)(t - acked_at));
+                if (q == YK_INST_USB_TIMEOUT) break;
+                if (q == YK_INST_USB_AGAIN) {
+                    usb_ack("YK_ACK_AGAIN", w.written);
+                    acked_at = t;
+                }
             }
             if (got < want) {
                 error = "USB_TIMEOUT";
@@ -1805,8 +2017,8 @@ static int usb_install_cmd(int argc, char **argv) {
             }
             error = yk_writer_write(&w, buf, got);
             set_done(w.written);
-            printf("YK_ACK %u\n", (unsigned)w.written);
-            fflush(stdout);
+            usb_ack("YK_ACK", w.written);
+            acked_at = esp_timer_get_time() / 1000;
         }
     }
     if (!error) {

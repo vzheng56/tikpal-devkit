@@ -6,7 +6,7 @@
 //   TALK   just added: the first 3 times the screen wakes on Yay's home, "按住这里说话"; never again after 3 turns
 //   TAP    a tap on Yay's home that did nothing: "按侧键说话", once per wake
 //   APPS   the first time in each extension: "双击：应用和回家"; never again once the app ring was opened
-//   BACK   back in the main firmware from "回到 Yay 说？" (the buddy's name): "按住这里说话"
+//   BACK   back in the main firmware from "回到主屏幕说？": "按住这里说话"
 // Never while the app ring is open; listening, thinking, replying, installing, counting down and the screen being
 // off are the caller's to check.
 //
@@ -60,6 +60,9 @@ void yk_hint_note(yk_hint_event_t event);
 /** Shows the arrow and the pill over `parent` (the active screen) for 4 s, with `text`, or the kind's own line in
  *  the language (yk_ui_set_english) when NULL; counts it as shown. Replaces a hint already showing. */
 bool yk_hint_show(lv_obj_t *parent, yk_hint_kind_t kind, const char *text);
+/** The same arrow and pill with `text`, staying until yk_hint_hide(), and not counted as shown (the first setup's step 7
+ *  and 8: the arrow is the lesson). yk_hint_show() is as it was. */
+bool yk_hint_show_stay(lv_obj_t *parent, const char *text);
 /** Takes it away at once. */
 void yk_hint_hide(void);
 bool yk_hint_is_shown(void);

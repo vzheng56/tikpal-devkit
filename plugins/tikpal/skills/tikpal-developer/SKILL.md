@@ -48,7 +48,7 @@ description: 把 Tikpal Voice 应用发布到 Tikpal 开发者平台（developer
 |---|---|---|
 | `checking`、`ai_review` | 机器检查、AI 审，几分钟 | 用 `wait_for_change` 等 |
 | `returned` | 被退回了 | `get_findings`（`submission.id`）读每一条：标 `block` 的全改，`suggest` 的能改就改；为什么退回只以它为准，不猜，不只改第一条。改完重新打包、推代码、再交（被退回的版本号可以原样再交） |
-| `held` | Tikpal 的人在看，原因在 `now`，一般一天内回 | 不重交、不撤回，告诉开发者在等什么 |
+| `held` | Tikpal 在核，原因在 `now`，一般一天内回 | 不重交、不撤回，告诉开发者在等什么 |
 | `device`、`signing` | Tikpal 排队做真机测试、签名，可能要一两天 | 不重交、不撤回，这不是卡住了 |
 | `preview` | 发给开发者和测试名单了 | 不用做什么：平台照规则接着发正式版，你不发，开发者也不用点 |
 | `stable` | 发正式版了，所有人都能装 | 要改就改代码、版本号加一、再交 |
@@ -60,6 +60,7 @@ description: 把 Tikpal Voice 应用发布到 Tikpal 开发者平台（developer
 - 跟开发者说清现在在哪一步、通常还要多久（`eta`），然后停下：「状态一变，网站上这个应用的页面会显示。你回来跟我说『看看〈slug〉的进度』就行。」
 - 你能定时的话（比如 Claude Code 的 `/loop`、定时任务），可以问开发者要不要让你每 30 分钟用 `get_app` 看一次，直到要他动手或者发出去了。他点头再建。
 - 回来看进度：先 `get_app`；`checking`、`ai_review` 再用 `wait_for_change` 等。
+- 状态变了（被退回、卡在 Tikpal 这边、发给测试名单、发给所有人、要补商店素材），平台会发邮件到开发者资料里的联系邮箱；开发者不想收，可以在网站这个应用的「设置」里关掉。
 
 ## 6. 硬规矩
 

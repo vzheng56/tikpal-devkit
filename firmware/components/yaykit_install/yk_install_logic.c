@@ -71,6 +71,21 @@ bool yk_inst_project_matches(const char *project, const char *slug) {
     return !*project && !*slug;
 }
 
+// ---------------------------------------------------------------- the TF card
+
+yk_inst_from_t yk_inst_from(bool cached, bool on_card, bool has_url) {
+    if (cached) return YK_INST_FROM_CACHE;
+    if (on_card) return YK_INST_FROM_CARD;
+    return has_url ? YK_INST_FROM_NET : YK_INST_FROM_NOWHERE;
+}
+
+yk_inst_keep_t yk_inst_keep(bool old_present, bool in_cache, bool on_card) {
+    const yk_inst_keep_t keep = {.backup = old_present && !in_cache && !on_card, .record = old_present && (in_cache || !on_card)};
+    return keep;
+}
+
+bool yk_inst_card_retry(const char *error, bool has_url) { return error && has_url && strcmp(error, "FLASH_ERROR"); }
+
 // ---------------------------------------------------------------- where an app goes
 
 const char *yk_inst_slot_rule(int slot, const char *slug) {
@@ -407,6 +422,14 @@ bool yk_inst_begin_write(yk_inst_flags_t *f) {
     if (f->cancel) return false;
     f->writing = true;
     return true;
+}
+
+// ---------------------------------------------------------------- USB install
+
+yk_inst_usb_t yk_inst_usb_quiet(uint32_t quiet_ms, uint32_t got, uint32_t acked, uint32_t since_ack_ms) {
+    if (quiet_ms >= YK_INST_USB_IDLE_MS) return YK_INST_USB_TIMEOUT;
+    if (!got && acked && since_ack_ms >= YK_INST_USB_AGAIN_MS) return YK_INST_USB_AGAIN;
+    return YK_INST_USB_WAIT;
 }
 
 // ---------------------------------------------------------------- writer

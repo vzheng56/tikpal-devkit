@@ -231,7 +231,8 @@
   var BLOCKS = {
     heading: function (b) { return "<h2>" + esc(b.text) + "</h2>"; },
     text: function (b) { return '<div class="text">' + markdown(b.text) + "</div>"; },
-    callout: function (b) { return '<div class="callout"><span class="who">Yay</span><p>' + esc(b.text) + "</p></div>"; },
+    // No name on it: the page knows neither who the buddy is nor the language to say anything else in.
+    callout: function (b) { return '<div class="callout"><p>' + esc(b.text) + "</p></div>"; },
     stats: function (b) {
       return '<div class="stats n' + b.items.length + '">' + b.items.map(function (i) { return '<div class="stat"><b>' + esc(i.value) + "</b><small>" + esc(i.label) + "</small></div>"; }).join("") + "</div>";
     },

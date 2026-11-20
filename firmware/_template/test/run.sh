@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 OUT=$(mktemp -d)
+trap 'rm -rf "$OUT"' EXIT
 cc -std=c11 -Wall -Wextra -Werror -O1 -o "$OUT/test_counter" test_counter.c ../main/counter.c
 "$OUT/test_counter"
 rm -rf "$OUT"

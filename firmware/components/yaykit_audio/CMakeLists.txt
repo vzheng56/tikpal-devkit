@@ -1,7 +1,7 @@
 # Shared audio front end (docs/architecture/audio.md). The pure C core (yk_dsp, yk_fe, yk_srmodels, yk_ptt) is host
 # tested with test/run.sh; yaykit_audio.c is the device side (capture task, ESP-SR nsnet2 + vadnet, preroll, the
 # push-to-talk recording), yk_opus.c the microphone's Opus encoder.
-idf_component_register(SRCS "yaykit_audio.c" "yk_opus.c" "yk_dsp.c" "yk_fe.c" "yk_srmodels.c" "yk_onset.c" "yk_ptt.c"
+idf_component_register(SRCS "yaykit_audio.c" "yk_opus.c" "yk_dsp.c" "yk_fe.c" "yk_srmodels.c" "yk_onset.c" "yk_ptt.c" "yk_retry.c"
     INCLUDE_DIRS "include" "."
     PRIV_REQUIRES yaykit_board espressif__esp-sr espressif__esp_audio_codec espressif__esp_codec_dev
                   esp_partition esp_timer console mbedtls)

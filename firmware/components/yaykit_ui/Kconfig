@@ -1,0 +1,21 @@
+menu "Yaykit UI"
+
+config YK_UI_PIP_BUILTIN
+    bool "Pip's pictures in the image"
+    default y
+    help
+        Pip's poses (firmware/assets/yay: 16 pictures, 628,416 bytes) are built into the image, as every firmware has
+        them. Off (Yay from 0.1.18, Yay 0.1.18 开发文档 4.2): only greet_132 (18,464 bytes) is, and every pose is drawn
+        as it until the firmware hangs Pip's pack with yk_yay_pip(): Yay reads it from Pip's place in `models`. An
+        extension leaves this on: it has no Pip's place of its own to read.
+
+config YK_UI_BUDDY_DEFAULT
+    bool "Every Yay is the user's buddy"
+    default y
+    help
+        yk_yay_create() draws the buddy the user chose (development kit 1.10, YK_API_LEVEL 5; 开发包四个伙伴-需求确认.md
+        §4): Pip, or Mote, Dial or Bloom from the pack the main firmware keeps in a buddy slot (about 630 KB of PSRAM,
+        read once a run on the first Yay made), Pip when it is not there. yk_yay_buddy() names another. Off (Yay): every
+        Yay is Pip until a pack is hung with yk_yay_figure(), as before; Yay hangs its packs itself.
+
+endmenu

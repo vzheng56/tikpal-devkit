@@ -16,7 +16,8 @@ static const char *TAG = "board_pref";
 
 #define NS "yk_pref"
 
-static const char *const KEYS[] = {"volume", "bright", "screen_off", "buddy"};  // by yk_pref_t; buddy is a u8
+static const char *const KEYS[] = {"volume", "bright", "screen_off", "buddy", "colorway"};  // by yk_pref_t; buddy and
+                                                                                          // colorway are u8s
 
 /** The stored value or -1. */
 static int load(yk_pref_t which) {
@@ -90,6 +91,36 @@ int board_pref_buddy(void) {
     return yk_board_pref_read(YK_PREF_BUDDY, v == 0xFF ? -1 : v);
 }
 
+/** A u8 preference (the buddy, the colourway): its stored value as yk_board_pref_read takes it. */
+static int get_u8(yk_pref_t which) {
+    nvs_handle_t h;
+    uint8_t v = 0xFF;
+    if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_u8(h, KEYS[which], &v) != ESP_OK) v = 0xFF;
+        nvs_close(h);
+    }
+    return yk_board_pref_read(which, v == 0xFF ? -1 : v);
+}
+
+int board_pref_colorway(void) { return get_u8(YK_PREF_COLORWAY); }
+
+esp_err_t board_pref_set_colorway(int colorway) {
+    const uint8_t value = (uint8_t)yk_board_pref_clamp(YK_PREF_COLORWAY, colorway);
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s not saved: %s", KEYS[YK_PREF_COLORWAY], esp_err_to_name(err));
+        return err;
+    }
+    uint8_t old = 0xFF;
+    if (nvs_get_u8(h, KEYS[YK_PREF_COLORWAY], &old) != ESP_OK || old != value) {  // no flash write for the same value
+        err = nvs_set_u8(h, KEYS[YK_PREF_COLORWAY], value);
+        if (err == ESP_OK) err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
 esp_err_t board_pref_set_buddy(int buddy) {
     const uint8_t value = (uint8_t)yk_board_pref_clamp(YK_PREF_BUDDY, buddy);
     nvs_handle_t h;
@@ -138,6 +169,43 @@ esp_err_t board_pref_set_tz(const char *posix) {
     const bool change = remove ? had : !had || strcmp(old, posix) != 0;  // no flash write for the same value
     if (change) {
         err = remove ? nvs_erase_key(h, "tz") : nvs_set_str(h, "tz", posix);
+        if (err == ESP_OK) err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+// The device's language (0.1.17): kept as the time zone is.
+_Static_assert(BOARD_PREF_LANG_MAX == YK_PREF_LANG_MAX, "board.h's buffer is the logic's");
+
+bool board_pref_lang(char *out, size_t size) {
+    if (!out || !size) return false;
+    out[0] = 0;
+    char v[YK_PREF_LANG_MAX];
+    size_t n = sizeof(v);
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    const bool got = nvs_get_str(h, "lang", v, &n) == ESP_OK && yk_board_lang_ok(v);
+    nvs_close(h);
+    if (got) snprintf(out, size, "%s", v);
+    return got;
+}
+
+esp_err_t board_pref_set_lang(const char *tag) {
+    const bool remove = !tag || !tag[0];
+    if (!remove && !yk_board_lang_ok(tag)) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "lang not saved: %s", esp_err_to_name(err));
+        return err;
+    }
+    char old[YK_PREF_LANG_MAX] = "";
+    size_t n = sizeof(old);
+    const bool had = nvs_get_str(h, "lang", old, &n) == ESP_OK;
+    const bool change = remove ? had : !had || strcmp(old, tag) != 0;  // no flash write for the same value
+    if (change) {
+        err = remove ? nvs_erase_key(h, "lang") : nvs_set_str(h, "lang", tag);
         if (err == ESP_OK) err = nvs_commit(h);
     }
     nvs_close(h);

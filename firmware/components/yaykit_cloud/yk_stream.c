@@ -19,8 +19,12 @@
 
 #define IDLE_MS    45000  // a kept connection unused this long is closed: under the service's 72 s keep-alive and
                           // whatever the hop before it keeps (the next chunk comes every ~30 s)
-#define TIMEOUT_MS 30000   // a 64 KB chunk on a slow uplink
-#define JOIN_MS    130000  // the completion: the platform joins the chunks (an hour's in seconds, 120 s at most)
+// A request with no progress this long lets go (each read or write, not the whole request: a 64 KB chunk on a slow
+// uplink keeps going), tried again later: the recordings' flash task also takes these steps, and a request whose
+// network went held it 51 s, a recording's start and end waiting behind it (新四号机 11-18; 30 s before).
+#define TIMEOUT_MS 15000
+// The completion: the platform joins the chunks, by the recording's length (yk_api_stream_complete_ms: 15 s, 130 s for
+// an hour's).
 
 static const char *TAG = "yk_stream";
 static esp_http_client_handle_t s_client;
@@ -162,7 +166,7 @@ esp_err_t yk_cloud_stream_complete(const char *id, const yk_cloud_stream_end_t *
     }
     yk_http_response_t res;
     const esp_err_t err = call(HTTP_METHOD_POST, path, "application/json", (const uint8_t *)body, strlen(body), NULL,
-                               JOIN_MS, &res, code);
+                               yk_api_stream_complete_ms(end->duration_ms), &res, code);
     cJSON_free(body);
     yk_http_free(&res);
     return err;

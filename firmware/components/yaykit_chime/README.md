@@ -25,4 +25,4 @@
 | `include/chime.h` | `firmware/components/chime/include/chime.h` | `3a0c0716` |
 | `CMakeLists.txt` | `firmware/components/chime/CMakeLists.txt` | `4e1a621a` |
 
-改动只有三处：`CMakeLists.txt` 里的 `audio_io` 换成 `yaykit_board`（`audio.h` 的接口相同），加了说明注释；`chime_init()` 多查一次 `audio_sample_rate()`，采样率不是 24 kHz 就拒绝启动；功放引脚只配置真正用到的（默认只有 GPIO43），原来每次初始化都把 GPIO46（启动采样脚，板上接到哪里没有资料）设成输出低电平，现在只有 `soundtest` 试它的时候才碰。音符、合成算法、音量映射、功放时序和任务优先级都没有动，所以作业伙伴的提示音和以前一模一样。原样复制的版本在 Git 历史里（`yaykit_board, yaykit_chime: verbatim copy …`）。
+改动只有三处：`CMakeLists.txt` 里的 `audio_io` 换成 `yaykit_board`（`audio.h` 的接口相同），加了说明注释；`chime_init()` 多查一次 `audio_sample_rate()`，采样率不是 24 kHz 就拒绝启动；功放引脚只配置真正用到的（默认只有 GPIO43），原来每次初始化都把 GPIO46 设成输出低电平。GPIO46 不是功放脚，接的是振动马达（GPIO46 → R24 → Q1 → M2，11-13 二号机实测，`docs/delivery/2026-11-13-本事和规矩-振动和姿态.md` 第 1 节），归 `yaykit_haptic`，又是启动采样脚：这里一概不碰，`chime_set_pa_pins()` 传 46 当 -1；原来 `soundtest` 试 GPIO46 的两步会让马达振起来，已经拿掉。音符、合成算法、音量映射、功放时序和任务优先级都没有动，所以作业伙伴的提示音和以前一模一样。原样复制的版本在 Git 历史里（`yaykit_board, yaykit_chime: verbatim copy …`）。

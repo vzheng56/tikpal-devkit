@@ -31,6 +31,27 @@ static void test_base64url(void) {
     uint8_t point[65] = {4};
     char key[100];
     CHECK(yk_b64url_encode(point, sizeof(point), key, sizeof(key)) == 87);
+
+    // Back again: a link key (device-link.ts) is 32 bytes in 43 characters.
+    uint8_t back[64];
+    CHECK(yk_b64url_decode("Zm9v", back, sizeof(back)) == 3 && !memcmp(back, "foo", 3));
+    CHECK(yk_b64url_decode("Zm8", back, sizeof(back)) == 2 && !memcmp(back, "fo", 2));
+    CHECK(yk_b64url_decode("Zg", back, sizeof(back)) == 1 && back[0] == 'f');
+    CHECK(yk_b64url_decode("-_-_BA", back, sizeof(back)) == 4 && !memcmp(back, bytes, 4));
+    CHECK(yk_b64url_decode("", back, sizeof(back)) == 0);
+    CHECK(yk_b64url_decode("Zm9v=", back, sizeof(back)) == 0);   // padding: not base64url
+    CHECK(yk_b64url_decode("Zm+v", back, sizeof(back)) == 0);    // base64's alphabet
+    CHECK(yk_b64url_decode("Zm9vZ", back, sizeof(back)) == 0);   // 4n + 1 characters
+    CHECK(yk_b64url_decode("Zh", back, sizeof(back)) == 0);      // bits past the last byte
+    CHECK(yk_b64url_decode("Zm9", back, sizeof(back)) == 0);
+    CHECK(yk_b64url_decode("Zm9v", back, 2) == 0);               // no room
+    uint8_t k32[32];
+    for (int i = 0; i < 32; i++) k32[i] = (uint8_t)(i * 37 + 11);
+    char k_text[50];
+    CHECK(yk_b64url_encode(k32, sizeof(k32), k_text, sizeof(k_text)) == 43);
+    CHECK(yk_b64url_decode(k_text, back, 32) == 32 && !memcmp(back, k32, 32));
+    CHECK(yk_b64url_decode("ax-TLNQHXqgx8kydYBW34wqeRMF9KLVj7xKKVjnQS_c", back, 32) == 32 && back[0] == 0x6b &&
+          back[31] == 0xf7);  // the contract fixture's key (6b1f…4bf7)
 }
 
 static void test_messages(void) {
@@ -202,9 +223,32 @@ static void test_locale(void) {
     CHECK(!yk_locale_english("zh") && !yk_locale_english("zh-Hans") && !yk_locale_english("ZH-hant"));
     CHECK(yk_locale_english("en") && yk_locale_english("ja") && yk_locale_english("es-419") && yk_locale_english("fr"));
     CHECK(!yk_locale_english("") && !yk_locale_english(NULL));  // nothing kept: the device's default, Chinese
+    char release[80];
+    CHECK(yk_release_message("yk_00000000beef", "nonce-1", release, sizeof(release)) &&
+          !strcmp(release, "yaykit-release:v1:yk_00000000beef:nonce-1"));  // device-api.ts releaseMessage
+    CHECK(!yk_release_message("yk_00000000beef", "nonce-1", release, 10));  // never cut
+    // The four (0.1.17): by the language, and Chinese exactly when yk_locale_english says so.
+    CHECK(yk_locale_lang("zh-Hans") == YK_LANG_ZH && yk_locale_lang("zh") == YK_LANG_ZH && yk_locale_lang("ZH-hant") == YK_LANG_ZH);
+    CHECK(yk_locale_lang("en") == YK_LANG_EN && yk_locale_lang("ja") == YK_LANG_JA && yk_locale_lang("es-419") == YK_LANG_ES);
+    CHECK(yk_locale_lang("ja-JP") == YK_LANG_JA && yk_locale_lang("JA") == YK_LANG_JA && yk_locale_lang("es_MX") == YK_LANG_ES);
+    CHECK(yk_locale_lang("") == YK_LANG_ZH && yk_locale_lang(NULL) == YK_LANG_ZH);
+    CHECK(yk_locale_lang("fr") == YK_LANG_EN && yk_locale_lang("jam") == YK_LANG_EN && yk_locale_lang("est") == YK_LANG_EN &&
+          yk_locale_lang("j") == YK_LANG_EN && yk_locale_lang("e") == YK_LANG_EN);
+    static const char *const langs[] = {"zh", "zh-Hans", "", "en", "ja", "es-419", "fr", "e", "z", "x-y"};
+    for (size_t i = 0; i < sizeof(langs) / sizeof(langs[0]); i++)
+        CHECK((yk_locale_lang(langs[i]) == YK_LANG_ZH) == !yk_locale_english(langs[i]));
+    for (int l = 0; l < YK_LANG_COUNT; l++) {
+        CHECK(yk_locale_lang(yk_locale_tag((yk_lang_t)l)) == (yk_lang_t)l);  // and back, as the platform says each
+        CHECK(yk_locale_ok(yk_locale_tag((yk_lang_t)l)));
+    }
+    CHECK(!strcmp(yk_locale_tag(YK_LANG_ZH), "zh-Hans") && !strcmp(yk_locale_tag(YK_LANG_ES), "es-419"));
+    CHECK(!strcmp(yk_locale_tag(YK_LANG_COUNT), "en") && !strcmp(yk_locale_tag((yk_lang_t)-1), "en"));
     CHECK(!strcmp(yk_locale_catalog("zh-Hans"), "zh") && !strcmp(yk_locale_catalog("zh"), "zh"));
-    CHECK(!strcmp(yk_locale_catalog("en"), "en") && !strcmp(yk_locale_catalog("ja"), "en") &&
-          !strcmp(yk_locale_catalog("es-419"), "en") && !strcmp(yk_locale_catalog(NULL), "zh"));
+    // 0.1.19 4.7: all four; one not known yet is English (the device API's catalogLang folds the same way).
+    CHECK(!strcmp(yk_locale_catalog("en"), "en") && !strcmp(yk_locale_catalog("ja"), "ja") &&
+          !strcmp(yk_locale_catalog("ja-JP"), "ja") && !strcmp(yk_locale_catalog("es-419"), "es-419") &&
+          !strcmp(yk_locale_catalog("es"), "es-419") && !strcmp(yk_locale_catalog("fr"), "en") &&
+          !strcmp(yk_locale_catalog(NULL), "zh"));
     // Taken when it is one to keep and another than kept (zh → zh-Hans too: the same language, kept as said)
     char kept[YK_LOCALE_MAX] = "zh";
     CHECK(yk_locale_take(kept, "zh-Hans") && !strcmp(kept, "zh-Hans"));

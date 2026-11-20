@@ -39,6 +39,17 @@ typedef struct {
 /** "default-01".."default-99" (the catalog's) or a UUID's 8-4-4-4-12 hex digits (a photo's). */
 bool yk_proto_saver_image_ok(const char *id);
 
+/** Who Yay's home screen shows now, as it checked it (the contract's deviceBuddy): the buddy, and the sha256 of the pack it
+ *  uses; sha256 NULL for Pip, who is built in. */
+typedef struct {
+    const char *id;
+    const char *sha256;
+} yk_proto_buddy_t;
+
+#define YK_PROTO_BUDDY_PACK_MAX 643072  // a buddy's pack's bytes at most (BUDDY_PACK_MAX_BYTES)
+/** ^[a-z][a-z0-9-]{1,30}$ */
+bool yk_proto_buddy_id_ok(const char *id);
+
 typedef struct {
     int slot;              // 1..3 (yk_slots index + 1)
     const char *slug;      // NULL or "" when empty
@@ -70,10 +81,14 @@ typedef struct {
     bool has_prefs;
     int volume, brightness, screen_off_s;
     const yk_proto_saver_t *saver;  // with has_prefs: prefs.screensaver (Yay with the screensaver cap); NULL none
+    const yk_proto_buddy_t *buddy;  // with has_prefs: prefs.buddy (Yay with the buddy cap); NULL none
     // What this firmware can do beyond the four actions every one knows ("volume.step", "volume.mute",
     // "brightness.step", "screen_off.set", "prefs"); sent when caps is not NULL (an empty list too).
     const char *const *caps;
     int cap_count;
+    // Yay with the onboarding cap (docs/delivery/2026-11-06-登录与开箱.md 5.3): where its first setup is, 1..255; 0: left out.
+    int onboarding_step;
+    bool onboarding_finished;
 } yk_proto_hello_t;
 
 /** "zh", "en", "ja", "es": what the practice and translate modes speak. */
@@ -87,6 +102,33 @@ char *yk_proto_listen_start(const char *turn, int preroll_ms, const char *side);
 /** The same, `held`: the turn was recorded while connecting and what was kept comes at once ("held": true; the server
  *  passes its packets on to recognition as they are). */
 char *yk_proto_listen_start_ex(const char *turn, int preroll_ms, const char *side, bool held);
+/** A moment by the device's own count (Yay 0.1.20, device-api.ts recordingClock): which start (bootId, 0..2^31) and the
+ *  ms into it (esp_timer, 0..2^40). */
+typedef struct {
+    uint32_t boot;
+    uint64_t ms;
+} yk_proto_mono_t;
+/** recordingClock: when it was made (`at`), the last time the clock was set as the device noted it (`sync`, with the
+ *  time it was set to, `sync_at`: an ISO time with its offset; has_sync false: never this device), and now. */
+typedef struct {
+    yk_proto_mono_t at;
+    bool has_sync;
+    yk_proto_mono_t sync;
+    const char *sync_at;
+    yk_proto_mono_t now;
+} yk_proto_clock_t;
+/** listen.start of a turn said offline and sent now (Yay with the offline cap, 0.1.20 开发文档 2.2): held, its clock, and
+ *  `recorded_at` (an ISO time with its offset, NULL when the clock was not set: left out). NULL when one is out of range. */
+char *yk_proto_listen_start_note(const char *turn, int preroll_ms, const char *recorded_at, const yk_proto_clock_t *clock);
+/** The same, with `liveTurn` (Yay 0.1.21, 用户 11-18): the note first went live as `live_turn` and the connection went
+ *  before the device heard stt.final; a server that heard it then takes it no more. NULL `live_turn`: as above; not a
+ *  turn id: NULL. */
+char *yk_proto_listen_start_note_live(const char *turn, int preroll_ms, const char *recorded_at,
+                                      const yk_proto_clock_t *clock, const char *live_turn);
+/** "2026-11-14T10:58:03.000+08:00": Unix ms at `offset_min` east of UTC (what z.iso.datetime({offset: true}) takes). */
+const char *yk_proto_time_offset(int64_t unix_ms, int offset_min, char out[32]);
+/** offline.digest.say {id} (0.1.20 开发文档 2.3): the screen on, nothing said or heard; `id` offline.digest's (a UUID). */
+char *yk_proto_offline_digest_say(const char *id);
 /** listen.stop, listen.cancel or playback.stop. */
 char *yk_proto_turn_message(const char *type, const char *turn);
 char *yk_proto_action_done(const char *id, bool ok, const char *error);
@@ -97,10 +139,29 @@ char *yk_proto_action_done_value(const char *id, bool ok, const char *error, int
 /** action.done with the screensaver Yay uses after it (`saver` NULL: none): screensaver.set's, done or not; and
  *  screen_off.set's while it is on, `value` the new time before it (< 0: none). */
 char *yk_proto_action_done_saver(const char *id, bool ok, const char *error, int value, const yk_proto_saver_t *saver);
+/** action.done with who Yay shows after it, done or not (`buddy` NULL: none): buddy.set's. */
+char *yk_proto_action_done_buddy(const char *id, bool ok, const char *error, const yk_proto_buddy_t *buddy);
 /** prefs: the settings changed on the device itself. */
 char *yk_proto_prefs(int volume, int brightness, int screen_off_s);
 /** The same with Yay's screensaver (`saver` NULL: as yk_proto_prefs). */
 char *yk_proto_prefs_saver(int volume, int brightness, int screen_off_s, const yk_proto_saver_t *saver);
+/** The same with Yay's buddy too (`buddy` NULL: as yk_proto_prefs_saver). */
+char *yk_proto_prefs_all(int volume, int brightness, int screen_off_s, const yk_proto_saver_t *saver,
+                         const yk_proto_buddy_t *buddy);
+/** One report of onboarding.step: `item` 0 for the whole step; `result` "done", "skipped" or "failed". */
+typedef struct {
+    int step, item;
+    const char *result;
+    uint32_t seconds;  // at most YK_PROTO_ONB_SECONDS_MAX
+} yk_proto_onb_report_t;
+#define YK_PROTO_ONB_REPORTS_MAX 16        // ONBOARDING.reportsMax
+#define YK_PROTO_ONB_SECONDS_MAX 2592000   // ONBOARDING.secondsMax
+/** onboarding.step: 1 to 16 reports, and `locale` the language chosen on the device ("zh-Hans", "en", "ja", "es-419";
+ *  NULL none). NULL when one breaks the schema. */
+char *yk_proto_onboarding_step(const yk_proto_onb_report_t *steps, int count, const char *locale);
+/** find.stopped (find-my-tikpal.md 2.3): the find.ring `id` stopped, `by` "tap" (the screen), "key" (the side key), "app"
+ *  (find.stop), "timeout" (its seconds were up) or "other" (something more urgent: sleep, an install, a restart). */
+char *yk_proto_find_stopped(const char *id, const char *by);
 /** data_json: an object (NULL = {}). */
 char *yk_proto_app_result(const char *slug, const char *data_json);
 char *yk_proto_status(int battery_pct, bool charging, int rssi, uint32_t heap_min);
@@ -140,7 +201,18 @@ typedef enum {
     YK_SRV_ERROR,
     YK_SRV_PRACTICE_TURN,
     YK_SRV_APP_RECORDS_OK,
+    YK_SRV_OFFLINE_DIGEST,  // Yay with the offline cap (0.1.20): digest_id, digest_*, its line in `text`
 } yk_srv_type_t;
+
+/** One app's grant to read the shared folders (Yay 0.1.19, 方案 A; device-api.ts folderGrant): hello.ok's folders and
+ *  folder.set's grant. */
+#define YK_PROTO_FOLDERS_MAX 64  // device-api.ts FOLDER_GRANTS_MAX
+typedef struct {
+    char app[42];     // its slug (^[a-z][a-z0-9-]{1,40}$)
+    uint8_t state;    // 1 granted, 2 denied
+    uint8_t folders;  // the kinds as bits: music 1, stories 2, pictures 4, documents 8
+    uint32_t rev;     // the service's count, from 1
+} yk_proto_folder_t;
 
 /** YK_ACT_UNKNOWN: a kind this firmware does not know (a newer server); answer action.done ok=false UNSUPPORTED. */
 typedef enum {
@@ -153,6 +225,15 @@ typedef enum {
     YK_ACT_APP_HOME,       // back to Yay (an extension on yaykit_talk; internal commands, step 2): no fields
     YK_ACT_SAVER_SET,      // screensaver.set (Yay with the screensaver cap): saver_on, saver_after, saver_duration, image
     YK_ACT_SAVER_PREVIEW,  // screensaver.preview: url, sha256, size, seconds
+    YK_ACT_BUDDY_SET,      // buddy.set (Yay with the buddy cap): buddy; every buddy but Pip url, sha256, size (its pack)
+    YK_ACT_ONBOARDING_SET, // onboarding.set (Yay with the onboarding cap): onb_skip, onb_locale
+    // Find my Tikpal (docs/design/find-my-tikpal.md 2.3; Yay with the find cap): find.ring rings `seconds` (5..300), lit,
+    // loud; find.stop stops the ring whose id is `find`.
+    YK_ACT_FIND_RING,
+    YK_ACT_FIND_STOP,
+    YK_ACT_LOCALE_SET,     // locale.set (Yay with the locale cap, 0.1.19): locale, the account's language now
+    YK_ACT_COLORWAY_SET,   // colorway.set (Yay with the colorway cap, 0.1.19): colorway, the account's colour now
+    YK_ACT_FOLDER_SET,     // folder.set (Yay with the folder cap, 0.1.19): folder, one app's grant after the App's switch
 } yk_act_kind_t;
 
 typedef struct {
@@ -173,6 +254,9 @@ typedef struct {
     char nickname[48];
     char owner_locale[8];              // hello.ok owner.locale, the account's language ("zh-Hans", "en", "ja", "es-419");
                                        // "" when left out, or not one a device keeps (yaykit_cloud's yk_locale_ok)
+    char owner_colorway[12];           // hello.ok owner.colorway (0.1.19), the account's colour as the buddy resolves it
+                                       // ("original", "sage", "honey", "blossom", "cocoa", or a later one's name: 1..11
+                                       // lower-case letters); "" when left out or not a name
     char reset_at[32];                 // hello.ok credits, error
     bool dot;
     // hello.ok nextReminderAt (docs/delivery/2026-10-26-yay-update-nf.md 2.6): the account's earliest reminder in the
@@ -180,9 +264,24 @@ typedef struct {
     // 1 at next_reminder_ms (Unix ms).
     int8_t next_reminder;
     int64_t next_reminder_ms;
+    bool power_log;                    // hello.ok powerLog (Yay 0.1.20 4.10, 测试员计划): the report's extra fields; left
+                                       // out or anything but true: false
     bool has_practice;                 // hello.ok practice
     double turn_points;                // what a practice turn costs on average
     int week_days, week_turns;         // this week so far; -1 when not given
+    // hello.ok folders (0.1.19, 方案 A): every app's grant on this device, the platform's whole list (0..64, PSRAM,
+    // owned; NULL with none). folders_given false when it is left out or null (the platform waited too long on Yaykit:
+    // the device asks by GET), or when one in it is not a grant (the list is not taken: a part would clear the rest).
+    bool folders_given;
+    int folder_count;
+    yk_proto_folder_t *folders;
+    // hello.ok offlineNotes and binding (Yay with the offline cap, 0.1.20 开发文档 2.3; BOSS-2 11-15): -1 left out (keep
+    // the one kept), 0 or 1; the platform's opaque mark of whose it is ("" left out, or not one: the check is skipped).
+    int8_t offline_notes;
+    char binding[65];
+    // offline.digest: its id (a UUID), what it made, its line in `text`
+    char digest_id[37];
+    int digest_total, digest_notes, digest_reminders, digest_untimed;
     // practice.turn
     char verdict[8];                   // "fix", "good", "none", "blocked"
     char *said, *better, *note;        // fix (owned; NULL without one)
@@ -204,9 +303,12 @@ typedef struct {
     char *params;                      // app.open: the params object as JSON (owned)
     char name[48];
     char version[32];
-    uint32_t size;                     // app.install; screensaver.set's image, screensaver.preview: 1..98304
+    uint32_t size;                     // app.install; screensaver.set's image, screensaver.preview: 1..98304;
+                                       // buddy.set's pack: 1..643072
     char sha256[65];                   // the same three
-    char *url;                         // app.install, screensaver.set's image, screensaver.preview (owned)
+    char *url;                         // app.install, screensaver.set's image, screensaver.preview, buddy.set's pack
+                                       // (owned)
+    char buddy[8];                     // buddy.set: "pip", "mote", "dial", "bloom"
     char *signature;                   // app.install (owned)
     char replace[32];
     // volume.set, brightness.set: exactly one of level (0..10; -1 when not given), step (-3..3, 0 when not given)
@@ -215,12 +317,23 @@ typedef struct {
     int level;
     int step;
     int mute;
-    int seconds;                       // screen_off.set: 0 (never off) or 15..3600; screensaver.preview: 3..30
+    int seconds;                       // screen_off.set: 0 (never off) or 15..3600; screensaver.preview: 3..30;
+                                       // find.ring: 5..300
+    char find[41];                     // find.stop: the find.ring it stops (1..40 characters)
     // screensaver.set: what changes. The image (when image_id is not "") comes in url, sha256 and size, as for
     // screensaver.preview.
     int saver_on;                      // 1 on, 0 off, -1 not given
     int saver_after, saver_duration;   // seconds (30, 60, 300; 300, 600, 1800); 0 not given
     char image_id[41];
+    // onboarding.set: the steps it need not walk, bit n for step n (steps past 15 no firmware has yet are left out), and
+    // the account's language to follow ("" none).
+    uint16_t onb_skip;
+    char onb_locale[8];
+    // locale.set (0.1.19): the account's language, one of the four. colorway.set: the colour's name (as owner_colorway:
+    // one this firmware does not know is still read, and answered UNSUPPORTED by it).
+    char locale[8];
+    char colorway[12];
+    yk_proto_folder_t folder;          // folder.set (0.1.19): the app's grant as the App left it
     // inbox
     char inbox_kind[12];               // "dot", "approval", "reminder", "done"
     // error

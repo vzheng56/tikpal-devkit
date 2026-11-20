@@ -37,7 +37,7 @@ esp_err_t yk_account_init(const yk_account_config_t *config);
 
 yk_account_state_t yk_account_state(void);
 const char *yk_account_state_name(void);
-/** After YK_ACCOUNT_FAILED: DEVICE_OWNED_BY_OTHER, CLAIM_INVALID, NO_WIFI or NETWORK. "" otherwise. */
+/** After YK_ACCOUNT_FAILED: DEVICE_OWNED_BY_OTHER, CLAIM_INVALID, NO_WIFI, LINK or NETWORK. "" otherwise. */
 const char *yk_account_error(void);
 /** The owner's nickname as the cloud last reported it; "" when unknown. Never the email. */
 void yk_account_nickname(char *out, size_t size);
@@ -57,6 +57,21 @@ bool yk_account_locale_seen(const char *locale);
 /** The cloud reported the owner (an `owner` object from /device/v1/me): keeps a renamed nickname or a changed
  *  language and calls on_change. Called by yaykit_cloud; writes NVS, so call from an internal-RAM stack. */
 void yk_account_owner_seen(const cJSON *owner);
+
+/** Not bound here, with a device key: whether the cloud bound it all the same, an activation whose answer a power cut took
+ *  (docs/delivery/2026-11-06-登录与开箱.md 8.1). The key gets a token only once it is bound to someone: then it is bound
+ *  here too, and on_change called; true. Blocking, and TLS: a task with at least 8 KB of internal stack, Bluetooth off.
+ *  Never while a device waits to be released from its account (11.4): that token would be the old owner's. */
+bool yk_account_recover(void);
+
+/** A factory reset (docs/delivery/2026-11-06-登录与开箱.md 11.4): the device leaves its account, signed with its key. The
+ *  mark goes first and stays in NVS until the cloud has answered: while it is there no token is taken, and an activation
+ *  asks again first. */
+void yk_account_release_mark(void);
+bool yk_account_release_pending(void);
+/** POST /device/v1/release, when marked; ESP_OK and the mark gone once it is answered (released, never added, or not the key
+ *  it was added with). Otherwise the mark stays, `code` NETWORK or NO_WIFI. Blocking, and TLS: as yk_account_token. */
+esp_err_t yk_account_release(const char **code);
 
 /** Handles account.activate, account.status and account.forget. ESP_ERR_NOT_FOUND for other names. */
 esp_err_t yk_account_command(const char *name, const cJSON *args, cJSON *reply, const char **code);

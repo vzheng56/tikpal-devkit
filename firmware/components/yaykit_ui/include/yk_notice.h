@@ -50,8 +50,12 @@ typedef struct {
     bool retry_once;      // BUSY: the app tries again once by itself
 } yk_notice_spec_t;
 
-/** The spec's row. NONE and out of range: an empty row. */
+/** The spec's row. NONE and out of range: an empty row. Its zh and en stay as they were; the line shown is
+ *  yk_notice_text's. */
 const yk_notice_spec_t *yk_notice_spec(yk_notice_t notice);
+/** The notice's line in the screens' language (yaykit_strings, all four; Yay 0.1.19): Chinese when not `english`, else
+ *  the screens' language unless that is Chinese, else English. NULL: no text (NONE, BATTERY_LOW, out of range). */
+const char *yk_notice_text(yk_notice_t notice, bool english);
 
 #define YK_NOTICE_OFFLINE_AFTER_MS 30000  // Yay's grace too (YAY_CONNECT_GRACE_MS); 45000 before 0.1.13
 #define YK_NOTICE_CONNECTING_WORDS_MS 2000  // CONNECTING's line fades in this long after it shows (yk_notice_show)

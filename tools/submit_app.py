@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""kit submit: packs one version of an app for review, as one file to upload on developer.tikpal.ai.
+"""kit submit: packs one version of an app for review and, the kit signed in (kit login), uploads and submits it.
 
-  submit_app.py <kit> <app> [--miniapp-only] [--ci-sha <sha256>] [--image <file>] [--no-check] [--out <file>]
+  submit_app.py <kit> <app> [--notes <text>] [--no-upload] [--miniapp-only] [--ci-sha <sha256>] [--image <file>]
+                [--no-check] [--heap <file>] [--out <file>] [--url <site>] [--lang zh|en]
 
 The package (<slug>-<version>.tikpal, a zip) holds the source as `git archive HEAD` gives it (the kit in devkit/ is
 named by its tag and commit, not copied), app.json, the release image built here, the 小程序's zip, kit check's
@@ -9,8 +10,10 @@ output and what else the developer adds (report/heap.json from --heap, report/ai
 and submission.json listing each file with its SHA-256 (Tikpal's contract, packages/contracts/src/submissions.ts).
 Review rebuilds the firmware from the commit; the image here is only compared with it.
 
-It never uploads and never changes the repository. --miniapp-only packs a version that changes only the 小程序 (no
-image, no kit check). --no-check packs without running kit check or anything of the app's (the review runs them).
+It never changes the repository. Signed in, it then uploads the package and submits it to the developer platform with
+--notes (what this version does, shown to users), and prints the submission's number; `kit status` follows it (both in
+developer.py). --no-upload, or not signed in, only packs, as before: the package is uploaded on the site then.
+--miniapp-only packs a version that changes only the 小程序 (no image, no kit check). --no-check packs without running kit check or anything of the app's (the review runs them).
 --ci-sha is the SHA-256 the app repository's CI printed: given, the rebuild must match it byte for byte. --image packs
 another build of this version (the CI's, downloaded) instead of build-release's. Standard library only.
 """
@@ -24,6 +27,9 @@ import subprocess
 import sys
 import tarfile
 import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import developer  # noqa: E402
 
 FORMAT = 1
 PACKAGE_MAX = 30 * 1024 * 1024
@@ -237,22 +243,45 @@ def main(argv):
         return 2
     kit, app, rest = argv[1], argv[2], argv[3:]
     opts = {"miniapp_only": False, "ci_sha": None, "image": None, "no_check": False, "heap": None}
-    out = None
+    out = notes = site = lang = None
+    upload = True
     i = 0
     while i < len(rest):
         a = rest[i]
         if a in ("--miniapp-only", "--no-check"):
             opts[a[2:].replace("-", "_")] = True
-        elif a in ("--ci-sha", "--image", "--out", "--heap") and i + 1 < len(rest):
+        elif a == "--no-upload":
+            upload = False
+        elif a in ("--ci-sha", "--image", "--out", "--heap", "--notes", "--url", "--lang") and i + 1 < len(rest):
             i += 1
             if a == "--out":
                 out = rest[i]
+            elif a == "--notes":
+                notes = rest[i].strip()
+            elif a == "--url":
+                site = rest[i]
+            elif a == "--lang":
+                lang = rest[i]
             else:
                 opts[a[2:].replace("-", "_")] = rest[i]
         else:
             print(f"kit submit：不认识 {a}")
             return 2
         i += 1
+    # Signed in, it goes on to submit: what this version does is asked for before anything is packed.
+    signed = None
+    if upload:
+        try:
+            signed = developer.signed_in(developer.default_site(site))
+        except ValueError as e:
+            print(f"✗ {e}")
+            return 2
+    if signed and not notes:
+        print(f"✗ 交审要写这一版做了什么（给用户看，{developer.NOTES_MAX} 字以内）：./kit submit --notes '……'。只打包不交：./kit submit --no-upload")
+        return 2
+    if notes and len(notes) > developer.NOTES_MAX:
+        print(f"✗ --notes 超过 {developer.NOTES_MAX} 字")
+        return 2
     try:
         name, package, manifest = pack(kit, app, **opts)
     except Stop as e:
@@ -269,7 +298,24 @@ def main(argv):
     if "miniapp" in manifest:
         print(f"· 小程序 {manifest['miniapp']['version']}：{manifest['miniapp']['size']} 字节")
     print(f"· 源码 {len(tar_files(package_file(package, 'source.tar')))} 个文件")
-    print(f"✓ 打好了：{path}（{len(package)} 字节）。到 developer.tikpal.ai 这个应用的「版本」页上传。")
+    if not signed:
+        print(f"✓ 打好了：{path}（{len(package)} 字节）。")
+        if upload:
+            print("  没登录，没上传：./kit login 以后再 ./kit submit --notes '这一版做了什么' 就直接交审；也可以到 developer.tikpal.ai 这个应用的「版本」页上传。")
+        else:
+            print("  没上传（--no-upload）：到 developer.tikpal.ai 这个应用的「版本」页上传，或者用 MCP 的 create_upload、submit_version 交。")
+        return 0
+    print(f"· 打好了：{path}（{len(package)} 字节），上传、交审……")
+    try:
+        sub = developer.upload_and_submit(signed, manifest["slug"], package, notes, lang)
+    except developer.PlatformError as e:
+        print(f"✗ {e.words()}。包在 {path}。")
+        for p in e.problems[:50]:
+            if isinstance(p, dict):
+                where = (p.get("file") or "") + (f":{p['line']}" if p.get("line") else "")
+                print(f"  ✗ {where or '包'}  {p.get('code')}  {json.dumps(p.get('params') or {}, ensure_ascii=False)}")
+        return 1
+    print(f"✓ 交上去了：提交 {sub.get('id')}（{sub.get('state')}）。./kit status 看进度；被退回时它按文件和行列出拦下的问题。")
     return 0
 
 

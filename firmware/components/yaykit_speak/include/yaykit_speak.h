@@ -66,6 +66,10 @@ esp_err_t yk_speak_begin(void);
 esp_err_t yk_speak_opus(const uint8_t *packet, size_t bytes);
 /** The same, waiting at most timeout_ms for room (0: not at all; ESP_ERR_TIMEOUT when full). */
 esp_err_t yk_speak_opus_wait(const uint8_t *packet, size_t bytes, int timeout_ms);
+/** The packets given from now on are this line's (the session's audio frames carry it; 0–254, -1 not known), so that a
+ *  gap heard says which line it fell after and which came next (yk_speak_stats, `YK_SPEAK underrun`; 0.1.18). Optional:
+ *  without it the gaps are counted all the same, their lines not known. */
+void yk_speak_line(int line);
 /** Mono PCM of speech at yk_speak_rate(), same rules as yk_speak_opus(). Use one or the other within an utterance. */
 esp_err_t yk_speak_pcm(const int16_t *pcm, size_t samples);
 /** No more audio for this utterance: what is buffered plays out. */
@@ -83,11 +87,18 @@ void yk_speak_cancel(void);
  *  clock) in their own format, with larger DMA buffers: about 10 KB more internal RAM until the speaker next opens.
  *  After the microphones closed with nothing to play (a press that did not talk): the speaker's own format again,
  *  quietly (the amplifier stays off). Any task; done in the speaker's when it is idle, skipped while it plays and
- *  while the microphones record (yk_speak_mic). */
+ *  while the microphones record (yk_speak_mic). Since 0.1.17 yk_speak_mic(true) opens the speaker first, so this is
+ *  only for when that did not happen in time. */
 void yk_speak_reclaim(void);
 /** Whoever calls yk_speak_reclaim() says when its microphones record: true before they open, false once they are
  *  closed. While true, no reclaim touches the codec (it would put the shared I2S's clock in the speaker's format
- *  under the recording); true waits for a reclaim going on to finish (about 20 ms). */
+ *  under the recording); true waits for a reclaim going on to finish (about 20 ms).
+ *  Speaker first, then the microphones (0.1.17): true also has the codec open before it returns (the amplifier stays
+ *  off: nothing is heard), and not closed in the second after. The microphones then only widen the transmit side's
+ *  slots, and its DMA buffers keep their size: no 10 KB of internal RAM at a key press. It waits for the codec at
+ *  most 150 ms (it opens in tens of ms); not open by then, the microphones open as before. Then the speaker's idle
+ *  rule closes it (5 s unused), recording or not: under a recording the transmit side keeps running in the same
+ *  format, its buffers unchanged, and the codec's DAC is off for the rest of a long one. */
 void yk_speak_mic(bool recording);
 /** Switches the amplifier on now (it needs YK_SPEAK_PA_WARM_MS), for 3 s unless something plays. */
 void yk_speak_prepare(void);
@@ -218,11 +229,21 @@ typedef struct {
     // The last utterance as it arrived, before the volume: its loudest sample and the RMS of its sounding blocks
     // (blocks above -50 dBFS), in dBFS x 10. 0 until an utterance has sounded.
     int16_t utter_peak_db10, utter_rms_db10;
+    // Speaker first, then the microphones (0.1.17, yk_speak_mic): the codec opened for them, the longest
+    // yk_speak_mic(true) waited for it, and the times it was not open in time (they opened with the bigger buffers).
+    uint32_t mic_opens, mic_wait_max_ms, mic_late;
+    // The last utterance's gaps (0.1.18): the silences heard in it because nothing had come yet, and the longest, ms.
+    // Development builds say each one as it ends (`YK_SPEAK underrun …`, with its line: yk_speak_line()).
+    uint32_t gaps, gap_max_ms;
+    // 0.1.20: the codec's open tried again after a failure (an I2C transfer a flash erase held past its timeout)
+    uint32_t open_retried;   // opens that took more than one try
+    uint32_t open_gave_up;   // ... and that never opened (nothing could be heard)
 } yk_speak_stats_t;
 void yk_speak_stats(yk_speak_stats_t *out);
 
-/** `speak stat | chime start|end | vol <0-10> | prepare | stop | sfx <n> <ms>` (sfx: n voices of test tones at once,
- *  to measure the mix); with CONFIG_YAY_DEV also `tone`, `codec`, `loud`, `keep` and `dump`, to measure the speaker. */
+/** `speak stat | chime start|end | vol <0-10> | prepare | stop | sfx <n> <ms> | mic 0|1` (sfx: n voices of test tones
+ *  at once, to measure the mix; mic: yk_speak_mic, to record with the codec open); with CONFIG_YAY_DEV also `tone`,
+ *  `codec`, `loud`, `keep` and `dump`, to measure the speaker. */
 esp_err_t yk_speak_register_console(void);
 
 #ifdef __cplusplus

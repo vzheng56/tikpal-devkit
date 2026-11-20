@@ -64,6 +64,29 @@ char *yk_api_data_body(const cJSON *value, int version);
 /** A GET /inbox answer: `on_item` for each item, then `now` for the next call's since. */
 bool yk_api_inbox(const char *json, yk_cloud_inbox_fn on_item, void *ctx, char *now, size_t now_size);
 
+/** One app's grant to read the shared folders (device-api.ts folderGrant): `state` 1 granted, 2 denied (0: none);
+ *  `folders` the kinds as bits in yk_folder.h's order, music 1, stories 2, pictures 4, documents 8; `rev` from 1. */
+typedef struct {
+    uint8_t state;
+    uint8_t folders;
+    uint32_t rev;
+} yk_api_grant_t;
+/** A folderGrant object, if it is `slug`'s and one (a state and kinds the contract lists, each kind once, rev >= 1). */
+bool yk_api_folder_grant(const cJSON *grant, const char *slug, yk_api_grant_t *out);
+/** A GET /folders?app= answer: 1 with `slug`'s grant in *out, 0 when it lists none of `slug` (*out zeroed), -1 when it
+ *  is not a folderGrantsAnswer, or lists `slug` twice or not as a grant. Other apps' grants are not looked at. */
+int yk_api_folder_grants(const char *json, const char *slug, yk_api_grant_t *out);
+/** Every grant of a GET /folders answer (Yay's: all apps) to `each`, each one a folderGrant of its own slug; how many,
+ *  -1 when it is not a folderGrantsAnswer. A grant that is not one, or an app listed twice, is left out. */
+typedef void (*yk_api_grant_fn)(const char *slug, const yk_api_grant_t *grant, void *ctx);
+int yk_api_folder_each(const char *json, yk_api_grant_fn each, void *ctx);
+/** The body of PUT /folders/:app (free with cJSON_free): {state, folders (in the kinds' order), base: `rev`, or null
+ *  when not `known`}; NULL for a state that is neither granted nor denied. */
+char *yk_api_folder_put_body(uint8_t state, uint8_t folders, bool known, uint32_t rev);
+/** What a PUT /folders/:app answered, by its status and its error code (never the status alone): 1 200 with `slug`'s
+ *  grant, 2 409 GRANT_CHANGED with it (both into *out), 3 409 GRANTS_FULL, 0 anything else. */
+int yk_api_folder_put_answer(int status, const char *json, const char *slug, yk_api_grant_t *out);
+
 /** One of the device API's error codes as a static string ("SERVER" for one this firmware does not know). */
 const char *yk_api_code(const char *error);
 /** The code of a refusal's body ({"error":"FILE_GONE",…}). */

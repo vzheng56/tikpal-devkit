@@ -16,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "sdkconfig.h"  // CONFIG_YAY_DEV (yaykit_app's Kconfig): saving and resetting the calibration from the console
 #include "yk_motion_core.h"
 
 static const char *TAG = "yk_motion";
@@ -27,6 +28,17 @@ static const char *TAG = "yk_motion";
 #define REG_CTRL3 0x04  // gyroscope: full scale, rate
 #define REG_CTRL7 0x08  // enables
 #define REG_STATUS 0x2D  // STATUSINT, STATUS0, STATUS1, TIMESTAMP (3), TEMP (2), AX..GZ (12): 20 bytes from here
+// For `motion regs` and the start's log (固件总策划 11-18: 新四号机's gyroscope read 0x8000 on every axis, every
+// sample, from the start; the accelerometer was fine): which part it is and what it took.
+#define REG_REV 0x01      // REVISION_ID
+#define REG_CTRL9 0x0A
+#define REG_STATUS0 0x2E
+#define REG_GX 0x3B
+#define REG_RESET 0x60    // 0xB0: soft reset (QMI8658A datasheet Rev A, 5.9; 7.4's "0x0B" is a misprint)
+#define REG_RESET_DONE 0x4D  // 0x80 right after a successful reset (7.4), before the sensors are enabled
+#define REG_DVX 0x51      // the gyroscope self-test's result: X, Y, Z, signed, 1/16 dps (15.2)
+#define SELFTEST_DPS 300  // over this on every axis: the gyroscope is functional (15.2)
+#define GYRO_PINNED_SAMPLES 56  // ykm_gyro_pinned this many samples in a row (1 s at 56 Hz): said once in the log
 #define BURST 20
 #define ACC_LSB_PER_G 4096.0f   // +-8 g
 #define GYR_LSB_PER_DPS 32.0f   // +-1024 dps
@@ -39,6 +51,8 @@ static struct {
     i2c_master_dev_handle_t dev;
     TaskHandle_t task;
     volatile bool run;
+    bool psram_stack;      // the task's stack in PSRAM (yk_motion_config_t.stack_in_psram): yk_motion_stop deletes it
+    volatile bool parked;  // ... once it has stopped reading and waits to be deleted
     int odr_hz, period_ms;
     QueueHandle_t events;
     yk_motion_event_fn on_event;
@@ -56,6 +70,8 @@ static struct {
     float raw_acc[3], raw_gyr[3];
     bool have_raw;
     uint32_t samples, skipped, errors;
+    uint8_t rev;               // REVISION_ID at the start
+    uint32_t gyro_pinned;      // samples in a row with every gyroscope axis at -full scale (ykm_gyro_pinned)
     // `motion log`: the task prints the samples itself (the console must not hold the lock)
     volatile int64_t log_until_us;
     uint32_t log_seq;
@@ -99,6 +115,7 @@ static void motion_task(void *arg) {
     (void)arg;
     TickType_t wake = xTaskGetTickCount();
     uint32_t last_stamp = UINT32_MAX;
+    bool fed = false;  // a reading of about 1 g has gone to the core
     while (M.run) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(M.period_ms));
         uint8_t b[BURST];
@@ -111,12 +128,38 @@ static void motion_task(void *arg) {
             M.skipped++;
             continue;
         }
+        // The first read only sets the counter: 4 ms after the sensor is switched on there may be no sample yet, and
+        // the registers read all zeros (taken for lying flat, that started the estimate flat: standing upright it was
+        // a pick-up at once, 2026-11-14).
+        const bool first = last_stamp == UINT32_MAX;
         last_stamp = stamp;
+        if (first) {
+            M.skipped++;
+            continue;
+        }
         const int64_t t = esp_timer_get_time();
         float acc[3], gyr[3];
+        int16_t raw_g[3];
         for (int i = 0; i < 3; i++) {
+            raw_g[i] = (int16_t)(b[14 + 2 * i] | (b[15 + 2 * i] << 8));
             acc[i] = (int16_t)(b[8 + 2 * i] | (b[9 + 2 * i] << 8)) / ACC_LSB_PER_G;
-            gyr[i] = (int16_t)(b[14 + 2 * i] | (b[15 + 2 * i] << 8)) / GYR_LSB_PER_DPS;
+            gyr[i] = raw_g[i] / GYR_LSB_PER_DPS;
+        }
+#if CONFIG_YAY_DEV
+        M.gyro_pinned = ykm_gyro_pinned(raw_g) ? M.gyro_pinned + 1 : 0;
+        if (M.gyro_pinned == GYRO_PINNED_SAMPLES)
+            printf("YK_MOTION gyro pinned at 0x8000 on every axis for %d samples (rev 0x%02X)\n", GYRO_PINNED_SAMPLES,
+                   M.rev);
+#endif
+        // Until a reading of about 1 g has gone in, one under 0.5 g is no reading yet either (the core waits for one
+        // within 0.5-1.5 g too). Once going, every reading goes in: free fall and the bottom of a hard shake read
+        // under 0.5 g, and they are movement.
+        if (!fed) {
+            if (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2] < 0.25f) {
+                M.skipped++;
+                continue;
+            }
+            fed = true;
         }
         M.samples++;
         yk_motion_event_t ev[8];
@@ -158,9 +201,48 @@ static void motion_task(void *arg) {
             }
         }
     }
+    if (M.psram_stack) {  // deleted by yk_motion_stop: a task made WithCaps that deletes itself needs a task to clean up
+        M.parked = true;
+        for (;;) vTaskSuspend(NULL);
+    }
     M.task = NULL;
     vTaskDelete(NULL);
 }
+
+/** Rates, ranges, both sensors on (M.odr_hz); in a development build what the part took is read back too, and a
+ *  register it did not take is said. */
+static esp_err_t configure(void) {
+    const uint8_t odr = M.odr_hz == 56 ? 0x07 : 0x05;  // 56.05 / 224.2 Hz with both sensors on
+    const uint8_t want[4][2] = {
+        {REG_CTRL1, 0x40},        // address auto-increment, little endian
+        {REG_CTRL2, 0x20 | odr},  // accelerometer +-8 g
+        {REG_CTRL3, 0x60 | odr},  // gyroscope +-1024 dps
+        {REG_CTRL7, 0x03},        // both on
+    };
+    for (int i = 0; i < 4; i++)
+        if (wr(want[i][0], want[i][1]) != ESP_OK) return ESP_FAIL;
+#if CONFIG_YAY_DEV
+    for (int i = 0; i < 4; i++) {
+        uint8_t got = 0;
+        if (rd(want[i][0], &got, 1) == ESP_OK && got != want[i][1])
+            ESP_LOGW(TAG, "QMI8658 reg 0x%02X reads 0x%02X, written 0x%02X", want[i][0], got, want[i][1]);
+    }
+#endif
+    return ESP_OK;
+}
+
+#if CONFIG_YAY_DEV
+/** One line of the part's registers: who, revision, CTRL1..CTRL9, STATUS0/1, the gyroscope's raw words now. */
+static void regs_line(const char *when) {
+    uint8_t r[REG_CTRL9 + 1] = {0}, st[2] = {0}, g[6] = {0};
+    const bool ok = rd(REG_WHO, r, sizeof(r)) == ESP_OK && rd(REG_STATUS0, st, sizeof(st)) == ESP_OK &&
+                    rd(REG_GX, g, sizeof(g)) == ESP_OK;
+    printf("MOTION_REGS %s ok=%d who=0x%02X rev=0x%02X ctrl1-9=%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X "
+           "status0=0x%02X status1=0x%02X gyr_raw=%04X,%04X,%04X pinned=%u\n",
+           when, ok, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], st[0], st[1], g[0] | (g[1] << 8),
+           g[2] | (g[3] << 8), g[4] | (g[5] << 8), (unsigned)M.gyro_pinned);
+}
+#endif
 
 esp_err_t yk_motion_start(const yk_motion_config_t *cfg) {
     if (M.run) return ESP_OK;
@@ -181,12 +263,12 @@ esp_err_t yk_motion_start(const yk_motion_config_t *cfg) {
     }
     M.odr_hz = cfg->odr_hz == 56 ? 56 : 224;
     M.period_ms = M.odr_hz == 56 ? 16 : 4;  // a little faster than the sensor: every sample is read once
-    const uint8_t odr = M.odr_hz == 56 ? 0x07 : 0x05;  // 56.05 / 224.2 Hz with both sensors on
-    if (wr(REG_CTRL1, 0x40) != ESP_OK ||            // address auto-increment, little endian
-        wr(REG_CTRL2, 0x20 | odr) != ESP_OK ||      // accelerometer +-8 g
-        wr(REG_CTRL3, 0x60 | odr) != ESP_OK ||      // gyroscope +-1024 dps
-        wr(REG_CTRL7, 0x03) != ESP_OK)              // both on
-        return ESP_FAIL;
+    M.rev = 0;
+    M.gyro_pinned = 0;
+#if CONFIG_YAY_DEV
+    rd(REG_REV, &M.rev, 1);
+#endif
+    if (configure() != ESP_OK) return ESP_FAIL;
     if (!M.lock && !(M.lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
     if (!M.events && !(M.events = xQueueCreate(EVENTS, sizeof(yk_motion_event_t)))) return ESP_ERR_NO_MEM;
     if (!M.core && !(M.core = heap_caps_calloc(1, sizeof(ykm_core_t), MALLOC_CAP_SPIRAM))) return ESP_ERR_NO_MEM;
@@ -198,19 +280,38 @@ esp_err_t yk_motion_start(const yk_motion_config_t *cfg) {
     M.ctx = cfg->ctx;
     xQueueReset(M.events);
     M.run = true;
-    // Above the LVGL task and the audio front end; reads take ~0.5 ms of I2C.
-    if (xTaskCreatePinnedToCore(motion_task, "yk_motion", 4096, NULL, 9, &M.task, 0) != pdPASS) {
+    M.parked = false;
+    M.psram_stack = cfg->stack_in_psram;
+    // Above the LVGL task and the audio front end; reads take ~0.5 ms of I2C. The stack in internal RAM unless asked
+    // (it never touches flash: no NVS, no logging to flash).
+    const BaseType_t made = M.psram_stack ? xTaskCreatePinnedToCoreWithCaps(motion_task, "yk_motion", 4096, NULL, 9, &M.task, 0,
+                                                                            MALLOC_CAP_SPIRAM)
+                                          : xTaskCreatePinnedToCore(motion_task, "yk_motion", 4096, NULL, 9, &M.task, 0);
+    if (made != pdPASS) {
         M.run = false;
+        M.task = NULL;
         return ESP_ERR_NO_MEM;
     }
+#if CONFIG_YAY_DEV
+    ESP_LOGI(TAG, "QMI8658 rev 0x%02X at %d Hz, axes %d %d %d", M.rev, M.odr_hz, M.cal.axis[0], M.cal.axis[1],
+             M.cal.axis[2]);
+#else
     ESP_LOGI(TAG, "QMI8658 at %d Hz, axes %d %d %d", M.odr_hz, M.cal.axis[0], M.cal.axis[1], M.cal.axis[2]);
+#endif
     return ESP_OK;
 }
 
 void yk_motion_stop(void) {
     if (!M.run) return;
     M.run = false;
-    for (int i = 0; i < 50 && M.task; i++) vTaskDelay(pdMS_TO_TICKS(5));
+    if (M.psram_stack) {
+        for (int i = 0; i < 50 && !M.parked; i++) vTaskDelay(pdMS_TO_TICKS(5));
+        if (M.parked && M.task) vTaskDeleteWithCaps(M.task);  // its stack and TCB back now, from this task
+        else ESP_LOGW(TAG, "motion task did not stop");       // left running down its loop: it parks by itself
+        if (M.parked) M.task = NULL;
+    } else {
+        for (int i = 0; i < 50 && M.task; i++) vTaskDelay(pdMS_TO_TICKS(5));
+    }
     wr(REG_CTRL7, 0x00);  // sensors off
 }
 
@@ -333,11 +434,71 @@ static int8_t cross_axis(int8_t y, int8_t z) {
 }
 
 static int motion_cmd(int argc, char **argv) {
+    const char *sub = argc > 1 ? argv[1] : "";
+#if CONFIG_YAY_DEV
+    // The part's registers, read only (started once is enough: the device is known).
+    if (!strcmp(sub, "regs")) {
+        if (!M.dev) {
+            puts("MOTION_REGS not started");
+            return 1;
+        }
+        regs_line("now");
+        return 0;
+    }
+    // A soft reset of the part and the start's settings again (development builds: 新四号机 11-18).
+    if (!strcmp(sub, "reset")) {
+        if (!M.dev) {
+            puts("MOTION_REGS not started");
+            return 1;
+        }
+        regs_line("before");
+        const esp_err_t w = wr(REG_RESET, 0xB0);
+        vTaskDelay(pdMS_TO_TICKS(30));
+        uint8_t done = 0;
+        rd(REG_RESET_DONE, &done, 1);
+        printf("MOTION_RESET write=%s done_reg=0x%02X\n", esp_err_to_name(w), done);
+        M.gyro_pinned = 0;
+        const esp_err_t c = configure();
+        printf("MOTION_RESET configure=%s\n", esp_err_to_name(c));
+        vTaskDelay(pdMS_TO_TICKS(200));
+        regs_line("after");
+        return c == ESP_OK ? 0 : 1;
+    }
+    // The gyroscope's own self-test (Check-Alive, QMI8658A datasheet Rev A 15.2): the part drives each axis and measures
+    // it; over 300 dps on every axis is a working gyroscope. The sensors off for it (about 400 ms), then as at the start.
+    if (!strcmp(sub, "selftest")) {
+        if (!M.dev) {
+            puts("MOTION_REGS not started");
+            return 1;
+        }
+        uint8_t ctrl3 = 0, st = 0;
+        rd(REG_CTRL3, &ctrl3, 1);
+        wr(REG_CTRL7, 0x00);
+        wr(REG_CTRL3, ctrl3 | 0x80);  // gST
+        int waited = 0;
+        while (waited < 1500 && (rd(REG_STATUS, &st, 1) != ESP_OK || !(st & 1))) vTaskDelay(pdMS_TO_TICKS(10)), waited += 10;
+        const bool done = st & 1;
+        wr(REG_CTRL3, ctrl3 & 0x7F);  // clears STATUSINT.bit0
+        for (int i = 0; i < 50 && rd(REG_STATUS, &st, 1) == ESP_OK && (st & 1); i++) vTaskDelay(pdMS_TO_TICKS(10));
+        uint8_t v[6] = {0};
+        const bool ok = rd(REG_DVX, v, sizeof(v)) == ESP_OK;
+        float dps[3];
+        bool alive = done && ok;
+        for (int i = 0; i < 3; i++) {
+            dps[i] = (int16_t)(v[2 * i] | (v[2 * i + 1] << 8)) / 16.0f;
+            alive &= fabsf(dps[i]) > SELFTEST_DPS;
+        }
+        M.gyro_pinned = 0;
+        const esp_err_t c = configure();
+        printf("MOTION_SELFTEST done=%d after_ms=%d read=%d x=%.1f y=%.1f z=%.1f dps functional=%d configure=%s\n", done,
+               waited, ok, dps[0], dps[1], dps[2], alive, esp_err_to_name(c));
+        return alive ? 0 : 1;
+    }
+#endif
     if (!M.run) {
         puts("MOTION not running");
         return 1;
     }
-    const char *sub = argc > 1 ? argv[1] : "";
     if (!strcmp(sub, "log")) {
         const int s = argc > 2 ? atoi(argv[2]) : 5;
         M.log_seq = 0;
@@ -383,6 +544,9 @@ static int motion_cmd(int argc, char **argv) {
             printf("MOTION_CAL axes %d %d %d (in use; motion cal save keeps it)\n", cal.axis[0], cal.axis[1], cal.axis[2]);
             return 0;
         }
+#if CONFIG_YAY_DEV
+        // Writing the calibration every firmware reads (yk_pref/imu_cal): a development build's alone, as the review
+        // returns an app calling yk_motion_save_calibration() (review/symbols.json).
         if (!strcmp(argv[2], "save")) {
             const esp_err_t err = yk_motion_save_calibration(&M.cal);
             printf("MOTION_CAL save %s\n", esp_err_to_name(err));
@@ -402,6 +566,12 @@ static int motion_cmd(int argc, char **argv) {
             printf("MOTION_CAL reset: axes %d %d %d\n", M.cal.axis[0], M.cal.axis[1], M.cal.axis[2]);
             return 0;
         }
+#else
+        if (!strcmp(argv[2], "save") || !strcmp(argv[2], "reset")) {
+            printf("MOTION_CAL %s: development builds only\n", argv[2]);
+            return 1;
+        }
+#endif
     }
     yk_motion_state_t st;
     yk_motion_state(&st);
@@ -420,13 +590,20 @@ static int motion_cmd(int argc, char **argv) {
            st.still, st.moving, st.shaking, st.shake_strength, st.holder_angle, st.holder_confidence,
            (unsigned)M.samples, (unsigned)M.skipped, (unsigned)M.errors, M.odr_hz, M.cal.axis[0], M.cal.axis[1],
            M.cal.axis[2]);
+#if CONFIG_YAY_DEV
+    printf("MOTION_PART rev=0x%02X gyro_pinned=%u\n", M.rev, (unsigned)M.gyro_pinned);
+#endif
     return 0;
 }
 
 esp_err_t yk_motion_register_console(void) {
     const esp_console_cmd_t cmd = {
         .command = "motion",
-        .help = "motion | log <s> | events [s] | cal flat|upright|save|reset",
+#if CONFIG_YAY_DEV
+        .help = "motion | log <s> | events [s] | regs | reset | selftest | cal flat|upright|save|reset",
+#else
+        .help = "motion | log <s> | events [s] | cal flat|upright",
+#endif
         .func = motion_cmd,
     };
     return esp_console_cmd_register(&cmd);

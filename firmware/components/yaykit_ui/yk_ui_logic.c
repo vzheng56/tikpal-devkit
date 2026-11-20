@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "yk_round.h"
+#include "yk_words.h"
+#include "yk_accent.h"
 
 // ---------------------------------------------------------------- the rim
 
@@ -48,8 +50,8 @@ static uint32_t mode_color(yk_rim_mode_t m) {
     switch (m) {
     case YK_RIM_CONNECTING: return YK_SAGE;  // as Yay's (connecting delivery doc A, B); ink3 before 0.1.13
     case YK_RIM_COUNTDOWN:
-    case YK_RIM_HOLD: return YK_CORAL;
-    case YK_RIM_ALERT: return YK_AMBER;
+    case YK_RIM_HOLD: return yk_accent();  // the main action, talking: the account's accent (0.1.19 4.7)
+    case YK_RIM_ALERT: return YK_CORAL;    // a warning: coral, amber before 0.1.19 (round-screen-design.md 3)
     default: return YK_SAGE;
     }
 }
@@ -382,6 +384,24 @@ const yk_notice_spec_t *yk_notice_spec(yk_notice_t notice) {
     return &NOTICES[(unsigned)notice < YK_NOTICE_COUNT ? notice : YK_NOTICE_NONE];
 }
 
+// Each notice's line in the string table (YK_STR_COUNT: none); NOTICES' zh and en are its Chinese and English.
+static const yk_str_t NOTICE_WORDS[YK_NOTICE_COUNT] = {
+    [YK_NOTICE_NONE] = YK_STR_COUNT,
+    [YK_NOTICE_CONNECTING] = YK_STR_YAYKIT_HOME_CONNECTING,
+    [YK_NOTICE_OFFLINE] = YK_STR_YAYKIT_NOTICE_OFFLINE,
+    [YK_NOTICE_NOT_ADDED] = YK_STR_YAYKIT_NOTICE_NOT_ADDED,
+    [YK_NOTICE_NO_CREDITS] = YK_STR_YAYKIT_NOTICE_NO_CREDITS,
+    [YK_NOTICE_NOT_HEARD] = YK_STR_YAYKIT_NOTICE_SAY_AGAIN,
+    [YK_NOTICE_BUSY] = YK_STR_YAYKIT_NOTICE_BUSY,
+    [YK_NOTICE_BLOCKED] = YK_STR_YAYKIT_NOTICE_BLOCKED,
+    [YK_NOTICE_BATTERY_LOW] = YK_STR_COUNT,
+};
+
+const char *yk_notice_text(yk_notice_t notice, bool english) {
+    const yk_str_t id = (unsigned)notice < YK_NOTICE_COUNT ? NOTICE_WORDS[notice] : YK_STR_COUNT;
+    return id == YK_STR_COUNT ? NULL : yk_word_in(english, id);
+}
+
 yk_notice_t yk_notice_net(yk_notice_net_t *net, bool connected, int64_t now_ms) {
     if (connected) {
         net->trying_since_ms = 0;
@@ -455,12 +475,14 @@ yk_yay_mouth_t yk_yay_mouth_step(yk_yay_mouth_t now, uint8_t level) {
     return YK_YAY_MOUTH_CLOSED;
 }
 
-int yk_yay_blink_gap_ms(uint32_t *seed) {
+int yk_yay_blink_gap_between(uint32_t *seed, int lo, int hi) {
     uint32_t x = *seed ? *seed : 0x9E3779B9u;
     x ^= x << 13, x ^= x >> 17, x ^= x << 5;
     *seed = x;
-    return 4000 + (int)(x % 2001);
+    return lo + (int)(x % (uint32_t)(hi - lo + 1));
 }
+
+int yk_yay_blink_gap_ms(uint32_t *seed) { return yk_yay_blink_gap_between(seed, 4000, 6000); }
 
 // ---------------------------------------------------------------- the buddy
 

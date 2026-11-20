@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "系统函数名单（交付文档 2026-11-02-submission-pipeline.md 第 5.5 节，BOSS-2 11-02 改定）。审核机按它查应用自己的代码调了什么、取了什么地址；开发者本地也能照它查。先看 block，再看 watch，再看 allow 和 components；开发包头文件里声明的函数、工具链和 ROM 里的 C 库自动允许；剩下的算 watch。match 里 * 匹配任意一串字符。",
+  "about": "系统函数名单（交付文档 2026-11-02-submission-pipeline.md 第 5.5 节，BOSS-2 11-02 改定）。审核机按它查应用自己的代码调了什么、取了什么地址；开发者本地也能照它查。先看 block，再看 watch，再看 allow 和 components；开发包头文件里声明的函数、工具链和 ROM 里的 C 库自动允许；剩下的算 watch。match 里 * 匹配任意一串字符；带 defined 的只认这些 ESP-IDF 组件里定义的函数：fatfs、sdmmc 这几个组件按组件整个挡（FatFs 的 f_*、ff_disk_* 都在里面），应用自己叫 f_read、f_draw 的函数不算；挂卡的那几个名字另外按名字挡，应用自己带一份驱动也挡得住。带 everyKit 的挡条目，审核机对哪一版开发包编的应用都照挡（老开发包自己的名单里没有它，审核机从 Tikpal 这一份并进去）。带 kitCheck 的挡条目，./kit check 也对着应用自己的 C 代码查（开发包 1.11 起的名单才有这种条目，老开发包的应用照旧）。",
   "block": [
     {
       "match": [
@@ -176,6 +176,234 @@
         "zh": "不要碰这些。",
         "en": "Leave them alone."
       }
+    },
+    {
+      "match": [
+        "yk_tf_sys_*",
+        "yk_tf_pkg_*",
+        "yk_tf_card_*",
+        "yk_tf_core_*",
+        "yk_tf_fat_*",
+        "yk_tf_layout_*",
+        "yk_tf_lib_*",
+        "yk_tf_boot_*",
+        "yk_tf_label_plan",
+        "yk_tf_label_follow",
+        "yk_tf_label_sync",
+        "yk_tf_label_parse",
+        "yk_tf_join",
+        "yk_tf_name_ok",
+        "yk_tf_rel_ok",
+        "yk_tf_slug_from_project",
+        "yk_tf_bounce_sectors",
+        "yk_tf_crc32",
+        "yk_tf_timeout_cycles",
+        "yk_tf_quota_for",
+        "yk_tf_used_add"
+      ],
+      "why": {
+        "zh": "这是主固件用的卡接口，或者 `yaykit_tf` 组件里面的函数：系统区和应用包缓存归主固件，应用不能调。",
+        "en": "This is the main firmware's side of the card, or a function inside the `yaykit_tf` component: the system's area and the store of app packages belong to the main firmware, and an app may not call them."
+      },
+      "fix": {
+        "zh": "自己的目录用 `yaykit_tf.h` 的 `yk_tf_acquire()`、`yk_tf_dir()`、`yk_tf_path()`；读用户放进 Music、Stories、Pictures、Documents 的文件用 `yk_folder.h`，`app.json` 的 `permissions.folders` 写上那一类（审核规则 F-08）。",
+        "en": "For your own folder use `yaykit_tf.h`: `yk_tf_acquire()`, `yk_tf_dir()`, `yk_tf_path()`. To read what the user put in Music, Stories, Pictures or Documents use `yk_folder.h`, with that kind in `permissions.folders` in `app.json` (review rule F-08)."
+      }
+    },
+    {
+      "match": [
+        "yk_folder_fs_*",
+        "yk_folder_net",
+        "yk_folder_net_*",
+        "yk_folder_record_*",
+        "yk_folder_records_*",
+        "yk_folder_sys_*",
+        "yk_folder_dir_name",
+        "yk_folder_kind_word",
+        "yk_folder_name_hidden",
+        "yk_folder_path_ok",
+        "yk_grant_*",
+        "yk_app_folder_question",
+        "yk_app_grant_*",
+        "yk_app_ring_grant_*",
+        "yk_keys_grant_*"
+      ],
+      "why": {
+        "zh": "这是共享文件夹里面的函数（yaykit_tf、yaykit_app、yaykit_cloud）：授权记录和 Tikpal Voice 上的问话归系统，应用不能改，也不能绕开。",
+        "en": "This is a function inside the shared folders (yaykit_tf, yaykit_app, yaykit_cloud): the grants and the question Tikpal Voice asks are the system's, and an app may neither change nor get around them."
+      },
+      "fix": {
+        "zh": "读共享文件夹只用 `yk_folder.h` 的 `yk_folder_ask()`、`yk_folder_list()`、`yk_folder_open()`、`yk_folder_read()`、`yk_folder_seek()`、`yk_folder_close()`，`app.json` 的 `permissions.folders` 写上那一类（审核规则 F-08）。",
+        "en": "Read the shared folders with `yk_folder.h` alone: `yk_folder_ask()`, `yk_folder_list()`, `yk_folder_open()`, `yk_folder_read()`, `yk_folder_seek()`, `yk_folder_close()`, with that kind in `permissions.folders` in `app.json` (review rule F-08)."
+      }
+    },
+    {
+      "match": [
+        "yk_api_*",
+        "yk_http_*",
+        "yk_sse_*",
+        "yk_token_*",
+        "yk_key_generate",
+        "yk_key_public",
+        "yk_sign",
+        "yk_b64url_encode",
+        "yk_b64url_decode",
+        "yk_claim_valid",
+        "yk_activation_message",
+        "yk_release_message",
+        "yk_send_again"
+      ],
+      "why": {
+        "zh": "这是 `yaykit_cloud` 组件里面的函数：设备密钥、签名、令牌和对服务的请求归组件自己，应用只用公开头文件里的接口。",
+        "en": "This is a function inside the `yaykit_cloud` component: the device's key, signing, tokens and the requests to the service are the component's own, and an app uses only what its public headers declare."
+      },
+      "fix": {
+        "zh": "用 `yaykit_cloud.h` 的 `yk_cloud_*`（对话、识别、朗读、数据、文件这些）和 `yaykit_account.h` 的 `yk_account_*`（要令牌就用 `yk_account_token()`），见 docs/app-guide.md。",
+        "en": "Use `yk_cloud_*` in `yaykit_cloud.h` (chat, recognition, speech, data, files and the rest) and `yk_account_*` in `yaykit_account.h` (for a token, `yk_account_token()`); see docs/app-guide.md."
+      }
+    },
+    {
+      "match": [
+        "yk_link_keys_*",
+        "yk_seal_*",
+        "yk_rules_*"
+      ],
+      "why": {
+        "zh": "这是 `yaykit_link` 组件里面的函数：不配对蓝牙口的连接钥匙、握手和加密归组件自己，应用拿不到钥匙，也不能清别人的钥匙。",
+        "en": "This is a function inside the `yaykit_link` component: the unpaired mode's link keys, handshake and encryption are the component's own; an app never holds a key nor clears anyone's."
+      },
+      "fix": {
+        "zh": "用 `yk_link_keep.h` 的不配对模式：`yk_link_keep_start_unpaired()` 开、`yk_link_keep_send()` 发、`yk_link_unpaired_key_state()` 看钥匙、`yk_link_unpaired_refresh()` 有网时取，见 docs/app-guide.md。",
+        "en": "Use the unpaired mode in `yk_link_keep.h`: `yk_link_keep_start_unpaired()` to start, `yk_link_keep_send()` to send, `yk_link_unpaired_key_state()` for the key, `yk_link_unpaired_refresh()` to fetch it when online; see docs/app-guide.md."
+      }
+    },
+    {
+      "match": [
+        "yk_motion_save_calibration"
+      ],
+      "everyKit": true,
+      "why": {
+        "zh": "姿态的标定存在整台设备共用的设置里（`yk_pref/imu_cal`），所有固件读同一份：应用写一次，别的应用的姿态也跟着歪。标定归系统，函数虽然在 `yaykit_motion.h` 里，应用不能调。",
+        "en": "The motion calibration is kept in the whole device's shared settings (`yk_pref/imu_cal`), which every firmware reads: an app writing it once skews motion for every other app. Calibration is the system's: though `yaykit_motion.h` declares the function, an app may not call it."
+      },
+      "fix": {
+        "zh": "读标定用 `yk_motion_calibration()`，不写。姿态不准，告诉 Tikpal。",
+        "en": "Read it with `yk_motion_calibration()`, never write it. If motion reads wrong, tell Tikpal."
+      }
+    },
+    {
+      "match": [
+        "yk_haptic_set_settings"
+      ],
+      "kitCheck": true,
+      "why": {
+        "zh": "振动的开关和强度是用户在设置里定的，存在整台设备共用的设置里（`yk_pref` 的 `vibe_on`、`vibe_level`），所有固件读同一份：应用写一次，别的应用也跟着变。强度归用户，不归应用：函数虽然在 `yaykit_haptic.h` 里，是主固件的设置页用的，应用不能调。",
+        "en": "Vibration on or off and its strength are the user's, set in Settings and kept in the whole device's shared settings (`yk_pref`'s `vibe_on`, `vibe_level`), which every firmware reads: an app writing them once changes them for every other app. The strength is the user's, not the app's: though `yaykit_haptic.h` declares the function, it is the main firmware's settings page's, and an app may not call it."
+      },
+      "fix": {
+        "zh": "振动用 `yk_haptic_play()`、`yk_haptic_pattern()`，多强由用户的设置定；要看开没开、多强，用 `yk_haptic_available()`、`yk_haptic_get_settings()`。",
+        "en": "Vibrate with `yk_haptic_play()` or `yk_haptic_pattern()`, at the strength the user set; to see whether it is on and how strong, use `yk_haptic_available()` or `yk_haptic_get_settings()`."
+      }
+    },
+    {
+      "match": [
+        "yk_haptic_set_battery_low",
+        "yk_haptic_flash",
+        "yk_haptic_metering"
+      ],
+      "kitCheck": true,
+      "why": {
+        "zh": "`yk_haptic_set_battery_low()`、`yk_haptic_flash()`、`yk_haptic_metering()` 是主固件专用的钩子：第一个报主固件自己的电量线，第二个是主固件自己擦写分区时让马达停住，第三个是主固件的电子吧唧只听麦克风音量时照样振。扩展的低电量由 `yaykit_app` 管，组件自己会读；扩展也不自己擦写分区；麦克风开着时组件自己不振。函数虽然在 `yaykit_haptic.h` 里，应用不能调。",
+        "en": "`yk_haptic_set_battery_low()`, `yk_haptic_flash()` and `yk_haptic_metering()` are the main firmware's own hooks: the first reports its own battery line, the second keeps the motor still while it writes partitions itself, the third lets its electronic badge vibrate while the microphones only read the level. An extension's low battery is `yaykit_app`'s, which the component reads by itself; an extension writes no partition itself; with the microphones open the component keeps still by itself. Though `yaykit_haptic.h` declares them, an app may not call them."
+      },
+      "fix": {
+        "zh": "什么都不用做：电量低、装应用、麦克风开着的时候，组件自己就不振。振动用 `yk_haptic_play()`、`yk_haptic_pattern()`，要马上停用 `yk_haptic_stop()`。",
+        "en": "Nothing to do: on a low battery, during an install and while the microphones are open the component keeps still by itself. Vibrate with `yk_haptic_play()` or `yk_haptic_pattern()`; to stop at once, `yk_haptic_stop()`."
+      }
+    },
+    {
+      "match": [
+        "yk_ui_screen_taps"
+      ],
+      "kitCheck": true,
+      "why": {
+        "zh": "`yk_ui_screen_taps()` 是 `yaykit_app` 自己判双击屏幕开应用环用的（`double_tap_ring`）：一块屏只能挂一个，应用一调就把系统的换掉了，还能把应用环、下拉、「回到主屏幕说？」、共享文件夹询问上的点按吃掉。函数虽然在 `yaykit_ui.h` 里，应用不能调。",
+        "en": "`yk_ui_screen_taps()` is `yaykit_app`'s own, for the double tap on the screen that opens the app ring (`double_tap_ring`): a screen has one, so an app calling it replaces the system's, and could take the taps meant for the app ring, the pull-down, \"Talk on the home screen?\" or the shared folders' question. Though `yaykit_ui.h` declares it, an app may not call it."
+      },
+      "fix": {
+        "zh": "要双击屏幕开应用环，在 `yk_app_config_t` 里设 `double_tap_ring = true`；你自己的东西照常收 `LV_EVENT_CLICKED`，是不是点一下系统已经替你判好了（开发指南第 6 节「屏幕上点一下」）。",
+        "en": "For the double tap that opens the app ring, set `double_tap_ring = true` in `yk_app_config_t`; your own objects get `LV_EVENT_CLICKED` as ever, already judged a tap or not by the system (the app guide's section 6, \"A tap on the screen\")."
+      }
+    },
+    {
+      "match": [
+        "esp_vfs_fat_*",
+        "sdmmc_*",
+        "sdspi_*",
+        "ff_diskio_*",
+        "ff_disk_*"
+      ],
+      "why": {
+        "zh": "应用不能自己挂 TF 卡：卡归开发包的 `yaykit_tf` 管，自己挂会跟主固件、U 盘抢卡，还能读到系统区和别的应用的东西。",
+        "en": "An app may not mount the TF card itself: the kit's `yaykit_tf` owns the card. Mounting it yourself fights the main firmware and USB drive mode for it, and reaches the system's area and other apps' files."
+      },
+      "fix": {
+        "zh": "自己的目录用 `yaykit_tf.h` 的 `yk_tf_acquire()`、`yk_tf_dir()`、`yk_tf_path()`；读用户放进 Music、Stories、Pictures、Documents 的文件用 `yk_folder.h`，`app.json` 的 `permissions.folders` 写上那一类（审核规则 F-08）。",
+        "en": "For your own folder use `yaykit_tf.h`: `yk_tf_acquire()`, `yk_tf_dir()`, `yk_tf_path()`. To read what the user put in Music, Stories, Pictures or Documents use `yk_folder.h`, with that kind in `permissions.folders` in `app.json` (review rule F-08)."
+      }
+    },
+    {
+      "match": [
+        "*"
+      ],
+      "defined": [
+        "fatfs"
+      ],
+      "why": {
+        "zh": "应用不能自己挂 TF 卡：卡归开发包的 `yaykit_tf` 管，自己挂会跟主固件、U 盘抢卡，还能读到系统区和别的应用的东西。",
+        "en": "An app may not mount the TF card itself: the kit's `yaykit_tf` owns the card. Mounting it yourself fights the main firmware and USB drive mode for it, and reaches the system's area and other apps' files."
+      },
+      "fix": {
+        "zh": "自己的目录用 `yaykit_tf.h` 的 `yk_tf_acquire()`、`yk_tf_dir()`、`yk_tf_path()`；读用户放进 Music、Stories、Pictures、Documents 的文件用 `yk_folder.h`，`app.json` 的 `permissions.folders` 写上那一类（审核规则 F-08）。",
+        "en": "For your own folder use `yaykit_tf.h`: `yk_tf_acquire()`, `yk_tf_dir()`, `yk_tf_path()`. To read what the user put in Music, Stories, Pictures or Documents use `yk_folder.h`, with that kind in `permissions.folders` in `app.json` (review rule F-08)."
+      }
+    },
+    {
+      "match": [
+        "*"
+      ],
+      "defined": [
+        "sdmmc",
+        "esp_driver_sdmmc",
+        "esp_driver_sdspi"
+      ],
+      "why": {
+        "zh": "应用不能自己挂 TF 卡：卡归开发包的 `yaykit_tf` 管，自己挂会跟主固件、U 盘抢卡，还能读到系统区和别的应用的东西。",
+        "en": "An app may not mount the TF card itself: the kit's `yaykit_tf` owns the card. Mounting it yourself fights the main firmware and USB drive mode for it, and reaches the system's area and other apps' files."
+      },
+      "fix": {
+        "zh": "自己的目录用 `yaykit_tf.h` 的 `yk_tf_acquire()`、`yk_tf_dir()`、`yk_tf_path()`；读用户放进 Music、Stories、Pictures、Documents 的文件用 `yk_folder.h`，`app.json` 的 `permissions.folders` 写上那一类（审核规则 F-08）。",
+        "en": "For your own folder use `yaykit_tf.h`: `yk_tf_acquire()`, `yk_tf_dir()`, `yk_tf_path()`. To read what the user put in Music, Stories, Pictures or Documents use `yk_folder.h`, with that kind in `permissions.folders` in `app.json` (review rule F-08)."
+      }
+    },
+    {
+      "match": [
+        "esp_flash_read",
+        "esp_flash_read_encrypted",
+        "spi_flash_read",
+        "spi_flash_read_encrypted",
+        "spi_flash_mmap",
+        "spi_flash_mmap_pages",
+        "esp_mmu_map"
+      ],
+      "why": {
+        "zh": "扩展固件不能按地址直接读或映射 Flash：这样读得到系统和别的应用的数据（账号、设置），绕开了命名空间和分区检查。",
+        "en": "An app may not read or map the flash by address: that reaches the system's and other apps' data (the account, settings), past the namespace and partition checks."
+      },
+      "fix": {
+        "zh": "设置放进自己的 NVS 命名空间，大的数据放 TF 卡你自己的目录；账号、令牌用开发包的 `yk_account_*`、`yk_cloud_*` 接口。",
+        "en": "Keep settings in your own NVS namespace and large data in your own folder on the TF card; for the account and tokens use the kit's `yk_account_*` and `yk_cloud_*` functions."
+      }
     }
   ],
   "watch": [
@@ -194,14 +422,6 @@
         "esp_mqtt_*"
       ],
       "why": "自己联网（不经 yk_cloud）"
-    },
-    {
-      "match": [
-        "esp_vfs_fat_*",
-        "sdmmc_*",
-        "sdspi_*"
-      ],
-      "why": "TF 卡"
     },
     {
       "match": [
@@ -364,13 +584,53 @@
       "en": "Remove the component or function of that name from the project and use the one in devkit/."
     }
   },
+  "paths": {
+    "about": "应用自己的 C 代码里以这些开头的字符串常量，./kit check 和审核拦下（审核规则 F-08）：卡只经 yaykit_tf，自己目录的路径用 yk_tf_path() 拼。开发包 1.10 起的名单才有这一节，./kit check 和审核见到它才查，老开发包的应用照旧。主机测试（test/、tests/ 下面）不算。",
+    "block": [
+      "/sdcard"
+    ]
+  },
+  "folders": {
+    "about": "共享文件夹（审核规则 F-08，Yay 0.1.19 开发文档 6.3）：应用自己的 C 代码里用了 kinds 里的名字（YK_FOLDER_<类>），app.json 的 permissions.folders 却没写这一类，./kit check 和审核拦下；写了却没用到的，./kit check 提一句，审核的 AI 再看。只读共享文件夹不用写 tf_card；自己的目录要 tf_card，见 device。开发包 1.10 起的名单才有这一节，老开发包的应用照旧。主机测试（test/、tests/ 下面）不算。",
+    "kinds": {
+      "music": "YK_FOLDER_MUSIC",
+      "stories": "YK_FOLDER_STORIES",
+      "pictures": "YK_FOLDER_PICTURES",
+      "documents": "YK_FOLDER_DOCUMENTS"
+    }
+  },
+  "device": {
+    "about": "app.json 的 permissions.device 对着代码查：应用自己的 C 代码调了某一样下面列的函数，permissions.device 却没写这一样，./kit check 和审核拦下；写了却一个都没调的，./kit check 提一句。motion：开了姿态（yk_motion_start）；tf_card：用 TF 卡上自己的目录（只读共享文件夹不用）；bluetooth_unpaired：开了不配对的蓝牙口（yk_link_keep_start_unpaired，开发包 1.11 起，需申请、每一版有人看）；vibration：用了振动马达（yaykit_haptic 给应用的那几个函数，开发包 1.11 起；主固件专用的 yk_haptic_set_settings 这些在 block 里另挡）。没列的硬件（麦克风、喇叭、配对的蓝牙）这里不查。开发包 1.10 起的名单才有这一节（tf_card 那份原来在 folders.card，./kit check 照旧认），bluetooth_unpaired、vibration 这两行开发包 1.11 起才有；老开发包的应用照旧。主机测试（test/、tests/ 下面）不算。",
+    "motion": [
+      "yk_motion_start"
+    ],
+    "tf_card": [
+      "yk_tf_acquire",
+      "yk_tf_dir",
+      "yk_tf_path",
+      "yk_tf_space"
+    ],
+    "bluetooth_unpaired": [
+      "yk_link_keep_start_unpaired"
+    ],
+    "vibration": [
+      "yk_haptic_init",
+      "yk_haptic_available",
+      "yk_haptic_play",
+      "yk_haptic_pattern",
+      "yk_haptic_stop",
+      "yk_haptic_busy",
+      "yk_haptic_get_settings",
+      "yk_haptic_reload"
+    ]
+  },
   "kit": {
     "about": "开发包自己的东西：组件头文件（firmware/components/*/include）里声明的函数自动允许；模板的 dependencies.lock 里锁定的组件库组件（名字、版本、哈希都对得上）算开发包的，不按应用自己的代码查。",
     "headers": "firmware/components/*/include",
     "lock": "firmware/_template/dependencies.lock"
   },
   "namespaces": {
-    "about": "nvs_open、nvs_entry_find 的命名空间要是应用自己的 yk_<简称>（开发包应用指南第 3 节）。",
+    "about": "nvs_open、nvs_entry_find 的命名空间要是应用自己的 yk_<简称>（开发包应用指南第 3 节）。reserved 是应用的 slug 撞得上的 Tikpal 命名空间（合同 developer.ts 的 RESERVED_NAMESPACES，两边一字不差）：应用的 slug 去掉连字符正好是其中一个时，就算是「自己的」也拦下；owners 写着哪几个归 Tikpal 自家应用，只给那个应用自己开（录音卡的是 yk_reccard，不是 yk_ 加 slug）。审核机对哪个版本的开发包都用 Tikpal 自己这一份，./kit check 用它旁边这一份。",
     "why": {
       "yk_sys": {
         "zh": "那是系统的，里面有账号令牌。",
@@ -392,10 +652,47 @@
         "zh": "那不是你的命名空间。",
         "en": "it is not your namespace."
       }
+    },
+    "reserved": [
+      "yk_wifi",
+      "yk_sys",
+      "yk_dev",
+      "yk_pref",
+      "yk_tf",
+      "yk_pkgcache",
+      "yk_hint",
+      "yk_acct",
+      "yk_folder",
+      "yk_reccard",
+      "yk_translator",
+      "yk_lbuddy",
+      "yk_hbuddy",
+      "yk_party",
+      "yk_shtest",
+      "yk_selfie"
+    ],
+    "owners": {
+      "yk_selfie": "selfie",
+      "yk_reccard": "recording-card",
+      "yk_translator": "translator",
+      "yk_lbuddy": "language-buddy",
+      "yk_hbuddy": "homework-buddy",
+      "yk_party": "party-play",
+      "yk_shtest": "shared-test"
+    },
+    "clash": {
+      "why": {
+        "zh": "这是 Tikpal 系统（或者 Tikpal 自家应用）用的命名空间，你的 slug 去掉连字符正好跟它一样，应用不能拿它存设置。",
+        "en": "it is one Tikpal's system (or one of Tikpal's own apps) uses, and your slug without its hyphens happens to be the same, so an app may not keep its settings there."
+      },
+      "own": {
+        "zh": "（没有：slug 跟系统撞了名，请联系 Tikpal 换一个 slug）",
+        "en": "(none: the slug clashes with the system's; ask Tikpal for another slug)"
+      }
     }
   },
   "partitions": {
-    "about": "esp_partition_find、esp_partition_find_first 的分区标签是常量、而且是这些的，拦下（原样读 nvs 能绕开命名空间检查）。nvs_flash_init_partition 只许 nvs。esp_partition_find、esp_partition_find_first 的标签传 NULL：NVS 子类型（nvs、nvs_keys、任意）拦下（拿到的就是系统 nvs），别的子类型要看。",
+    "about": "esp_partition_find、esp_partition_find_first 的分区标签是常量、而且是这些的，拦下（原样读 nvs 能绕开命名空间检查）。nvs_flash_init_partition 只许 nvs。esp_partition_find、esp_partition_find_first 的标签传 NULL：NVS 子类型（nvs、nvs_keys、任意）拦下（拿到的就是系统 nvs），别的子类型要看。esp_partition_next（遍历迭代器）照 NULL 标签拦下：它能从任意子类型走到系统 nvs，应用用不着遍历分区。",
     "block": [
       "nvs",
       "nvs_keys",
@@ -445,6 +742,33 @@
       "*.tikpal.ai",
       "yay.lettersfromteachers.com",
       "tikpal-desktop.fly.storage.tigris.dev"
+    ]
+  },
+  "voiceCode": {
+    "about": "应用码对着 app.json 的 voiceCode 查（审核规则 F-10）：应用自己的 C 代码 yk_vc_show() 亮的动作写死了的，只能是通用动作 0–2，或者 voiceCode.own 里登记过的 8–15；3–7 不许亮（3 问伙伴合同里有，App 还没接上；4–7 还没用）。动作不是写死的（变量），./kit check 提一句，审核时 AI 对着代码看。actions 是开发包头文件 yk_voicecode.h 里 YK_VC_ACTION_* 的值。开发包 1.11 起的名单才有这一节，老开发包的应用照旧。主机测试（test/、tests/ 下面）不算。",
+    "show": [
+      "yk_vc_show"
+    ],
+    "actions": {
+      "YK_VC_ACTION_PAGE": 0,
+      "YK_VC_ACTION_SERVICE": 1,
+      "YK_VC_ACTION_DAY": 2,
+      "YK_VC_ACTION_ASK": 3,
+      "YK_VC_ACTION_OWN_FROM": 8,
+      "YK_VC_ACTION_OWN_TO": 15
+    }
+  },
+  "pins": {
+    "about": "应用自己的 C 代码直接碰 block 里的脚，./kit check 和审核拦下：gpio_*（gpio_ll_*、gpio_hal_*、esp_rom_gpio_* 也算）的引脚参数是它，gpio_* 参数里、pin_bit_mask 里的位掩码（BIT64(n)、BIT(n)、1ULL << n）带着它，外设配置的 gpio_num、*_io_num（ledc_channel_config_t 这些）设成它，或者 ledc_set_pin 给它。数字、GPIO_NUM_<n>、names 里开发包头文件给它起的名字，或者应用自己等于这些的 #define、const 都认。别的脚、注释、字符串不算；运行时才定的变量看不出来。开发包 1.11 起的名单才有这一节，老开发包的应用照旧。主机测试（test/、tests/ 下面）不算。",
+    "block": [
+      {
+        "pin": 46,
+        "names": [
+          "YK_HAPTIC_GPIO"
+        ],
+        "what": "振动马达",
+        "fix": "马达只能经 yaykit_haptic 用，振动调 yk_haptic_play()、yk_haptic_pattern()，app.json 的 permissions.device 写 vibration（审核规则 F-08）"
+      }
     ]
   }
 }

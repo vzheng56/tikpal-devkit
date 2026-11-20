@@ -26,7 +26,7 @@ const saved = (() => {
     return {};
   }
 })();
-const settings: PreviewSettings = { ...DEFAULTS, ...saved, denied: saved.denied ?? [], switches: saved.switches ?? {} };
+const settings: PreviewSettings = { ...DEFAULTS, ...saved, denied: saved.denied ?? [], switches: saved.switches ?? {}, launch: { ...DEFAULTS.launch, ...saved.launch } };
 let width = saved.width ?? 393;
 let state: State = { manifest: null, error: null };
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -148,6 +148,28 @@ function check(label: string, get: () => boolean, set: (v: boolean) => void, tit
   return box;
 }
 
+function pick<T extends string>(values: [T, string][], get: () => T, set: (v: T) => void, title = "") {
+  const select = document.createElement("select");
+  select.title = title;
+  for (const [value, label] of values) select.append(new Option(label, value, false, get() === value));
+  select.onchange = () => set(select.value as T);
+  return select;
+}
+
+function act(label: string, run: () => void, title = "") {
+  const button = document.createElement("button");
+  button.className = "act";
+  button.type = "button";
+  button.textContent = label;
+  button.title = title;
+  button.onclick = run;
+  return button;
+}
+
+/** The page's pretend bridge: the panel's level 3 buttons reach it here. */
+const fake = () =>
+  (frame.contentWindow as unknown as { __tikpalFake?: { scan(): void; drop(): void; offRoute(): void; arrive(): void } } | null)?.__tikpalFake;
+
 function row(label: string, ...items: HTMLElement[]) {
   const k = document.createElement("label");
   k.className = "k";
@@ -205,6 +227,7 @@ function controls() {
         ),
       ),
     );
+  if (settings.level >= 3) level3Controls(capabilities);
   const switches = (frame.contentWindow as unknown as { __tikpalFake?: { switches: Record<string, string[]> } } | null)?.__tikpalFake?.switches ?? {};
   for (const [name, values] of Object.entries(switches)) {
     const select = document.createElement("select");
@@ -222,6 +245,65 @@ function controls() {
   again.textContent = "重新打开";
   again.onclick = open;
   row("", again);
+}
+
+/** 能力套装 3: how the page was opened, and the world its level 3 methods meet (only the rows its manifest needs). */
+function level3Controls(capabilities: string[]) {
+  const launch = settings.launch;
+  const value = document.createElement("input");
+  value.size = 10;
+  value.value = `0x${launch.value.toString(16)}`;
+  value.title = "码里的值：0–16777215，可以写 0x 开头的十六进制";
+  value.onchange = () => {
+    const n = Number(value.value.trim());
+    if (Number.isInteger(n) && n >= 0 && n <= 0xffffff) {
+      settings.launch = { ...settings.launch, value: n };
+      save();
+      if (settings.launch.on) open();
+    } else value.value = `0x${settings.launch.value.toString(16)}`;
+  };
+  row(
+    "应用码",
+    check("从码打开", () => launch.on, (v) => ((settings.launch = { ...settings.launch, on: v }), save(), open()), "env.launch：从你的应用码（自己的动作 8–15）打开"),
+    pick(
+      Array.from({ length: 8 }, (_, i) => [String(8 + i), `动作 ${8 + i}`] as [string, string]),
+      () => String(settings.launch.action),
+      (v) => ((settings.launch = { ...settings.launch, action: Number(v) }), save(), settings.launch.on && open()),
+    ),
+    value,
+    act("又扫到", () => fake()?.scan(), "小程序开着时又扫到这个码：发 voiceCode.scanned"),
+  );
+  if (capabilities.includes("device.link"))
+    row(
+      "Tikpal Voice",
+      pick(
+        [["near", "在旁边"], ["none", "不在旁边"], ["several", "旁边有两台"], ["key", "钥匙对不上"], ["off", "手机蓝牙关着"]],
+        () => settings.device,
+        (v) => ((settings.device = v), save()),
+        "device.link.open 回什么（下次 open 起）",
+      ),
+      act("断一下", () => fake()?.drop(), "连着的时候断开：lost，过两秒自己连回"),
+    );
+  if (capabilities.includes("trip"))
+    row(
+      "行程",
+      pick([["ok", "能开"], ["busy", "别的在导航"], ["background", "只许使用期间定位"]], () => settings.trip, (v) => ((settings.trip = v), save()), "trip.start 回什么"),
+      seg([[1, "×1"], [10, "×10"]], () => settings.tripSpeed, (v) => ((settings.tripSpeed = v), save())),
+      act("走岔了", () => fake()?.offRoute(), "离开路线几秒，然后 trip.rerouted"),
+      act("到了", () => fake()?.arrive(), "直接到终点：trip.ended arrived"),
+    );
+  if (capabilities.includes("map"))
+    row(
+      "地图模块",
+      pick(
+        [["ok", "正常"], ["limit", "今天的次数用完了"], ["down", "高德出错"], ["far", "太远（算路）"], ["noroute", "没有路（算路）"], ["outside", "不在内地（算路）"]],
+        () => settings.map,
+        (v) => ((settings.map = v), save()),
+        "map.* 回什么",
+      ),
+    );
+  if (capabilities.includes("places.saved"))
+    row("家和公司", pick([["both", "都存了"], ["home", "只存了家"], ["none", "都没存"]], () => settings.places, (v) => ((settings.places = v), save())));
 }
 
 async function refresh() {

@@ -26,6 +26,32 @@
 
 #define YK_CLOUD_STREAM_KEPT_MAX 512  // an hour is about 130 chunks
 
+/** A moment as the device counts it (Yay 0.1.20 开发文档 4.5): the start's number (bootId, one more each start) and
+ *  the ms since that start. */
+typedef struct {
+    uint32_t boot_id;  // 0 … 2^31
+    uint64_t mono_ms;  // 0 … 2^40
+} yk_cloud_mono_t;
+
+/** fileStreamRegister.clock (Yay 0.1.20 开发文档 2.1): when the recording began, the last time the clock was set (as
+ *  the device counted it then, and the time it was set to), and now (at this request), so the platform can work out
+ *  when it was recorded. */
+typedef struct {
+    yk_cloud_mono_t at;
+    bool synced;                // last_sync and last_sync_at hold
+    yk_cloud_mono_t last_sync;
+    const char *last_sync_at;   // ISO 8601
+    yk_cloud_mono_t now;
+} yk_cloud_clock_t;
+
+/** fileStreamRegister.batch: the files that waited when the network came back, so the platform sorts them out together
+ *  once they are all in. */
+typedef struct {
+    const char *id;
+    int index;  // 1 … count
+    int count;
+} yk_cloud_batch_t;
+
 /** What POST …/stream says of a file (fileStreamRegister). */
 typedef struct {
     const char *id;           // the file: "<recording.id>-<segment>"
@@ -36,6 +62,12 @@ typedef struct {
     bool transcribe;
     const char *language;     // NULL: the service's default
     const char *retention;    // NULL: the app's first
+    // Yay 0.1.20 (开发文档 2.1), each left out of the body when NULL, so the recording card's request is 0.4.0's byte
+    // for byte (test/test_stream.c); the device service takes them once its contract has them (strict before).
+    const char *purpose;            // "offline_note" (Yay's); NULL: not said, transcribe
+    const char *capture;            // "hold" | "button"
+    const yk_cloud_clock_t *clock;
+    const yk_cloud_batch_t *batch;
 } yk_cloud_stream_t;
 
 /** Its answer (fileStreamState). */

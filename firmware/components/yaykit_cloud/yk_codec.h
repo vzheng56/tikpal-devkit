@@ -9,12 +9,17 @@
 
 /** base64url without padding. Returns the length written (NUL-terminated), or 0 when `out` is too small. */
 size_t yk_b64url_encode(const uint8_t *in, size_t len, char *out, size_t out_size);
+/** base64url without padding back into bytes: the count written, or 0 when `in` is not base64url (a character outside
+ *  the alphabet, padding, a length of 4n + 1, leftover bits set) or `out` is too small. */
+size_t yk_b64url_decode(const char *in, uint8_t *out, size_t out_size);
 
 /** "yaykit-activate:v1:<device>:<claim>". Returns the length, or 0 when `out` is too small. */
 size_t yk_activation_message(const char *device_id, const char *claim, char *out, size_t size);
 
 /** "yaykit-token:v1:<device>:<app>:<nonce>". Returns the length, or 0 when `out` is too small. */
 size_t yk_token_message(const char *device_id, const char *app, const char *nonce, char *out, size_t size);
+/** What POST /device/v1/release's signature is over (device-api.ts releaseMessage): `yaykit-release:v1:<id>:<nonce>`. */
+size_t yk_release_message(const char *device_id, const char *nonce, char *out, size_t size);
 
 /** A claim from /v1/me/device-claims: "ykc_" followed by base64url, 20–100 characters in total. */
 bool yk_claim_valid(const char *claim);

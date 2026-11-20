@@ -7,16 +7,21 @@
  *   const page = await call("recordings.list");
  *   await call("clipboard.write", { text });
  *   on("audio.state", (s) => …);
+ *   const { routes } = await call("map.routes", { to: { place: "home" }, mode: "bike" });   // 能力套装 3
  *
  * Only types come from the contract here, never its schemas: a page carries none of zod. A page built by
  * `tikpal-miniapp build` also knows its manifest's methods (__TIKPAL_ALLOWED__), so calling one it did not declare
  * fails at once with NOT_DECLARED, as the container would answer, and says so in the console.
  */
 import type { z } from "zod";
-import type { MINIAPP_BRIDGE, MiniappEnv, MiniappMethod, miniappErrors } from "./contract/miniapps.js";
+import type { bridgeEvent, MINIAPP_BRIDGE, MiniappEnv, MiniappMethod, miniappErrors } from "./contract/miniapps.js";
 
 export type { MiniappCapability, MiniappEnv, MiniappManifest, MiniappMethod } from "./contract/miniapps.js";
 export type { Recording, RecordingAnswer, RecordingList, RecordingText } from "./contract/recordings.js";
+export type { GcjPoint, NavigationAction, NavigationMode, RouteStep } from "./contract/navigation.js";
+export type { MapDestination, MapPlace, MapRoute, MapStaticRequest, MapView } from "./contract/map.js";
+export type { TripProgress, TripStart } from "./contract/trip.js";
+export { linkBytes, linkData, mapProject } from "./map.js";
 
 type Bridge = typeof MINIAPP_BRIDGE;
 /** What a method takes. */
@@ -25,8 +30,10 @@ export type Params<M extends MiniappMethod> = z.input<Bridge[M]["params"]>;
 export type Result<M extends MiniappMethod> = z.output<Bridge[M]["result"]>;
 /** What the app is playing (audio.play, audio.control, the audio.state event). */
 export type AudioState = Result<"audio.play">;
-/** What the app says unasked. */
-export type Events = { "audio.state": AudioState; "env.changed": MiniappEnv };
+/** What the app says unasked (contract bridgeEvent): each event's name and what it carries. */
+export type Events = { [E in z.output<typeof bridgeEvent> as E["event"]]: E["data"] };
+/** How the page was opened (level 3): a 声波码 of the app's own action gives its action and value; else null or absent. */
+export type Launch = NonNullable<MiniappEnv["launch"]>;
 export type BridgeErrorCode = (typeof miniappErrors)[number];
 
 /** `window.tikpal` as the container gives it. */

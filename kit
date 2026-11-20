@@ -43,16 +43,23 @@ Tikpal 开发包 ${VERSION}（Tikpal 主固件 $(field yay) 起，接口级别 $
   ./kit info                    圆屏上现在跑的是什么
                                 插着不止一台圆屏时，用 YAYKIT_PORT=/dev/cu.usbmodem… 选一台
   ./kit check                   提交前的检查：清单、版本、开发包没改过、改动都提交了、提交用的那份编过且合规
-  ./kit submit [--miniapp-only] [--ci-sha <SHA-256>]
-                                打提交包 <slug>-<版本>.tikpal（源码、清单、镜像、小程序、自测报告），到开发者平台上传；
-                                --ci-sha 填应用仓库 CI 里 ./kit check 打的那一串，重编就要一字不差
+  ./kit submit --notes <这一版做了什么> [--no-upload] [--miniapp-only] [--ci-sha <SHA-256>]
+                                打提交包 <slug>-<版本>.tikpal（源码、清单、镜像、小程序、自测报告）；登录了就上传、交审，
+                                打出提交编号（--notes 给用户看）。--no-upload 只打包；--ci-sha 填应用仓库 CI 里
+                                ./kit check 打的那一串，重编就要一字不差
+  ./kit status [--for-ai]       审核到哪了、下一步谁做什么；被退回时按文件和行列出拦下的问题，以它为准。
+                                --for-ai 打出开发者平台写给你的 AI 的那段话
   ./kit version                 这个应用用的开发包版本
   ./kit update <版本>           换一版开发包（比如 1.1）
+
+开发者平台（developer.tikpal.ai）：
+  kit login | logout            开发包用你的开发者账号登录（浏览器里点「允许」）、退出；submit、status、小程序开发版都用它
+  kit mcp [claude|cursor|json]  打出把你的 AI 接到平台 MCP 的配置：建应用、改商店素材、交审、看进度、读拦下的问题
 
 小程序（手机 App 里的网页，docs/miniapp.md；要 Node.js 20 或更新）：
   kit miniapp new <slug>        起一个小程序：在应用目录里建在 miniapp/，别处建在 <slug>/
   ./kit miniapp preview         打包、检查，传成你的开发版，在自己手机上看（第一次要在浏览器里允许登录）
-  ./kit miniapp login | logout  开发包用你的开发者账号登录、退出
+  ./kit miniapp login | logout  同 kit login、kit logout（同一个登录）
   在小程序目录里：npm run dev（浏览器预览）、npm run build（打包并检查）、npm run check
 EOF
 }
@@ -321,6 +328,8 @@ case "${1:-help}" in
   update) shift; cmd_update "$@" ;;
   check) /usr/bin/env python3 "$KIT/tools/check_app.py" "$KIT" "$(app_dir)" ;;
   submit) shift; /usr/bin/env python3 "$KIT/tools/submit_app.py" "$KIT" "$(app_dir)" "$@" ;;
+  status) shift; /usr/bin/env python3 "$KIT/tools/developer.py" status "$(app_dir)" "$@" ;;
+  login | logout | mcp) /usr/bin/env python3 "$KIT/tools/developer.py" "$@" ;;
   miniapp)
     shift
     command -v node >/dev/null || die "小程序要 Node.js 20 或更新（docs/miniapp.md）"

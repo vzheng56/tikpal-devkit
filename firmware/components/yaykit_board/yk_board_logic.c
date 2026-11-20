@@ -173,6 +173,7 @@ int yk_board_pref_default(yk_pref_t which) {
     case YK_PREF_VOLUME: return 6;
     case YK_PREF_BRIGHTNESS: return 80;
     case YK_PREF_BUDDY: return 0;  // Pip
+    case YK_PREF_COLORWAY: return 0;  // the original
     default: return 30;  // the screen off after 30 s (P22; 180 before)
     }
 }
@@ -182,6 +183,7 @@ int yk_board_pref_clamp(yk_pref_t which, int v) {
     case YK_PREF_VOLUME: return v < 0 ? 0 : v > 10 ? 10 : v;
     case YK_PREF_BRIGHTNESS: return v < 5 ? 5 : v > 100 ? 100 : v;
     case YK_PREF_BUDDY: return v == 0 || (v >= 3 && v <= 5) ? v : 0;  // not a neighbour: one it does not know is Pip
+    case YK_PREF_COLORWAY: return v >= 0 && v <= 4 ? v : 0;  // one a newer firmware wrote: the original here
     default: return v <= 0 ? 0 : v < 15 ? 15 : v > 3600 ? 3600 : v;
     }
 }
@@ -192,6 +194,17 @@ int yk_board_pref_read(yk_pref_t which, int stored) {
 }
 
 bool yk_board_tz_offset_ok(int minutes) { return minutes >= YK_PREF_TZ_OFF_MIN && minutes <= YK_PREF_TZ_OFF_MAX; }
+
+bool yk_board_lang_ok(const char *tag) {
+    if (!tag) return false;
+    size_t n = 0;
+    for (; tag[n]; n++) {
+        const char c = tag[n];
+        const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        if (n >= YK_PREF_LANG_MAX - 1 || (!letter && (n == 0 || !((c >= '0' && c <= '9') || c == '-')))) return false;
+    }
+    return n >= 2;
+}
 
 bool yk_board_tz_ok(const char *posix) {
     if (!posix || !((posix[0] >= 'A' && posix[0] <= 'Z') || (posix[0] >= 'a' && posix[0] <= 'z') || posix[0] == '<'))

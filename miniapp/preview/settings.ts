@@ -14,6 +14,12 @@ export const DEFAULTS: PreviewSettings = {
   slow: false,
   denied: [],
   switches: {},
+  launch: { on: false, action: 8, value: 0 },
+  device: "near",
+  trip: "ok",
+  tripSpeed: 1,
+  map: "ok",
+  places: "both",
 };
 
 export const INSETS = { ios: { top: 100, bottom: 34 }, android: { top: 80, bottom: 24 } } as const;

@@ -219,6 +219,30 @@ static void test_holder_direction(void) {
     float a2, conf2;
     CHECK(ykm_holder(&C, T / 1000, 500, &a2, &conf2));
     CHECK(angle_diff(a2, a) < 1 && conf2 < conf);
+    CHECK(fabsf(conf2 - conf * 0.5f) < 1e-6f);  // halved
+    // Asked again and again (an app asks every frame) while it stays level: halved once for the whole stretch.
+    for (int i = 0; i < 30; i++) {
+        rest(33, 0);
+        float a3, conf3;
+        CHECK(ykm_holder(&C, T / 1000, 500, &a3, &conf3));
+        CHECK(a3 == a2 && conf3 == conf2);
+    }
+    yk_motion_state_t st;
+    ykm_state(&C, &st);
+    CHECK(st.holder_angle == a2 && st.holder_confidence == conf2);
+    // A new direction is worked out afresh (towards the left edge now), and a new stretch halves that one once.
+    turn_y(0, 35, 300);
+    hold_y(35, 1000);
+    float a4, conf4;
+    CHECK(ykm_holder(&C, T / 1000, 500, &a4, &conf4));
+    CHECK(angle_diff(a4, 270) < 8 && conf4 > 0.8f);
+    turn_y(35, 0, 300);
+    for (int i = 0; i < 40; i++) {
+        rest(33, 0);
+        float a5, conf5;
+        CHECK(ykm_holder(&C, T / 1000, 500, &a5, &conf5));
+        if (i == 39) CHECK(angle_diff(a5, 270) < 10 && conf5 > 0.01f && conf5 < 0.5f);
+    }
     // Never tilted: unknown.
     reset();
     rest(1500, 0);
@@ -445,6 +469,72 @@ static void test_stream_axes(void) {
     CHECK(st.now.gyro[2] > 80);
 }
 
+/** The start (2026-11-14): the first reading of a sensor just switched on can be all zeros (no sample yet). Before,
+ *  that started the estimate lying flat glass up, and the rest a pick-up is measured from with it: standing upright,
+ *  the estimate turned 90 degrees in the first 300 ms, a pick-up at once, and a put-down after. Now readings before
+ *  the first of 0.5-1.5 g are dropped, and a pick-up is only from rest (still once since the start). */
+static void zero_reading(void) {
+    const float none[3] = {0};
+    yk_motion_event_t ev[8];
+    const int n = ykm_feed(&C, none, none, T, ev, 8);
+    for (int i = 0; i < n && nev < 256; i++) EV[nev++] = ev[i];
+    T += 1000000 / rate_hz;
+}
+
+static void test_start(void) {
+    // Lying flat, standing upright, lying face down; one zero reading first or none: the same events at the same
+    // times, and neither a pick-up nor a put-down.
+    for (int pose = 0; pose < 3; pose++) {
+        yk_motion_event_t without[64];
+        int nwithout = 0;
+        for (int zeros = 0; zeros <= 3; zeros += 3) {
+            reset();
+            rng = 777;
+            for (int i = 0; i < zeros; i++) zero_reading();
+            if (zeros) {
+                CHECK(!C.started);  // nothing to start on yet
+                T = 1000000;        // the same times as without
+            }
+            if (pose == 0) rest(2000, 0);
+            if (pose == 1) rest(2000, 90);
+            if (pose == 2) hold_y(180, 2000);
+            CHECK(count(YK_MOTION_LIFT) == 0 && count(YK_MOTION_PUT_DOWN) == 0 && count(YK_MOTION_SHAKE_START) == 0);
+            if (!zeros) {
+                nwithout = nev < 64 ? nev : 64;
+                memcpy(without, EV, sizeof(EV[0]) * (size_t)nwithout);
+                continue;
+            }
+            bool equal = nev == nwithout;
+            for (int i = 0; equal && i < nev; i++) equal = EV[i].kind == without[i].kind && EV[i].t_ms == without[i].t_ms;
+            CHECK(equal);
+        }
+        CHECK(first(pose == 0 ? YK_MOTION_FLAT : pose == 1 ? YK_MOTION_UPRIGHT : YK_MOTION_FACE_DOWN) != NULL);
+    }
+    // Readings under 0.5 g or over 1.5 g before the first good one start nothing; once started, one under 0.5 g is
+    // movement (free fall) and goes in.
+    reset();
+    const float low[3] = {0.1f, 0, 0.2f}, high[3] = {0, 0, 2.0f}, none[3] = {0};
+    yk_motion_event_t ev[8];
+    CHECK(ykm_feed(&C, low, none, T, ev, 8) == 0 && ykm_feed(&C, high, none, T + 4460, ev, 8) == 0 && !C.started);
+    rest(500, 0);
+    CHECK(C.started);
+    const int64_t before = C.t_us;
+    zero_reading();
+    CHECK(C.t_us > before);
+    // Started in a hand: no pick-up until it has been still once (it was already in the hand); put down, still, and
+    // picked up again: that pick-up within the first moments, as from any rest.
+    reset();
+    hold(2500, 40, 0.06f);
+    turn_x(40, 0, 300);
+    CHECK(count(YK_MOTION_LIFT) == 0);
+    rest(1500, 0);
+    CHECK(count(YK_MOTION_LIFT) == 0 && count(YK_MOTION_PUT_DOWN) == 0);
+    const int64_t t_up = T / 1000;
+    turn_x(0, 40, 400);
+    hold(1000, 40, 0.06f);
+    CHECK(count(YK_MOTION_LIFT) == 1 && first(YK_MOTION_LIFT)->t_ms - t_up <= 150);
+}
+
 static void test_csv(void) {
     char line[128];
     const float a[3] = {0.0123f, -0.9876f, 1.25f}, g[3] = {1.5f, -250.25f, 0};
@@ -475,6 +565,9 @@ static struct {
     int old_drops;
 } RP;
 
+static int zeros_first;  // replay(): this many all-zero readings first, 4.46 ms apart (the sensor just switched on)
+static bool dead_rule;   // replay(): a reading ykm_gyro_pinned says gives nothing goes in as none (yaykit_motion.c)
+
 /** Replays one CSV; returns the number of samples. */
 static int replay(const char *path) {
     FILE *f = fopen(path, "r");
@@ -490,8 +583,19 @@ static int replay(const char *path) {
         int64_t t;
         float a[3], g[3];
         if (!ykm_csv_parse(line, &t, a, g)) continue;
-        if (t0 < 0) t0 = t;
         yk_motion_event_t ev[8];
+        if (t0 < 0) {
+            t0 = t;
+            for (int z = zeros_first; z > 0; z--) {
+                const float none[3] = {0};
+                const int k = ykm_feed(&C, none, none, t - z * 4460, ev, 8);
+                for (int i = 0; i < k && nev < 256; i++) EV[nev++] = ev[i];
+            }
+        }
+        if (dead_rule) {
+            const int16_t raw[3] = {(int16_t)lroundf(g[0] * 32), (int16_t)lroundf(g[1] * 32), (int16_t)lroundf(g[2] * 32)};
+            if (ykm_gyro_pinned(raw)) g[0] = g[1] = g[2] = 0;
+        }
         const int k = ykm_feed(&C, a, g, t, ev, 8);
         for (int i = 0; i < k && nev < 256; i++) EV[nev++] = ev[i];
         n++;
@@ -637,9 +741,77 @@ static void test_recordings(const char *dir) {
                (long long)RP.old_still_ms, RP.old_drops, (long long)RP.settled_ms, C.rest_g_len, C.cal.gyro_bias[0],
                C.cal.gyro_bias[1], C.cal.gyro_bias[2], ok ? "" : "  <- FAIL");
         CHECK(ok);
+        if (!strncmp(name, "rest-", 5) || !strncmp(name, "boot-", 5)) {
+            // The same with one all-zero reading first, as the sensor gives 4 ms after it is switched on: the same
+            // events at the same times; neither a pick-up nor a shake (before 2026-11-14, upright: a pick-up at 76 ms).
+            yk_motion_event_t same[256];
+            const int nsame = nev;
+            memcpy(same, EV, sizeof(EV[0]) * (size_t)nev);
+            zeros_first = 1;
+            replay(path);
+            zeros_first = 0;
+            bool equal = nev == nsame;
+            for (int i = 0; equal && i < nev; i++) equal = EV[i].kind == same[i].kind && EV[i].t_ms == same[i].t_ms;
+            const bool ok0 = equal && count(YK_MOTION_LIFT) == 0 && count(YK_MOTION_SHAKE_START) == 0 &&
+                             RP.first_still_ms >= 0 && RP.first_still_ms <= 1500 && RP.drops == 0 && C.settled;
+            printf("    with a zero reading first: %d events, %s%s\n", nev, equal ? "as without" : "NOT as without",
+                   ok0 ? "" : "  <- FAIL");
+            CHECK(ok0);
+        }
     }
     closedir(d);
     printf("  %d recordings\n", files);
+}
+
+/** 新四号机's recordings (11-18, 56 Hz, Yay's thresholds): its gyroscope read 0x8000 on every axis in every sample (a
+ *  part whose gyroscope never started; ykm_gyro_pinned). At rest such a device is still and tells nothing; it tells no
+ *  shake at all (nor fed as none: the accelerometer alone is not enough here yet), printed, not held to. */
+static void test_dead_gyro(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    int files = 0;
+    while ((e = readdir(d))) {
+        const size_t len = strlen(e->d_name);
+        if (len < 5 || strcmp(e->d_name + len - 4, ".csv")) continue;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        const char *name = e->d_name;
+        dead_rule = true;
+        replay(path);
+        const int shakes_none = count(YK_MOTION_SHAKE_START), lifts_none = count(YK_MOTION_LIFT);
+        dead_rule = false;
+        const int n = replay(path);
+        files++;
+        bool ok = n > 0;
+        int pinned_rows = 0;
+        {
+            FILE *f = fopen(path, "r");
+            char line[256];
+            while (f && fgets(line, sizeof(line), f)) {
+                int64_t t;
+                float a[3], g[3];
+                if (!ykm_csv_parse(line, &t, a, g)) continue;
+                const int16_t raw[3] = {(int16_t)lroundf(g[0] * 32), (int16_t)lroundf(g[1] * 32),
+                                        (int16_t)lroundf(g[2] * 32)};
+                pinned_rows += ykm_gyro_pinned(raw);
+            }
+            if (f) fclose(f);
+        }
+        ok &= pinned_rows == n;  // every reading of that device is one ykm_gyro_pinned tells
+        // Left alone: still within 1.5 s and to the end, its rest learned; knocks on the table next to it: neither a
+        // pick-up nor a shake (it is slower to be still among them than a device with a gyroscope: 2.6 s, 12 drops).
+        if (!strncmp(name, "rest-", 5)) ok &= RP.first_still_ms >= 0 && RP.first_still_ms <= 1500 && RP.drops == 0 && C.settled;
+        if (!strncmp(name, "rest-", 5) || !strncmp(name, "knock", 5))
+            ok &= count(YK_MOTION_LIFT) == 0 && count(YK_MOTION_SHAKE_START) == 0;
+        printf("  dead %s: %d samples, %d pinned; %d shakes %d lifts, still from %lld ms, %d drops, settled %d "
+               "(fed as none: %d shakes %d lifts)%s\n",
+               name, n, pinned_rows, count(YK_MOTION_SHAKE_START), count(YK_MOTION_LIFT), (long long)RP.first_still_ms,
+               RP.drops, C.settled, shakes_none, lifts_none, ok ? "" : "  <- FAIL");
+        CHECK(ok);
+    }
+    closedir(d);
+    printf("  %d dead-gyroscope recordings\n", files);
 }
 
 int main(int argc, char **argv) {
@@ -655,7 +827,9 @@ int main(int argc, char **argv) {
     test_csv();
     test_csv_replay_matches_live();
     test_rest_off_1g();
+    test_start();
     if (argc > 1) test_recordings(argv[1]);
+    if (argc > 2) test_dead_gyro(argv[2]);
     printf("%s: %d checks, %d failed\n", failures ? "FAIL" : "ok", checks, failures);
     return failures ? 1 : 0;
 }

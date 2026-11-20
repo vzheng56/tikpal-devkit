@@ -155,8 +155,9 @@ esp_err_t board_pref_set_brightness(int percent);   /* clamped to 5..100 (0 woul
 int       board_pref_screen_off_s(void);
 esp_err_t board_pref_set_screen_off_s(int seconds); /* 0 or 15..3600 */
 /* The buddy, who talks with you (0.1.12, YK_PREF_BUDDY): key `buddy`, a u8. The main firmware sets it; apps only read
- * it (yaykit_ui's 「回到 Pip 说？」 takes its name). A value this build does not know reads as Pip. Added without
- * changing anything above: YK_API_LEVEL stays 3, and an app built before it simply never reads it (it shows Yay).
+ * it (yk_ui_buddy_name(), and since kit 1.10 which buddy yk_yay draws). A value this build does not know reads as Pip.
+ * Added without changing anything above: YK_API_LEVEL stays 3, and an app built before it simply never reads it (it
+ * shows Yay).
  * BOARD_BUDDY_YAY is Pip since 0.1.14 (the name, not the number, changed); WOW and AHA are retired: they read as Pip. */
 #define BOARD_BUDDY_YAY 0
 #define BOARD_BUDDY_WOW 1
@@ -167,6 +168,18 @@ esp_err_t board_pref_set_screen_off_s(int seconds); /* 0 or 15..3600 */
 #define BOARD_PREF_BUDDY_DEFAULT BOARD_BUDDY_YAY
 int       board_pref_buddy(void);                   /* BOARD_BUDDY_*; missing or unknown: BOARD_BUDDY_YAY */
 esp_err_t board_pref_set_buddy(int buddy);          /* the main firmware's; unknown values are stored as Pip */
+/* The accent's colourway (Yay 0.1.19 开发文档 4.7, YK_PREF_COLORWAY): key `colorway`, a u8 in the order of the
+ * platform's COLORWAYS (packages/contracts buddy.ts, only added to). The main firmware writes the account's
+ * (hello.ok owner.colorway, colorway.set); apps only read it, through yaykit_ui's yk_accent(). Missing, or one this build
+ * does not know: the original. Added like the buddy: YK_API_LEVEL stays. */
+#define BOARD_COLORWAY_ORIGINAL 0
+#define BOARD_COLORWAY_SAGE 1
+#define BOARD_COLORWAY_HONEY 2
+#define BOARD_COLORWAY_BLOSSOM 3
+#define BOARD_COLORWAY_COCOA 4
+#define BOARD_COLORWAY_COUNT 5
+int       board_pref_colorway(void);                /* BOARD_COLORWAY_*; missing or unknown: BOARD_COLORWAY_ORIGINAL */
+esp_err_t board_pref_set_colorway(int colorway);    /* the main firmware's; unknown values are stored as the original */
 /* The time zone (0.1.14, YK_PREF_TZ; docs/delivery/2026-11-02-system-pulldown.md 8): key `tz`, the POSIX TZ string
  * newlib reads ("CST-8"), at most 63 characters. The main firmware writes it whenever it knows the account's zone
  * (and removes it when it does not); apps only read it, for the system pull-down's clock. Added like the buddy:
@@ -184,6 +197,14 @@ bool      board_pref_tz_offset(int *minutes);       /* false when not written or
  * system pull-down never calls it (it works out its clock from board_pref_tz_offset). */
 bool      board_pref_tz_apply(const char *fallback);
 esp_err_t board_pref_set_tz_offset(bool known, int minutes);  /* the main firmware's; !known removes it */
+/* The device's language (0.1.17; docs/delivery/2026-11-06-登录与开箱.md 5.4, 7): key `lang`, as the platform says it
+ * ("zh-Hans", "en", "ja", "es-419"). The main firmware writes it: what was chosen in the first setup, and from then on
+ * what the account says, so that a device taken off its account keeps its language. Until the device is added it is what
+ * the screens go by: nobody knows the owner's yet. Apps do not read it: they have the owner's (yk_account_locale).
+ * Added like the buddy: YK_API_LEVEL stays. */
+#define BOARD_PREF_LANG_MAX 8                        /* its buffer: 7 characters and the end */
+bool      board_pref_lang(char *out, size_t size);  /* false (and "") when not written or not a language */
+esp_err_t board_pref_set_lang(const char *tag);     /* the main firmware's; NULL or "" removes it */
 
 /* ---------------------------------------------------------------- fast touch (P20)
  * LVGL reads the touch controller once a frame (about every 33 ms). For a reaction game, board_touch_fast_start()

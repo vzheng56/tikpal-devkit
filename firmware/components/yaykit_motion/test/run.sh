@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 OUT=$(mktemp -d)
+trap 'rm -rf "$OUT"' EXIT
 cc -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -O1 -I.. -I../include -Istub -o "$OUT/test_motion" test_motion.c ../yk_motion_core.c -lm
-YKM_TMP="$OUT/replay.csv" "$OUT/test_motion" motion
+YKM_TMP="$OUT/replay.csv" "$OUT/test_motion" motion motion-dead-gyro
 rm -rf "$OUT"

@@ -12,6 +12,11 @@
 char *yk_api_stream_body(const yk_cloud_stream_t *file);
 /** A fileStreamState answer. False when it is not one. */
 bool yk_api_stream_state(const char *json, yk_cloud_stream_state_t *out);
+/** How long POST …/stream/complete may take, in ms, for a recording `duration_ms` long: the platform joins the chunks,
+ *  an hour's in 120 s at most, a short one's at once; so 15 s and a second more for each 30 s of it, at most 130 s.
+ *  A request that long without an answer lets go and is tried again later (yk_rs_up): an upload whose network went
+ *  mid-request held the recordings' flash task 51 s (新四号机 11-18, a 4 s note's completion). */
+int yk_api_stream_complete_ms(int64_t duration_ms);
 /** The body of POST /files/:id/stream/complete (free with cJSON_free). */
 char *yk_api_stream_end_body(const yk_cloud_stream_end_t *end);
 /** A refusal (HTTP `status`, body {"error": CODE}): the contract's stream codes as they are, else as yk_api_code says;

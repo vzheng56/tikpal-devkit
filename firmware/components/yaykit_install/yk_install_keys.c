@@ -1,5 +1,7 @@
 #include "yk_install_keys.h"
 
+#include <string.h>
+
 #include "sdkconfig.h"
 
 // Uncompressed P-256 points (0x04 ‖ X ‖ Y). A new release key goes here (and into RELEASE_KEYS) in firmware that
@@ -10,6 +12,11 @@ static const uint8_t KEYS[][YK_SIG_KEY_BYTES] = {
      0x7f, 0xcb, 0x36, 0x71, 0x44, 0xb1, 0xdc, 0xeb, 0x26, 0x0b, 0xfb, 0xa3, 0xce, 0xc8, 0xd1, 0x81, 0x0e,
      0xac, 0x60, 0x90, 0xb7, 0x4f, 0xc4, 0x26, 0x00, 0xfa, 0x12, 0xc5, 0x83, 0x14, 0x86, 0x32, 0x6b, 0x70,
      0x73, 0xd6, 0xf9, 0x09, 0x49, 0xb5, 0xbd, 0x64, 0x78, 0x27, 0x82, 0x30, 0xa3, 0x9c},
+    // Automation key 11cce39eabf1dcab (2026-11-07), extensions only: the release Mac's Secure Enclave.
+    {0x04, 0x7e, 0x87, 0xcc, 0x45, 0x07, 0x9e, 0x02, 0xc8, 0x3d, 0xf4, 0xaa, 0xc6, 0xb6, 0x5e, 0x4d, 0x83,
+     0x16, 0x97, 0x06, 0x8f, 0x42, 0xe3, 0xcc, 0x3b, 0xd1, 0xdc, 0x7e, 0xc2, 0x5b, 0x3c, 0x9c, 0x0e, 0x54,
+     0x8e, 0x41, 0x4c, 0x46, 0xf6, 0x63, 0x8b, 0x8c, 0x48, 0xe9, 0x92, 0xb4, 0x4c, 0x35, 0x0b, 0xac, 0x30,
+     0x74, 0x64, 0xd0, 0xee, 0x8f, 0xab, 0x94, 0x96, 0x1a, 0x78, 0xd8, 0x3b, 0x8c, 0x8f},
 #if CONFIG_YAY_DEV
     // Developer key acdc1a5c2d08e68c (2026-10-21): bench builds only, never trusted by the store.
     {0x04, 0xd2, 0x14, 0x55, 0xec, 0x5b, 0xfe, 0xe9, 0xb9, 0xcb, 0xf9, 0x16, 0x86, 0xe8, 0x2a, 0xa0, 0x70,
@@ -19,7 +26,42 @@ static const uint8_t KEYS[][YK_SIG_KEY_BYTES] = {
 #endif
 };
 
+#define KEY_COUNT (sizeof(KEYS) / sizeof(KEYS[0]))
+
+// The keys above that sign extensions only (slots 2 and 3), by key id: the store's `scope: 'extensions'`. One goes
+// here and there together (tests/firmware-signature.test.ts checks both lists are the same).
+static const char *const EXTENSIONS_ONLY[] = {"11cce39eabf1dcab"};
+
+// The system's own firmware: what a key for extensions only never signs (packages/cloud's SYSTEM_FIRMWARE).
+static const char *const SYSTEM_FIRMWARE[] = {"yay", "recovery", "launcher"};
+
 const uint8_t (*yk_install_keys(size_t *count))[YK_SIG_KEY_BYTES] {
-    *count = sizeof(KEYS) / sizeof(KEYS[0]);
+    *count = KEY_COUNT;
     return KEYS;
+}
+
+bool yk_install_key_extensions_only(const char *key_id) {
+    for (size_t i = 0; key_id && i < sizeof(EXTENSIONS_ONLY) / sizeof(EXTENSIONS_ONLY[0]); i++)
+        if (!strcmp(key_id, EXTENSIONS_ONLY[i])) return true;
+    return false;
+}
+
+static bool system_firmware(const char *slug) {
+    for (size_t i = 0; slug && i < sizeof(SYSTEM_FIRMWARE) / sizeof(SYSTEM_FIRMWARE[0]); i++)
+        if (!strcmp(slug, SYSTEM_FIRMWARE[i])) return true;
+    return false;
+}
+
+yk_sig_result_t yk_install_verify(const yk_sig_image_t *image, const char *signature) {
+    if (!image || !system_firmware(image->slug)) return yk_sig_verify(image, signature, KEYS, KEY_COUNT);
+    // The system's own firmware: only the keys that may sign it, so the order of the verdicts stays yk_sig_verify's
+    // (the spelling, the fields, then the key, then the curve) and one for extensions only is "unknown-key".
+    uint8_t allowed[KEY_COUNT][YK_SIG_KEY_BYTES];
+    size_t n = 0;
+    for (size_t i = 0; i < KEY_COUNT; i++) {
+        char id[17];
+        if (yk_sig_key_id(KEYS[i], id) && yk_install_key_extensions_only(id)) continue;
+        memcpy(allowed[n++], KEYS[i], YK_SIG_KEY_BYTES);
+    }
+    return yk_sig_verify(image, signature, (const uint8_t (*)[YK_SIG_KEY_BYTES])allowed, n);
 }

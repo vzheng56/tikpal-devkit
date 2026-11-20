@@ -3,7 +3,7 @@
 //                       double click opens the app ring (unless the app takes it, or it is the main firmware); the
 //                       hint arrow's counts for this slug (yk_hint_init), and in an extension any press takes a
 //                       hint away before the app hears of it (P24)
-//   yk_app_on_key()     the app's side key through yaykit_app: a hold it does not use asks 「回到 Yay 说？」
+//   yk_app_on_key()     the app's side key through yaykit_app: a hold it does not use asks 「回到主屏幕说？」
 //   yk_app_ready()      the screen is up: confirms the image so the bootloader keeps it; boot banner every 3 s
 //                       until the first input
 //   yk_app_launch()     launch parameters the main firmware left for this app (read once)
@@ -42,7 +42,7 @@ extern "C" {
 /** Interface level of the shared components towards apps: only goes up, by one for each incompatible change.
  *  1: yaykit_key, yaykit_app (F1-a). 2: yaykit_cloud v2, the device API v1 (YK_CLOUD_API_LEVEL 2).
  *  3: the double click opens the app ring instead of going straight back to Yay (P23; built against level 2, an app
- *  still goes home on a double click); yk_app_on_key() and 「回到 Yay 说？」; yk_return_home_with().
+ *  still goes home on a double click); yk_app_on_key() and 「回到主屏幕说？」; yk_return_home_with().
  *  0.1.13 adds at level 3 (additions only, nothing changed for an app not rebuilt, and nothing Yay must tell apart): the
  *  device's settings through yaykit_app (yk_app_settings(), yk_app_brightness(), yk_app_screen_off_s(), yk_app_volume()
  *  / yk_app_set_volume(), yk_app_english(), yk_app_keep_screen_on()), and the battery guard of an extension (battery
@@ -52,8 +52,21 @@ extern "C" {
  *  4 (声波码 0.1, Yay 0.1.14, kit 1.9): an app shows its own 应用码 (components/yaykit_voicecode, yk_vc_show(): its number
  *  from app.json's voiceCode at build time; devkit docs/voice-code.md); a swipe down from the top edge is the
  *  system's pull-down (yk_sheet: its 「在手机上打开」 shows the app's page code), never the app's; the app ring holds apps
- *  only. Built against 3, an app keeps what it had: Yay tells nothing apart. */
-#define YK_API_LEVEL 4
+ *  only. Built against 3, an app keeps what it had: Yay tells nothing apart.
+ *  5 (Yay 0.1.19, kit 1.10; Yay 0.1.19 开发文档 6.4): additions only. The TF card through yaykit_tf (the app's own
+ *  folder, yaykit_tf.h) and the four shared folders read only (yk_folder.h, with app.json's permissions.folders); the
+ *  buddies (yk_buddy_t, yk_yay_buddy(): every yk_yay is the user's buddy unless the app names one, Pip when that pack is
+ *  not in a buddy slot). An app built against 5 asks minYay 0.1.19 at least, which keeps it off an older main firmware
+ *  (the store's filter and Yay's install read minYay; Yay reads no apiLevel). Built against 4, an app keeps Pip and its
+ *  card as they were: Yay tells nothing apart.
+ *  6 (Yay 0.1.21, kit 1.11; 0.1.20 went out as a test build only): additions only. yaykit_link's unpaired mode (yk_link_keep_start_unpaired(), 设备通道
+ *  device.link, permissions.device bluetooth_unpaired: the kit check holds an app that declares it to apiLevel 6 and a
+ *  5120-byte NimBLE host stack), and the vibration motor (yaykit_haptic, permission vibration) going out with the same
+ *  kit: one level for both. An app built against 6 asks minYay 0.1.21 at least (the kit's own Yay). Built against 5, an app keeps what it
+ *  had. With the same kit, an extension's objects get LV_EVENT_CLICKED only for a tap (F-1018: yk_ui_taps_strict),
+ *  unless yk_app_config_t.loose_taps: the rule is in the app's own image, so built against 5 it keeps LVGL's. And
+ *  yk_app_config_t.double_tap_ring, off unless the app turns it on: a double tap on the screen opens the app ring. */
+#define YK_API_LEVEL 6
 
 #define YK_APP_HOME_SLUG "yay"
 
@@ -64,9 +77,31 @@ typedef struct {
     bool is_home;         // the Yay main firmware: no app ring of yaykit_app's (Yay has its own). Only with the slug
                           // YK_APP_HOME_SLUG: any other app that sets it stays an extension (the ring, the pull-down)
     bool own_double;      // the app takes the double click itself and offers another way back to Yay
+    bool double_tap_ring; // kit 1.11 (Yay 0.1.21; the 0.1.20 dev doc's 4.7: 0.1.20's test build had it without the
+                          // hold): a double tap on the screen opens the app ring, as the side key's double click
+                          // does. Off (the default): every tap is the app's, as before.
+                          // A double tap is Yay's own (yay_touch.h): two taps (down and up, let go within 10 px of
+                          // where the finger went down, no swipe, under 1.5 s: F-1018's rule), the second's finger
+                          // down within 450 ms of the first's release and within 40 px of where the first went down,
+                          // nothing pressed between. With it on, a tap's LV_EVENT_SHORT_CLICKED and LV_EVENT_CLICKED
+                          // wait about a window (450 ms) before they reach the app (Yay 0.1.21): a second tap in it
+                          // opens the ring and the app gets neither tap's; none, and the first's come late, inside a
+                          // read of the touch screen as LVGL's own do (lv_indev_active() and lv_indev_get_point() as
+                          // at the tap's release, unless a new press came first). Only those: PRESSED, RELEASED, a drag,
+                          // and
+                          // LVGL's SINGLE_CLICKED and DOUBLE_CLICKED still come at once. An app that wants every tap
+                          // at once (a quiz buzzer, a game) leaves it off and has the double tap to itself. With the
+                          // ring up, a double tap on its paper (no app there) closes it and the app gets nothing.
+                          // Not while the ring, 「回到主屏幕说？」, the pull-down, the 应用码 or the folders'
+                          // question is up, nor while the app's own press of the side key goes on. On wherever LVGL
+                          // sees a press: on the app's screen or anything clickable on it. Only in an extension, as
+                          // the ring is; independent of own_double (the key's double click stays as own_double says)
     bool quiet;           // the app prints its own banner (apps from before yaykit_app)
     bool talks;           // the app has a conversation of its own (API level 3): a hold is always its, never
-                          // 「回到 Yay 说？」
+                          // 「回到主屏幕说？」
+    bool loose_taps;      // kit 1.11 (Yay 0.1.20, F-1018): LVGL's own CLICKED for the app's objects, any release as
+                          // before. Without it an extension's objects get CLICKED only for a tap (yk_ui_taps_strict:
+                          // down and up on the object, within 10 px, under 1.5 s), as Yay's pages since 0.1.18
 } yk_app_config_t;
 
 /** Call first, right after nvs_flash_init() and before the board, so a crash anywhere in start-up counts.
@@ -77,9 +112,9 @@ typedef struct {
 esp_err_t yk_app_start(const yk_app_config_t *cfg);
 
 /** The app's side key through yaykit_app (API level 3), instead of yk_key_subscribe(): each event yaykit_key reports
- *  (from its task: keep it short), except the presses that open or close the app ring and 「回到 Yay 说？」. Return
+ *  (from its task: keep it short), except the presses that open or close the app ring and 「回到主屏幕说？」. Return
  *  true when the app used it. A HOLD the app did not use, in an app without a conversation of its own (cfg.talks),
- *  asks 「回到 Yay 说？」 (device-controls.md 1.3): a tap on the screen goes back to Yay, a press stays. An app still
+ *  asks 「回到主屏幕说？」 (device-controls.md 1.3): a tap on the screen goes back to Yay, a press stays. An app still
  *  on yk_key_subscribe() gets the ring all the same, never the question. After yk_app_start(). */
 typedef bool (*yk_app_key_fn)(const yk_key_event_t *event, void *ctx);
 esp_err_t yk_app_on_key(yk_app_key_fn fn, void *ctx);
@@ -112,7 +147,8 @@ esp_err_t yk_app_set_result(const char *summary, const char *data_json);
 
 /** Leaves a result with the summary Yay draws when it is back (P3): data gets "summary" (yk_summary_format) next to
  *  the app's own fields in `data` (may be NULL). The sentence is what Yay says; it is not said when Yay comes back
- *  more than 30 minutes later (yk_result_fresh). */
+ *  more than 30 minutes later (yk_result_fresh). Saying it spends none of the user's credits: the platform pays
+ *  (2026-11-11, 总策划: what Yay says unasked is never the user's to pay), up to its limit; past it, it is not said. */
 esp_err_t yk_app_set_result_summary(const char *sentence, const yk_summary_t *summary, const cJSON *data);
 
 /** The app's wrap-up before it leaves for Yay (a double click, `app exit`, yk_return_home, yk_app_recovery,
@@ -276,7 +312,8 @@ esp_err_t yk_app_command(const char *name, const cJSON *args, cJSON *reply, cons
 
 /** Development builds (CONFIG_YAY_DEV): adds `yay <name> ...` (the main firmware adds state, action, inbox,
  *  server). Built-in: tap, double, hold <ms>, say <s> [text], records [drop <seq>], launch <slug> [json],
- *  crash [boots] (panics now and at the start of the next `boots` boots, to try the crash loop guard), record.
+ *  crash [boots] (panics now and at the start of the next `boots` boots, to try the crash loop guard), record,
+ *  noup [ms] (a press whose release edge is lost: yk_key_simulate_lost_up).
  *  Release builds keep only tap, double, hold, say and records (CONFIG_YAY_ACCEPT); what is registered here is not
  *  reachable there. */
 typedef int (*yk_app_dev_fn)(int argc, char **argv);

@@ -24,7 +24,8 @@ const USAGE = `tikpal-miniapp：Tikpal 小程序开发包
   tikpal-miniapp preview [--no-open] [--app <app.json>]
                                               打包、检查，连同应用目录里的 app.json 传到开发者平台当你的开发版：
                                               只有你的账号拿得到，手机上的 Tikpal App 打开它就是这一版。不审核、不花点数
-  tikpal-miniapp login [--no-open]            用你的开发者账号登录（浏览器里点「允许」），preview 第一次会自己来
+  tikpal-miniapp login [--no-open]            用你的开发者账号登录（浏览器里点「允许」），preview 第一次会自己来；
+                                              跟开发包的 ./kit login 是同一个登录（./kit submit、./kit status 也用它）
   tikpal-miniapp logout                       退出登录
 
   --entry <文件>  代码入口（默认 src/main.tsx、main.ts、main.jsx、main.js 里先找到的）

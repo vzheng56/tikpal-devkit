@@ -25,3 +25,7 @@ set(YAY_ART_EMBED_FILES
     "${YAY_ART_DIR}/yay_greet_264.bin"
     "${YAY_ART_DIR}/yay_greet_132.bin"
 )
+# Pip's pictures from a pack instead (yaykit_ui's CONFIG_YK_UI_PIP_BUILTIN off, with YAY_ART_PACKED defined): only these.
+set(YAY_ART_FALLBACK_EMBED_FILES
+    "${YAY_ART_DIR}/yay_greet_132.bin"
+)

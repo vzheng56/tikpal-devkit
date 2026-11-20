@@ -5,5 +5,7 @@ typedef void (*TaskFunction_t)(void *arg);
 typedef void *TaskHandle_t;
 BaseType_t xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack, void *arg, unsigned priority,
                        TaskHandle_t *created);
+BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char *name, uint32_t stack, void *arg, unsigned priority,
+                                   TaskHandle_t *created, int core);
 void vTaskDelay(TickType_t ticks);
 void vTaskDelete(TaskHandle_t task);

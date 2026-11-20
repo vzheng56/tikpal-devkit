@@ -85,7 +85,9 @@
               "device",
               "signing",
               "preview",
+              "rolling",
               "stable",
+              "paused",
               "returned",
               "withdrawn",
               "unlisted"
@@ -117,7 +119,7 @@
     },
     {
       "name": "create_app",
-      "description": "Make an app: it gets its number (for app.json's voiceCode) at once. Takes slug (2–24 lowercase letters, digits and single dashes, starting with a letter; never changed), name and tagline in zh and en, the cloud and hardware capabilities it needs, audience (everyone, or kids: for children, on a parent's account) and miniapp (whether it has a phone mini app). Gives the app with its number: write it into app.json's voiceCode. SLUG_TAKEN or SLUG_RESERVED: pick another slug. Capabilities a person reviews wait for Tikpal (list_capabilities). Why a version was returned or held: read get_findings, never guess.",
+      "description": "Make an app: it gets its number (for app.json's voiceCode) at once. Takes slug (2–24 lowercase letters, digits and single dashes, starting with a letter; never changed), name and tagline in zh and en, the cloud and hardware capabilities it needs, audience (everyone, or kids: for children, on a parent's account) and miniapp (whether it has a phone mini app). Gives the app with its number: write it into app.json's voiceCode. SLUG_TAKEN or SLUG_RESERVED: pick another slug. Capabilities a person reviews wait for Tikpal (list_capabilities). voice.session (voice conversation) is for Tikpal's own apps for now, and the kit's conversation part is being designed: do not ask for it. Why a version was returned or held: read get_findings, never guess.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -188,7 +190,7 @@
             }
           },
           "hardware": {
-            "maxItems": 5,
+            "maxItems": 7,
             "type": "array",
             "items": {
               "type": "string",
@@ -197,7 +199,9 @@
                 "speaker",
                 "motion",
                 "tf_card",
-                "bluetooth"
+                "bluetooth",
+                "bluetooth_unpaired",
+                "vibration"
               ]
             }
           },
@@ -231,7 +235,7 @@
     },
     {
       "name": "update_app",
-      "description": "Change an app's settings: whether it has a mini app. Takes slug and miniapp (true or false). Saying false is refused while a version of its mini app is out (MINIAPP_RELEASED) or one is in review (MINIAPP_IN_REVIEW). Why a version was returned or held: read get_findings, never guess.",
+      "description": "Change an app's settings: whether it has a mini app, and whether status mails go out. Takes slug and miniapp (true or false), mail (\"on\" or \"off\"), or both. miniapp false is refused while a version of its mini app is out (MINIAPP_RELEASED) or one is in review (MINIAPP_IN_REVIEW). mail: whether Tikpal emails the developer's contact address when a version is returned, stuck on Tikpal's side, out to the test accounts, out to everyone or waiting for them; change it only when the developer asks. Why a version was returned or held: read get_findings, never guess.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -244,11 +248,17 @@
           },
           "miniapp": {
             "type": "boolean"
+          },
+          "mail": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ]
           }
         },
         "required": [
-          "slug",
-          "miniapp"
+          "slug"
         ],
         "additionalProperties": false
       },
@@ -359,7 +369,7 @@
                 "type": "object",
                 "properties": {
                   "collects": {
-                    "maxItems": 5,
+                    "maxItems": 6,
                     "type": "array",
                     "items": {
                       "type": "object",
@@ -371,7 +381,8 @@
                             "text",
                             "photos",
                             "location",
-                            "usage"
+                            "usage",
+                            "files"
                           ]
                         },
                         "why": {
@@ -502,7 +513,7 @@
     },
     {
       "name": "request_capability",
-      "description": "Ask for a capability; Tikpal decides the ones a person reviews. Takes slug, kind (cloud, hardware, audience, phone), name, and purpose (needed for phone: what it is for, shown to users). AI, recording, children's and what spends users' points wait for a person, usually a working day; the rest are approved at once. CAPABILITY_ALREADY_ASKED: see list_capabilities. Why a version was returned or held: read get_findings, never guess.",
+      "description": "Ask for a capability; Tikpal decides the ones a person reviews. Takes slug, kind (cloud, hardware, audience, phone), name, and purpose (needed for phone: what it is for, shown to users). AI, recording, children's and what spends users' points wait for a person, usually a working day; the rest are approved at once. CAPABILITY_ALREADY_ASKED: see list_capabilities. voice.session (voice conversation) is for Tikpal's own apps for now, and the kit's conversation part is being designed: do not ask for it. Why a version was returned or held: read get_findings, never guess.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -519,7 +530,8 @@
               "cloud",
               "hardware",
               "audience",
-              "phone"
+              "phone",
+              "folder"
             ]
           },
           "name": {

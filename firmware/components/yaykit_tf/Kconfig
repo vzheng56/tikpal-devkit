@@ -1,0 +1,21 @@
+menu "Yaykit TF card"
+
+config YK_TF_READ_ONLY
+    bool "The card is read-only (test bench)"
+    default n
+    help
+        The disk under FatFs has no way to write, and no directory is made: for shared-test, which looks at cards that
+        may hold someone's old recordings. Never in a firmware that ships.
+
+config YK_TF_SYSTEM
+    bool "The system's side of the card (Yay, shared-test)"
+    default n
+    select FATFS_USE_LABEL
+    help
+        sys_include/yk_tf_sys.h and yk_tf_pkg.h: the system area, the store of app images and 形象 packs, the index in
+        NVS. Only the main firmware and the test bench, which also put sys_include/ on their include path; never an
+        app, and the kit has none of it (Yay 0.1.19 开发文档 6.1). Without it the card still cleans up after a power
+        cut, measures an app's space and stops before deep sleep. It turns on FatFs's volume label: the system names
+        a card that has no name TIKPAL (4.2).
+
+endmenu

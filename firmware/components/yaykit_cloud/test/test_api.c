@@ -361,6 +361,131 @@ static void refusal(const cJSON *v) {
     cJSON_free(json);
 }
 
+// ---------------------------------------------------------------- the shared folders' grants (Yay 0.1.19 2.1)
+
+static const char *const KINDS[] = {"music", "stories", "pictures", "documents"};
+
+/** The kinds of a fixture's `folders` as bits (yk_folder.h's order). */
+static unsigned bits(const cJSON *folders) {
+    unsigned b = 0;
+    const cJSON *k;
+    cJSON_ArrayForEach(k, folders)
+        for (int i = 0; i < 4; i++)
+            if (cJSON_IsString(k) && !strcmp(k->valuestring, KINDS[i])) b |= 1u << i;
+    return b;
+}
+
+static bool grant_is(const yk_api_grant_t *g, const cJSON *fixture) {
+    const char *state = str(fixture, "state");
+    return g->state == (!strcmp(state, "granted") ? 1 : 2) && g->folders == bits(at(fixture, "folders")) &&
+           g->rev == (uint32_t)num(fixture, "rev", -1);
+}
+
+static int listed;
+static void on_listed(const char *slug, const yk_api_grant_t *g, void *ctx) {
+    const cJSON *each;
+    cJSON_ArrayForEach(each, at((const cJSON *)ctx, "grants")) {
+        if (!strcmp(str(each, "app"), slug)) CHECK(grant_is(g, each));
+    }
+    listed++;
+}
+
+static void folder_grants(const cJSON *v) {
+    char *json = cJSON_PrintUnformatted(v);
+    yk_api_grant_t g;
+    // Each app finds its own, and only its own.
+    const cJSON *each;
+    cJSON_ArrayForEach(each, at(v, "grants")) {
+        CHECK(yk_api_folder_grants(json, str(each, "app"), &g) == 1 && grant_is(&g, each));
+    }
+    CHECK(yk_api_folder_grants(json, "never-asked", &g) == 0 && g.state == 0 && g.folders == 0 && g.rev == 0);
+    // Yay's: every one of them, as each app finds its own.
+    listed = 0;
+    CHECK(yk_api_folder_each(json, on_listed, (void *)v) == cJSON_GetArraySize(at(v, "grants")));
+    CHECK(listed == cJSON_GetArraySize(at(v, "grants")));
+    cJSON_free(json);
+}
+
+static void folder_put(const cJSON *v) {
+    const cJSON *base = at(v, "base");
+    const uint8_t state = !strcmp(str(v, "state"), "granted") ? 1 : 2;
+    char *body = yk_api_folder_put_body(state, (uint8_t)bits(at(v, "folders")), cJSON_IsNumber(base),
+                                        cJSON_IsNumber(base) ? (uint32_t)base->valuedouble : 0);
+    // The same body but the kinds' order: always music, stories, pictures, documents.
+    cJSON *got = cJSON_Parse(body ? body : "");
+    CHECK(got && !strcmp(str(got, "state"), str(v, "state")) && bits(at(got, "folders")) == bits(at(v, "folders")));
+    CHECK(cJSON_GetArraySize(at(got, "folders")) == cJSON_GetArraySize(at(v, "folders")));
+    const cJSON *b = at(got, "base");
+    CHECK(cJSON_IsNull(base) ? cJSON_IsNull(b) : cJSON_IsNumber(b) && b->valuedouble == base->valuedouble);
+    CHECK(cJSON_GetArraySize(got) == 3);
+    cJSON_Delete(got);
+    cJSON_free(body);
+}
+
+static void folder_answer(const cJSON *v, bool conflict) {
+    char *json = cJSON_PrintUnformatted(v);
+    const cJSON *grant = at(v, "grant");
+    yk_api_grant_t g;
+    CHECK(yk_api_folder_put_answer(conflict ? 409 : 200, json, str(grant, "app"), &g) == (conflict ? 2 : 1));
+    CHECK(grant_is(&g, grant));
+    // Another app's grant is not this one's answer.
+    CHECK(yk_api_folder_put_answer(conflict ? 409 : 200, json, "another-app", &g) == 0 && g.state == 0);
+    cJSON_free(json);
+}
+
+/** What the contract turns down, the firmware does not take either. */
+static void folder_invalid(const char *schema, const cJSON *v) {
+    char *json = cJSON_PrintUnformatted(v);
+    yk_api_grant_t g;
+    if (!strcmp(schema, "folderGrantsAnswer")) {
+        // A Recordings folder, or one app twice: not taken. (More than 64 the service never sends; one app's own is read.)
+        const cJSON *first = cJSON_GetArrayItem(at(v, "grants"), 0);
+        const int r = yk_api_folder_grants(json, str(first, "app"), &g);
+        if (cJSON_GetArraySize(at(v, "grants")) <= 64) CHECK(r == -1 && g.state == 0);
+        // Yay's walk leaves the same ones out: none of a Recordings grant, neither of an app listed twice.
+        listed = 0;
+        if (cJSON_GetArraySize(at(v, "grants")) <= 64) CHECK(yk_api_folder_each(json, on_listed, (void *)v) == 0 && listed == 0);
+    } else if (!strcmp(schema, "folderGrantAnswer")) {
+        CHECK(yk_api_folder_put_answer(200, json, str(at(v, "grant"), "app"), &g) == 0 && g.state == 0);
+    } else if (!strcmp(schema, "folderGrantConflict")) {
+        CHECK(yk_api_folder_put_answer(409, json, "bedtime-stories", &g) == 0);  // no grant to take
+    }
+    cJSON_free(json);
+}
+
+static void test_folders(void) {
+    current = "folders";
+    yk_api_grant_t g;
+    // 409 GRANTS_FULL (64 apps on this device already): told apart from GRANT_CHANGED by its code, not its status.
+    CHECK(yk_api_folder_put_answer(409, "{\"error\":\"GRANTS_FULL\",\"max\":64}", "photo-frame", &g) == 3 && g.state == 0);
+    CHECK(yk_api_folder_put_answer(200, "{\"error\":\"GRANTS_FULL\"}", "photo-frame", &g) == 0);
+    CHECK(yk_api_folder_put_answer(403, "{\"error\":\"APP_MISMATCH\",\"app\":\"x\"}", "photo-frame", &g) == 0);
+    CHECK(yk_api_folder_put_answer(409, "{\"error\":\"VERSION_CONFLICT\"}", "photo-frame", &g) == 0);
+    CHECK(yk_api_folder_put_answer(500, NULL, "photo-frame", &g) == 0 && yk_api_folder_put_answer(0, NULL, "x", &g) == 0);
+    CHECK(!strcmp(yk_api_code("GRANTS_FULL"), "GRANTS_FULL") && !strcmp(yk_api_code("GRANT_CHANGED"), "GRANT_CHANGED"));
+    // Not an answer at all, a grant without its list, kinds twice, a rev past 32 bits: nothing taken.
+    CHECK(yk_api_folder_grants("<html>", "a-b", &g) == -1 && yk_api_folder_grants(NULL, "a-b", &g) == -1);
+    CHECK(yk_api_folder_each("<html>", NULL, NULL) == -1 && yk_api_folder_each("{\"grants\":[]}", NULL, NULL) == 0);
+    CHECK(yk_api_folder_grants("{\"grants\":{}}", "a-b", &g) == -1);
+    CHECK(yk_api_folder_grants("{\"grants\":[{\"app\":\"a-b\",\"state\":\"granted\",\"rev\":1}]}", "a-b", &g) == -1);
+    CHECK(yk_api_folder_grants("{\"grants\":[{\"app\":\"a-b\",\"state\":\"granted\",\"folders\":[\"music\",\"music\"],\"rev\":1}]}",
+                               "a-b", &g) == -1);
+    CHECK(yk_api_folder_grants("{\"grants\":[{\"app\":\"a-b\",\"state\":\"granted\",\"folders\":[],\"rev\":4294967296}]}",
+                               "a-b", &g) == -1);
+    CHECK(yk_api_folder_grants("{\"grants\":[{\"app\":\"a-b\",\"state\":\"denied\",\"folders\":[],\"rev\":1.5}]}", "a-b", &g) == -1);
+    // A denied grant with no kinds is one; another app's broken grant is not this one's business.
+    CHECK(yk_api_folder_grants("{\"grants\":[{\"app\":\"x\"},{\"app\":\"a-b\",\"state\":\"denied\",\"folders\":[],\"rev\":9}]}",
+                               "a-b", &g) == 1 && g.state == 2 && g.folders == 0 && g.rev == 9);
+    // A body only for granted or denied; base null until the service has told this device a rev.
+    CHECK(!yk_api_folder_put_body(0, 1, false, 0) && !yk_api_folder_put_body(3, 1, true, 2));
+    char *body = yk_api_folder_put_body(1, 0x0F, false, 7);
+    CHECK(body && !strcmp(body, "{\"state\":\"granted\",\"folders\":[\"music\",\"stories\",\"pictures\",\"documents\"],\"base\":null}"));
+    cJSON_free(body);
+    body = yk_api_folder_put_body(2, 0x04, true, 4000000000u);
+    CHECK(body && !strcmp(body, "{\"state\":\"denied\",\"folders\":[\"pictures\"],\"base\":4000000000}"));
+    cJSON_free(body);
+}
+
 static void test_escape(void) {
     char out[64];
     current = "escape";
@@ -409,8 +534,21 @@ int main(int argc, char **argv) {
         else if (!strcmp(schema, "dataPut")) data_put(v);
         else if (!strcmp(schema, "inbox")) inbox(v);
         else if (!strcmp(schema, "deviceError")) refusal(v);
+        else if (!strcmp(schema, "folderGrantsAnswer")) folder_grants(v);
+        else if (!strcmp(schema, "folderGrantPut")) folder_put(v);
+        else if (!strcmp(schema, "folderGrantAnswer")) folder_answer(v, false);
+        else if (!strcmp(schema, "folderGrantConflict")) folder_answer(v, true);
         else read--;
     }
+    cJSON_ArrayForEach(c, at(fixtures, "invalid")) {
+        const char *schema = str(c, "schema");
+        current = str(c, "name") ? str(c, "name") : schema;
+        if (!strncmp(schema, "folderGrant", 11)) {
+            folder_invalid(schema, at(c, "value"));
+            read++;
+        }
+    }
+    test_folders();
     test_escape();
     test_base64();
     test_tts_stream();

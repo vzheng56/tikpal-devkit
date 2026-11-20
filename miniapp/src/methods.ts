@@ -25,6 +25,23 @@ export const METHODS: Readonly<Record<MiniappMethod, { capability: MiniappCapabi
   "share.text": { capability: "share", level: 2 },
   "photos.pick": { capability: "photos", level: 2 },
   "photos.save": { capability: "photos", level: 2 },
+  "device.link.open": { capability: "device.link", level: 3 },
+  "device.link.send": { capability: "device.link", level: 3 },
+  "device.link.close": { capability: "device.link", level: 3 },
+  "trip.start": { capability: "trip", level: 3 },
+  "trip.status": { capability: "trip", level: 3 },
+  "trip.stop": { capability: "trip", level: 3 },
+  "map.routes": { capability: "map", level: 3 },
+  "map.tips": { capability: "map", level: 3 },
+  "map.search": { capability: "map", level: 3 },
+  "map.geocode": { capability: "map", level: 3 },
+  "map.regeo": { capability: "map", level: 3 },
+  "map.static": { capability: "map", level: 3 },
+  "places.saved": { capability: "places.saved", level: 3 },
+  "storage.get": { capability: "storage", level: 3 },
+  "storage.set": { capability: "storage", level: 3 },
+  "storage.remove": { capability: "storage", level: 3 },
+  "storage.keys": { capability: "storage", level: 3 },
 };
 
 /** The highest level the kit knows: the preview's container offers it unless the panel says less. */
@@ -34,6 +51,13 @@ export const KIT_LEVEL = Math.max(...Object.values(METHODS).map((m) => m.level))
 export const EVENTS: Readonly<Record<string, MiniappCapability | null>> = {
   "audio.state": "audio",
   "env.changed": null,
+  "device.link.state": "device.link",
+  "device.link.message": "device.link",
+  "trip.progress": "trip",
+  "trip.rerouted": "trip",
+  "trip.ended": "trip",
+  // A 声波码 of the page's own action (app.json voiceCode.own): no capability of its own.
+  "voiceCode.scanned": null,
 };
 
 /** The methods a manifest's capabilities allow: the ones every page has, and its declared groups'. */

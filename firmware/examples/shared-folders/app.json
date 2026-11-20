@@ -1,0 +1,24 @@
+{
+  "slug": "shared-folders",
+  "kind": "extension",
+  "version": "0.1.0",
+  "name": {"zh": "共享文件夹样例", "en": "Shared Folders Example"},
+  "boards": ["tikpal-r1"],
+  "layout": "yaykit-v1",
+  "minYay": "0.1.19",
+  "apiLevel": 5,
+  "capabilities": {},
+  "permissions": {
+    "device": ["tf_card"],
+    "folders": {"music": {"zh": "列出你拷进 Music 的歌，读第一首的开头", "en": "Lists the songs in Music and reads the start of the first"}}
+  },
+  "launch": {
+    "summary": {"zh": "共享文件夹样例：点一下，列出 Music 里的歌。", "en": "Shared folders example: tap to list the songs in Music."},
+    "examples": {"zh": ["打开共享文件夹样例"], "en": ["Open the shared folders example"]}
+  },
+  "aliases": {"zh": ["共享文件夹样例"], "en": ["Shared folders example"]},
+  "scenes": ["tools"],
+  "audience": "all",
+  "pricing": {"kind": "free"},
+  "voiceCode": {"number": 65280}
+}

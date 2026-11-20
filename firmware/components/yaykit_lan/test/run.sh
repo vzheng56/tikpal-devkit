@@ -9,6 +9,7 @@ if [ ! -f "$CJSON/cJSON.c" ]; then
   exit 0
 fi
 OUT=$(mktemp -d)
+trap 'rm -rf "$OUT"' EXIT
 cc -std=c11 -Wall -Wextra -Werror -O1 -I.. -I"$CJSON" -o "$OUT/test_lan" test_lan.c ../yk_lan_logic.c "$CJSON/cJSON.c" -lm
 "$OUT/test_lan"
 rm -rf "$OUT"

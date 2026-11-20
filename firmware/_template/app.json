@@ -6,10 +6,10 @@
   "boards": ["tikpal-r1"],
   "layout": "yaykit-v1",
   "minYay": "0.1.0",
-  "apiLevel": 4,
+  "apiLevel": 5,
   "capabilities": {},
   "launch": {
-    "summary": {"zh": "计数器样板：短按加一，按住清零。", "en": "Counter template: tap to count, hold to reset."},
+    "summary": {"zh": "计数器样板：点屏幕加一，按住侧键清零。", "en": "Counter template: tap the screen to count, hold the side button to reset."},
     "examples": {"zh": ["打开计数器", "帮我数数"], "en": ["Open the counter", "Count for me"]}
   },
   "aliases": {"zh": ["计数器"], "en": ["Counter"]},

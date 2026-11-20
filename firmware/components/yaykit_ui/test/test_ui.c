@@ -7,6 +7,8 @@
 #include "yk_mark_fit.h"
 #include "yk_round.h"
 #include "yk_ui_logic.h"
+#include "yk_accent.h"
+#include "yk_each_lang.h"
 
 static int failures, checks;
 #define CHECK(cond)                                                        \
@@ -287,9 +289,9 @@ static void test_notices(void) {
         }
         CHECK(chars <= YK_NOTICE_MAX_CHARS);
         const double far = 360 - YK_SIZE_STATUS + YK_SIZE_STATUS * 1.2 - YK_CY, room = 2 * sqrt(200.0 * 200 - far * far);
-        for (int en = 0; en < 2; en++) {
+        YK_EACH_LANG(en) {
             double w = 0;
-            for (const char *p = en ? yk_notice_spec(k)->en : zh; *p; p += len)
+            for (const char *p = yk_notice_text((yk_notice_t)k, en); *p; p += len)
                 w += yk_utf8_next(p, &len) >= 0x2E80 ? YK_SIZE_STATUS : YK_SIZE_STATUS * 0.5;
             CHECK(w <= room);
             if (w > room) printf("  notice %d too wide: %.0f px of %.0f\n", k, w, room);
@@ -441,8 +443,33 @@ static void test_mark_fit(void) {
     CHECK(YK_MARK_UPTO(1000) == YK_MARK_PX && YK_MARK_UPTO(10) == 10);
 }
 
+/** The account's accent (0.1.19 4.7): the five by name in COLORWAYS' order, the original until one is used; the
+ *  countdown and holding take it, a warning stays coral (amber before). */
+static void test_accent(void) {
+    CHECK(yk_accent_colorway() == 0 && yk_accent() == 0xDF795D && yk_accent_text() == 0xEE9A80 && yk_accent_on() == 0x1B1411);
+    static const char *const NAMES[] = {"original", "sage", "honey", "blossom", "cocoa"};
+    for (int i = 0; i < 5; i++) CHECK(yk_accent_find(NAMES[i]) == i && !strcmp(yk_accent_name(i), NAMES[i]));
+    CHECK(yk_accent_find("lavender") < 0 && yk_accent_find("") < 0 && yk_accent_find(NULL) < 0 && yk_accent_find("Honey") < 0);
+    CHECK(!strcmp(yk_accent_name(9), "original") && !strcmp(yk_accent_name(-1), "original"));
+    yk_accent_use(2);  // honey
+    CHECK(yk_accent_colorway() == 2 && yk_accent() == 0xEDB23F && yk_accent_text() == 0xF6C963 && yk_accent_on() == 0x1F1606);
+    yk_rim_in_t in = {.bg = YK_PAPER, .mode = YK_RIM_COUNTDOWN, .value = 500};
+    yk_rim_picture(&in, &P);
+    CHECK(P.n == 1 && P.arc[0].color == 0xEDB23F);
+    in.mode = YK_RIM_HOLD;
+    yk_rim_picture(&in, &P);
+    CHECK(P.n >= 1 && P.arc[0].color == 0xEDB23F);
+    in.mode = YK_RIM_ALERT, in.t_ms = 100;
+    yk_rim_picture(&in, &P);
+    CHECK(P.n == 0 || ((P.arc[0].color & 0xFF0000) >> 16) > ((P.arc[0].color & 0xFF00) >> 8));  // coral's red over its green
+    yk_accent_use(7);  // not one: the original
+    CHECK(yk_accent_colorway() == 0 && yk_accent() == YK_CORAL);
+    yk_accent_use(0);
+}
+
 int main(void) {
     test_mark_fit();
+    test_accent();
     test_rim_states();
     test_rim_repaints();
     test_caption();

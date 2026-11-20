@@ -1,6 +1,6 @@
 # 设备公共 API
 
-圆屏上的应用用云能力（AI 对话、语音识别、语音合成、存数据和文件）都走设备公共 API，固件里用 `yaykit_cloud` 组件调（头文件 `devkit/firmware/components/yaykit_cloud/include/`）。地址固定是线上的，不用配。
+Tikpal Voice 上的应用用云能力（AI 对话、语音识别、语音合成、存数据和文件）都走设备公共 API，固件里用 `yaykit_cloud` 组件调（头文件 `devkit/firmware/components/yaykit_cloud/include/`）。地址固定是线上的，不用配。
 
 ## 权限：只给清单里写的
 
@@ -19,7 +19,7 @@ if (yk_cloud_me(&me, &code) == ESP_OK && yk_cloud_has("asr")) {   // 开始时�
 `/me` 回来这些：
 
 - `capabilities`：你这个应用被授予的能力和限额（时长、字数、语言、格式、模板）。**按它调整，不写死。**
-- `credits`：圆屏绑定的那个账号还剩多少点数（开发时扣的就是你绑的账号）。用完了接口返回 `CREDITS_EXHAUSTED`，界面要说人话（「今天的点数用完了」）。
+- `credits`：这台 Tikpal Voice 绑定的那个账号还剩多少点数（开发时扣的就是你绑的账号）。用完了接口返回 `CREDITS_EXHAUSTED`，界面要说人话（「今天的点数用完了」）。
 - `owner`：机主的昵称、语言、时区（不给邮箱这些资料）。界面语言跟着 `locale`。
 - `settings`：用户在手机 App 里给你这个应用调的设置（`app.json` 里有 `settings` 的才有）。
 
@@ -33,8 +33,8 @@ if (yk_cloud_me(&me, &code) == ESP_OK && yk_cloud_has("asr")) {   // 开始时�
 | 场景接口 | `yk_cloud_scene()` | 一个应用专用的一条（比如「拍照查字」），跟我们一起定 |
 | `data` 小数据 | `yk_cloud_data_get/put/del/list()` | 按键存小块 JSON（进度、偏好），跟着账号走 |
 | `files`、`transcribe` 文件 | `yk_cloud_file_*()` | 登记、分片直传、保存期限、转写（录音类应用） |
-| `records` 记录 | `yk_app_record()` | 不用自己联网：先进圆屏上的发件箱，谁在线谁送 |
-| 语音对话 | `yaykit_talk` | 按住说话 → 回答 → 播放 → 打断，整套交给组件（见应用开发指南） |
+| `records` 记录 | `yk_app_record()` | 不用自己联网：先进 Tikpal Voice 上的发件箱，谁在线谁送 |
+| 语音对话 | — | `voice.session` 目前只给 Tikpal 自己的应用；开发包的对话能力在设计中 |
 
 ## 规矩
 
@@ -43,4 +43,4 @@ if (yk_cloud_me(&me, &code) == ESP_OK && yk_cloud_has("asr")) {   // 开始时�
 - **只做加法**：接口和事件以后会加字段，解析时忽略不认识的字段和事件；不兼容的改动会走新版本路径，旧的至少保留 6 个月。
 - **错误码原样给出**（`CREDITS_EXHAUSTED`、`NETWORK`、`OPERATION_NOT_ALLOWED`……），界面上换成人话，不显示错误码。
 - **断网**：组件返回 `NETWORK`；`yk_notice_net()` 先显示「正在连」，久了提示「回 Tikpal 设置网络」。
-- **一台圆屏同时只有一个语音请求**；对话、安装、配对不同时进行（内部 RAM 不够）。
+- **一台 Tikpal Voice 同时只有一个语音请求**；对话、安装、配对不同时进行（内部 RAM 不够）。

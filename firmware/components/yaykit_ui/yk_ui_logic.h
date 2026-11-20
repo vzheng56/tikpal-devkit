@@ -98,6 +98,8 @@ yk_yay_mouth_t yk_yay_mouth_step(yk_yay_mouth_t now, uint8_t level);
 
 /** Next blink in 4000..6000 ms (xorshift on *seed). */
 int yk_yay_blink_gap_ms(uint32_t *seed);
+/** The same between `lo` and `hi` ms: a figure's own (yk_figure_t). */
+int yk_yay_blink_gap_between(uint32_t *seed, int lo, int hi);
 
 // ---------------------------------------------------------------- the buddy (0.1.12)
 

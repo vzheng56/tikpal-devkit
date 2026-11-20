@@ -1,10 +1,10 @@
-// The app ring and 「回到 Yay 说？」 in an extension (P23; device-controls.md 1.2, 1.3, 4). yaykit_app takes the
+// The app ring and 「回到主屏幕说？」 in an extension (P23; device-controls.md 1.2, 1.3, 4). yaykit_app takes the
 // double click and opens yaykit_ui's ring over the app: a tap on the middle goes home, on another app opens it, on an
 // app not on the device goes home with {"then":"install"} (only Yay installs), on 「更多」 (the fifth place,
 // app-ecosystem.md 4.5) goes home with {"then":"more"}: Yay opens 「我的应用」. (「设置」, the last place from 0.1.6 to
 // 0.1.13, went home with {"then":"settings"}; since 0.1.14 the ring holds apps only, system-pulldown.md 2.) A hold the
 // app did not use, in an app
-// with no conversation of its own, asks 「回到 Yay 说？」. Any press takes the hint arrow away (P24: yk_hint, the
+// with no conversation of its own, asks 「回到主屏幕说？」. Any press takes the hint arrow away (P24: yk_hint, the
 // app's own APPS hint included), before the app hears of it.
 //
 // 「在手机上打开」 (docs/handoff/2026-11-01-voice-code.md 2.1②): an app whose app.json has voiceCode, built with
@@ -14,6 +14,13 @@
 // that code is up the key is ours (a press hides it, all of that press goes nowhere) and the screen stays on
 // (yk_app_keep_screen_on_code, apart from the app's own switch); a tap or a swipe on it, or 60 s, hide it too.
 // yaykit_voicecode is linked weakly (every firmware has it since 0.1.14): without a number there is no code to show.
+//
+// A double tap on the screen (kit 1.11, yk_app_config_t.double_tap_ring; Yay 0.1.20 dev doc 4.7): with the app's switch
+// on, yaykit_ui hands every press on the screen here (yk_ui_screen_taps, the LVGL task) and the second of a double
+// (yk_dtap_route, pure, host tested: Yay's own numbers) opens the ring as the key's double click does. A first tap's
+// clicks are held back (Yay 0.1.21): a second opens the ring and neither tap's clicks reach the app; none, and a timer
+// of ours gives the first's to the app when its window is over. With the ring up, a double tap on its paper closes it
+// and its second tap is nobody's. Off, nothing is attached: every tap is the app's, at once, as before.
 //
 // The key task only decides (yk_keys_route, pure, host tested) and takes the key while ours (yk_key_grab). A small
 // task of ours waits for the board lock and hands the drawing to the LVGL task (lv_async_call: measuring the names
@@ -35,6 +42,7 @@
 #include "lvgl.h"
 #include "yaykit_key.h"
 #include "yaykit_slots.h"
+#include "yaykit_ui.h"
 #include "yk_app_logic.h"
 #include "yk_apps.h"
 #include "yk_catalog.h"
@@ -46,12 +54,16 @@ static const char *TAG = "yk_ring";
 esp_err_t yk_vc_show_ring(void (*hidden)(int why)) __attribute__((weak));
 void yk_vc_hide(void) __attribute__((weak));
 uint32_t yk_vc_app_number(void) __attribute__((weak));
+// The speaker (yaykit_speak), when the app has it: the pull-down's volume dial (yk_app_sheet.c) sets it.
+void yk_speak_volume(int level) __attribute__((weak));
 
 #define REPORT_MS 500  // the opening's numbers, once its motion (~300 ms) is done
 
 enum {
     J_RING_OPEN, J_RING_CLOSE, J_ASK_OPEN, J_ASK_CLOSE, J_TAPPED, J_ASKED, J_HINT_HIDE, J_CODE_SHOW, J_CODE_CLOSE,
     J_SHEET_ATTACH, J_SHEET_CLOSE,  // the system pull-down (yk_app_sheet.c): its edge once ready; a press closed it
+    J_GRANT_CLOSE,                  // the folders' question (yk_app_grant.c): a press let it go
+    J_VOLUME,                       // the pull-down's volume dial turned (yk_app_ring_volume, 0.1.20 F-1077)
 };
 typedef struct {
     uint8_t what;
@@ -61,6 +73,11 @@ typedef struct {
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static yk_keys_t s_keys;  // under s_mux
 static bool s_active, s_talks, s_own_double;
+static bool s_double_tap;  // yk_app_config_t.double_tap_ring
+static yk_dtap_t s_dtap;   // its first tap, waiting (under s_mux with s_keys)
+static lv_timer_t *s_dtap_timer;  // while it waits (the LVGL task's)
+#define DTAP_TICK_MS 20   // how often that timer looks: a held tap is given 450-470 ms after its release, and reaches
+                          // the app at the touch screen's next read (yk_ui_screen_tap_give): about 450-500 ms
 static bool s_own_code;  // this app has a 应用码 to show (yk_vc_show_ring linked, voiceCode built in)
 static bool s_home_on_double;  // no room for our task: the double click goes straight home, as before level 3
 static const char *s_slug;  // this app's
@@ -99,6 +116,16 @@ static bool post(uint8_t what, const char *slug) {
 
 static void key(const yk_key_event_t *ev, void *ctx);
 
+static volatile int s_volume = -1;  // the dial's last level, for J_VOLUME
+static volatile bool s_volume_posted;
+
+void yk_app_ring_volume(int level) {
+    s_volume = level < 0 ? 0 : level > 10 ? 10 : level;
+    if (s_volume_posted) return;  // the job not run yet takes this level
+    s_volume_posted = true;
+    if (!post(J_VOLUME, NULL)) s_volume_posted = false;
+}
+
 /** Nothing of ours up or under way: the key goes back to the app's subscribers. */
 static void release_if_idle(void) {
     taskENTER_CRITICAL(&s_mux);
@@ -121,6 +148,24 @@ bool yk_app_ring_sheet_opening(void) {
 void yk_app_ring_sheet_closed(void) {
     taskENTER_CRITICAL(&s_mux);
     yk_keys_sheet_closed(&s_keys);
+    taskEXIT_CRITICAL(&s_mux);
+    release_if_idle();
+}
+
+// ---------------------------------------------------------------- the folders' question (yk_app_grant.c), its key
+
+bool yk_app_ring_grant_opening(void) {
+    if (!s_active || s_leaving) return false;
+    taskENTER_CRITICAL(&s_mux);
+    const bool ok = yk_keys_grant_open(&s_keys);
+    taskEXIT_CRITICAL(&s_mux);
+    if (ok) yk_key_grab(key, NULL);  // a press lets it go, and all of that press is ours
+    return ok;
+}
+
+void yk_app_ring_grant_closed(void) {
+    taskENTER_CRITICAL(&s_mux);
+    yk_keys_grant_closed(&s_keys);
     taskEXIT_CRITICAL(&s_mux);
     release_if_idle();
 }
@@ -166,12 +211,27 @@ static void report(lv_timer_t *t) {
     lv_timer_delete(t);
 }
 
+/** The held tap's clicks to the app now (the LVGL task). */
+static void dtap_give(const char *why) {
+    printf("YAY_APP tap from=%s late=%s\n", s_slug, why);
+    yk_ui_screen_tap_give();
+}
+
+/** A first tap waiting ends now (the ring opens by the key): its clicks, held, are the app's before the ring is up. */
+static void dtap_settle(const char *why) {
+    taskENTER_CRITICAL(&s_mux);
+    const bool give = yk_dtap_other(&s_dtap);
+    taskEXIT_CRITICAL(&s_mux);
+    if (give) dtap_give(why);
+}
+
 static void ring_open_async(void *arg) {
     (void)arg;
     taskENTER_CRITICAL(&s_mux);
     const bool want = s_keys.ring;
     taskEXIT_CRITICAL(&s_mux);
     if (!want || s_leaving) return;  // a press closed it before it opened
+    dtap_settle("ring");
     if (!s_refr_hooked) {
         lv_display_add_event_cb(lv_display_get_default(), on_refr, LV_EVENT_REFR_START, NULL);
         lv_display_add_event_cb(lv_display_get_default(), on_refr, LV_EVENT_REFR_READY, NULL);
@@ -225,6 +285,10 @@ static void hint_hide_async(void *arg) {
 
 static void leaving_async(void *arg) {
     (void)arg;
+    taskENTER_CRITICAL(&s_mux);
+    yk_dtap_forget(&s_dtap);
+    taskEXIT_CRITICAL(&s_mux);
+    yk_ui_screen_tap_drop();  // a held tap goes nowhere: the app is going
     yk_app_sheet_close("leaving");
     yk_apps_close(false);
     yk_apps_ask_close();
@@ -236,9 +300,77 @@ static void leaving_clear_async(void *arg) {
     yk_apps_leaving_clear();
 }
 
+/** While a first tap waits: its window over (or its second held too long to be one), its clicks are the app's. */
+static void dtap_tick(lv_timer_t *t) {
+    taskENTER_CRITICAL(&s_mux);
+    const bool give = yk_dtap_tick(&s_dtap, lv_tick_get());
+    const bool waiting = yk_dtap_waiting(&s_dtap);
+    taskEXIT_CRITICAL(&s_mux);
+    if (give) dtap_give("window");
+    if (!waiting) lv_timer_pause(t);
+}
+
+/** A press on the screen (yk_ui_screen_taps, the LVGL task): a first tap held, the second of a double opens the ring
+ *  (or, the first on the ring's paper, is nobody's). */
+static yk_ui_tap_do_t screen_tap(yk_ui_press_t what, const yk_ui_tap_t *t, void *ctx) {
+    (void)ctx;
+    if (s_leaving) return YK_UI_TAP_GIVE;
+    const bool paper = what == YK_UI_PRESS_TAP && yk_apps_on_paper(t->x, t->y);  // the ring's (LVGL state)
+    const yk_dtap_tap_t tap = {.x = t->x, .y = t->y, .down_ms = t->down_ms, .up_ms = t->up_ms, .press = t->press,
+                               .paper = paper};
+    bool give = false, busy = false;
+    yk_dtap_do_t d = YK_DTAP_APP;
+    taskENTER_CRITICAL(&s_mux);
+    switch (what) {
+    case YK_UI_PRESS_DOWN: give = yk_dtap_press(&s_dtap, tap.x, tap.y, tap.down_ms, tap.press); break;
+    case YK_UI_PRESS_OTHER: give = yk_dtap_other(&s_dtap); break;
+    case YK_UI_PRESS_TAP:
+        busy = !yk_keys_idle(&s_keys) || s_keys.app_down;
+        d = yk_dtap_route(&s_dtap, &s_keys, s_double_tap, &tap, &give);
+        break;
+    }
+    const bool waiting = yk_dtap_waiting(&s_dtap);
+    taskEXIT_CRITICAL(&s_mux);
+    if (what == YK_UI_PRESS_TAP) {
+        // Two taps in a row, double or not, for the window's numbers (0.1.22, from real taps).
+        static yk_ui_tap_t s_prev_tap;
+        static bool s_have_prev;
+        char pair[160];
+        if (s_have_prev && yk_ui_tap_pair_line(pair, sizeof(pair), "app", &s_prev_tap, t, d == YK_DTAP_RING || d == YK_DTAP_EAT,
+                                               busy ? "system" : NULL, YK_DTAP_MS, YK_DTAP_PX))
+            puts(pair);
+        s_prev_tap = *t;
+        s_have_prev = true;
+    }
+    if (give) dtap_give(what == YK_UI_PRESS_DOWN ? "press" : what == YK_UI_PRESS_OTHER ? "other" : "system");
+    if (waiting && s_dtap_timer) lv_timer_resume(s_dtap_timer);
+    switch (d) {
+    case YK_DTAP_HOLD: return YK_UI_TAP_HOLD;
+    case YK_DTAP_EAT:
+        printf("YAY_APP ring closed from=%s by=touch twice x=%d y=%d\n", s_slug, t->x, t->y);
+        return YK_UI_TAP_TAKE;
+    case YK_DTAP_RING:
+        s_key_ms = now_ms();
+        printf("YAY_APP ring from=%s by=touch x=%d y=%d\n", s_slug, t->x, t->y);
+        if (post(J_RING_OPEN, NULL)) {
+            yk_ui_screen_tap_drop();  // the first's clicks: nobody's
+            yk_key_grab(key, NULL);   // its next press closes it, as after the double click
+            return YK_UI_TAP_TAKE;
+        }
+        closed_by_itself();  // no room for the job: no ring, both taps the app's
+        dtap_give("no_ring");
+        return YK_UI_TAP_GIVE;
+    default: return YK_UI_TAP_GIVE;
+    }
+}
+
 static void sheet_attach_async(void *arg) {
     (void)arg;
     yk_app_sheet_attach(s_slug);
+    if (!s_double_tap) return;
+    if (!s_dtap_timer && (s_dtap_timer = lv_timer_create(dtap_tick, DTAP_TICK_MS, NULL))) lv_timer_pause(s_dtap_timer);
+    // With the app's screen up. No timer (no room): no holding, so no switch at all, rather than a first tap kept.
+    if (s_dtap_timer) yk_ui_screen_taps(board_touch_indev(), screen_tap, NULL);
 }
 
 static void sheet_close_async(void *arg) {
@@ -411,6 +543,15 @@ static void task(void *arg) {
         case J_SHEET_ATTACH: ui(sheet_attach_async); break;
         case J_SHEET_CLOSE: ui(sheet_close_async); break;
         case J_CODE_CLOSE: ui(code_hide_async); break;
+        case J_GRANT_CLOSE: ui(yk_app_grant_let_go_async); break;
+        case J_VOLUME: {
+            s_volume_posted = false;  // first: a turn from now on posts again
+            const int level = s_volume;
+            if (yk_speak_volume) yk_speak_volume(level);
+            const esp_err_t err = yk_app_set_volume(level);
+            printf("YAY_SHEET volume=%d kept=%d from=%s\n", level, err == ESP_OK, s_slug ? s_slug : "");
+            break;
+        }
         }
     }
 }
@@ -461,6 +602,7 @@ static void key(const yk_key_event_t *ev, void *ctx) {
     case YK_KEYS_ASK_CLOSE: post(J_ASK_CLOSE, NULL); break;
     case YK_KEYS_CODE_CLOSE: post(J_CODE_CLOSE, NULL); break;
     case YK_KEYS_SHEET_CLOSE: post(J_SHEET_CLOSE, NULL); break;
+    case YK_KEYS_GRANT_CLOSE: post(J_GRANT_CLOSE, NULL); break;
     case YK_KEYS_EAT: break;
     }
     release_if_idle();
@@ -482,6 +624,8 @@ int yk_app_ring_dev_tap(const char *what) {
     return open ? 0 : 1;
 }
 
+const char *yk_app_ring_slug(void) { return s_slug ? s_slug : ""; }
+
 void yk_app_ring_ready(void) {
     if (s_active) post(J_SHEET_ATTACH, NULL);
 }
@@ -491,11 +635,13 @@ void yk_app_ring_on_key(yk_app_key_fn fn, void *ctx) {
     s_app_fn = fn;
 }
 
-void yk_app_ring_start(const char *slug, bool talks, bool own_double, bool active) {
+void yk_app_ring_start(const char *slug, bool talks, bool own_double, bool double_tap, bool active) {
     s_slug = slug;
     s_talks = talks;
     s_own_double = own_double;
+    s_double_tap = double_tap;
     yk_keys_init(&s_keys);
+    yk_dtap_init(&s_dtap);
     if (!active) return;
     s_own_code = yk_vc_show_ring && yk_vc_hide && yk_vc_app_number && yk_vc_app_number() != 0;
     s_jobs = xQueueCreate(6, sizeof(job_t));  // a hint to take away as well as the ring or the card

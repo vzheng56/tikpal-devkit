@@ -10,14 +10,16 @@
 #include "yaykit_ui.h"
 #include "yk_round.h"
 #include "yk_ui_priv.h"
+#include "yk_words.h"
+#include "yk_accent.h"
 
 lv_obj_t *yk_vc_pair_layer(lv_obj_t *screen, const char *suffix, const char *digits) __attribute__((weak));
 
 void yk_ui_pair_content(lv_obj_t *screen, bool starting, lv_event_cb_t on_turn_on, lv_event_cb_t on_turn_off) {
     if (!yk_link_ble_active()) {
-        const char *state = yk_ui_is_english() ? (starting ? "Turning on Bluetooth…" : "Bluetooth is off") : (starting ? "正在打开蓝牙…" : "蓝牙已关闭");
+        const char *state = yk_word(starting ? YK_STR_YAYKIT_PAIR_TURNING_ON_BLUETOOTH : YK_STR_YAYKIT_PAIR_BLUETOOTH_OFF);
         yk_ui_label(screen, state, 35, 214, 396, 20, YK_INK2);
-        if (!starting) yk_ui_button(screen, yk_ui_is_english() ? "Turn on" : "打开蓝牙", 143, 276, 180, 50, on_turn_on, NULL, YK_CORAL);
+        if (!starting) yk_ui_button(screen, yk_word(YK_STR_YAYKIT_PAIR_TURN_ON), 143, 276, 180, 50, on_turn_on, NULL, yk_accent());
         return;
     }
     const bool connected = yk_link_ble_connected();
@@ -34,9 +36,9 @@ void yk_ui_pair_content(lv_obj_t *screen, bool starting, lv_event_cb_t on_turn_o
         }
         if (connected) {
             const bool en = yk_ui_is_english();
-            yk_ui_label(screen, en ? "Phone connected" : "已连接手机", 35, 196, 396, 30, YK_SAGE);
-            yk_ui_label(screen, en ? "Carry on in the Tikpal app" : "在 Tikpal App 里接着操作", 35, 244, 396, 20, YK_INK2);
-            yk_ui_button(screen, en ? "Turn off" : "关闭蓝牙", 143, 366, 180, 44, on_turn_off, NULL, YK_PANEL);
+            yk_ui_label(screen, yk_word_in(en, YK_STR_YAYKIT_PAIR_PHONE_LINKED), 35, 196, 396, 30, YK_SAGE);
+            yk_ui_label(screen, yk_word_in(en, YK_STR_YAYKIT_PAIR_CARRY_ON_ADDING), 35, 244, 396, 20, YK_INK2);
+            yk_ui_button(screen, yk_word_in(en, YK_STR_YAYKIT_PAIR_TURN_OFF), 143, 366, 180, 44, on_turn_off, NULL, YK_PANEL);
             return;
         }
     }
@@ -55,8 +57,7 @@ void yk_ui_pair_content(lv_obj_t *screen, bool starting, lv_event_cb_t on_turn_o
     char text[16];
     snprintf(text, sizeof(text), "%.4s %.4s", pin, pin + 4);
     yk_ui_label(screen, text, 0, 286, 466, 30, YK_INK);
-    const char *hint = yk_ui_is_english() ? (connected ? "Phone connected" : "Tikpal app: scan or enter the code")
-                               : (connected ? "已连接手机" : "用 Tikpal App 扫码或输入配对码");
+    const char *hint = yk_word(connected ? YK_STR_YAYKIT_PAIR_PHONE_LINKED : YK_STR_YAYKIT_PAIR_SCAN_OR_CODE);
     yk_ui_label(screen, hint, 35, 326, 396, 20, connected ? YK_SAGE : YK_INK2);
-    yk_ui_button(screen, yk_ui_is_english() ? "Turn off" : "关闭蓝牙", 143, 366, 180, 44, on_turn_off, NULL, YK_PANEL);
+    yk_ui_button(screen, yk_word(YK_STR_YAYKIT_PAIR_TURN_OFF), 143, 366, 180, 44, on_turn_off, NULL, YK_PANEL);
 }

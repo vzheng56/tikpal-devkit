@@ -506,7 +506,35 @@ static void test_read_back(void) {
     free(d);
 }
 
+/** `test_view --dump <app number> <out.pgm>`: the settled 应用码 of that app as test_read_back photographs it (W x H
+ *  luma, the code in the middle), for the device bench's own tests (yaykit/scripts/device-bench). */
+static int dump(const char *number, const char *path) {
+    const long app = strtol(number, NULL, 10);
+    if (app < 1 || app > 65535) return 2;
+    yk_vc_payload_t code = {.kind = YK_VC_APP, .app = (uint32_t)app, .action = 0, .value = 0};
+    uint8_t levels[YK_VC_BARS];
+    if (yk_vc_encode(&code, levels) != 0) return 2;
+    drawn_t *d = calloc(1, sizeof(*d));
+    uint8_t *luma = malloc((size_t)W * H);
+    if (!d || !luma) abort();
+    yk_vc_anim_t a;
+    yk_vc_anim_init(&a);
+    yk_vc_anim_start(&a, levels, 0x51u);
+    for (int t = 0; !yk_vc_anim_step(&a, t); t += YK_VC_FRAME_MS) {}
+    draw(d, &a);
+    photograph(d, luma);
+    FILE *f = fopen(path, "wb");
+    if (!f) return 1;
+    fprintf(f, "P5\n%d %d\n255\n", W, H);
+    fwrite(luma, 1, (size_t)W * H, f);
+    fclose(f);
+    free(luma);
+    free(d);
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 4 && !strcmp(argv[1], "--dump")) return dump(argv[2], argv[3]);
     test_number();
 #ifdef HAVE_CJSON
     if (argc < 2) {

@@ -6,6 +6,12 @@
 #include <string.h>
 
 #include "cJSON.h"
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
+
+// From this many bytes a message's cJSON tree goes to PSRAM (yk_proto_parse).
+#define YK_PROTO_PSRAM_FROM 2048
 
 // ---------------------------------------------------------------- small checks (the zod schemas in device.ts)
 
@@ -82,6 +88,108 @@ static bool datetime_ok(const cJSON *v) {
         while (*s >= '0' && *s <= '9') s++;
     }
     return s[0] == 'Z' && s[1] == 0;
+}
+
+/** z.iso.datetime({offset: true}): 2026-11-14T10:58:03.000+08:00, or Z; fractions allowed. */
+static bool datetime_offset_ok(const char *s) {
+    if (!s) return false;
+    static const char shape[] = "dddd-dd-ddTdd:dd:dd";
+    for (int i = 0; shape[i]; i++)
+        if (shape[i] == 'd' ? !(s[i] >= '0' && s[i] <= '9') : s[i] != shape[i]) return false;
+    s += sizeof(shape) - 1;
+    if (*s == '.') {
+        s++;
+        if (!(*s >= '0' && *s <= '9')) return false;
+        while (*s >= '0' && *s <= '9') s++;
+    }
+    if (s[0] == 'Z') return s[1] == 0;
+    if (s[0] != '+' && s[0] != '-') return false;
+    static const char off[] = "dd:dd";
+    for (int i = 0; off[i]; i++)
+        if (off[i] == 'd' ? !(s[1 + i] >= '0' && s[1 + i] <= '9') : s[1 + i] != off[i]) return false;
+    return s[6] == 0;
+}
+
+/** z.uuid(): 8-4-4-4-12 hex digits. */
+static bool uuid_ok(const char *s) {
+    if (!s || strlen(s) != 36) return false;
+    for (int i = 0; i < 36; i++) {
+        const char c = s[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') return false;
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** hello.ok's binding: ^[A-Za-z0-9_-]{8,64}$. */
+static bool binding_ok(const char *s) {
+    if (!s) return false;
+    const size_t n = strlen(s);
+    if (n < 8 || n > 64) return false;
+    for (size_t i = 0; i < n; i++)
+        if (!(alnum(s[i]) || s[i] == '_' || s[i] == '-')) return false;
+    return true;
+}
+
+/** A folderGrant (device-api.ts): app, state, folders (the four kinds, each once), rev >= 1. */
+static bool folder_grant(const cJSON *g, yk_proto_folder_t *out) {
+    static const char *const KINDS[] = {"music", "stories", "pictures", "documents"};
+    const cJSON *app = get(g, "app"), *state = get(g, "state"), *folders = get(g, "folders"), *rev = get(g, "rev");
+    if (!cJSON_IsObject(g) || !str_in(app, 2, 41) || !cJSON_IsString(state) || !cJSON_IsArray(folders) ||
+        !is_int(rev, 1, 4294967295.0))
+        return false;
+    const char *a = app->valuestring;
+    if (a[0] < 'a' || a[0] > 'z') return false;
+    for (const char *c = a; *c; c++)
+        if (!((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '-')) return false;
+    yk_proto_folder_t f = {.rev = (uint32_t)rev->valuedouble};
+    if (!strcmp(state->valuestring, "granted")) f.state = 1;
+    else if (!strcmp(state->valuestring, "denied")) f.state = 2;
+    else return false;
+    const cJSON *k;
+    cJSON_ArrayForEach(k, folders) {
+        int bit = -1;
+        for (int i = 0; i < 4 && cJSON_IsString(k); i++)
+            if (!strcmp(k->valuestring, KINDS[i])) bit = i;
+        if (bit < 0 || f.folders & 1u << bit) return false;  // Recordings, or one twice
+        f.folders |= (uint8_t)(1u << bit);
+    }
+    snprintf(f.app, sizeof(f.app), "%s", a);
+    *out = f;
+    return true;
+}
+
+static void *folders_alloc(size_t size) {
+#ifdef ESP_PLATFORM
+    return heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return calloc(1, size);
+#endif
+}
+
+/** hello.ok's folders: the whole list, or nothing of it (folders_given false). */
+static void hello_folders(const cJSON *list, yk_srv_msg_t *m) {
+    const int n = cJSON_IsArray(list) ? cJSON_GetArraySize(list) : -1;
+    if (n < 0 || n > YK_PROTO_FOLDERS_MAX) return;  // left out, null, or more than the platform sends
+    yk_proto_folder_t *at = n ? folders_alloc((size_t)n * sizeof(*at)) : NULL;
+    if (n && !at) return;
+    int i = 0;
+    const cJSON *g;
+    cJSON_ArrayForEach(g, list) {
+        bool ok = folder_grant(g, &at[i]);
+        for (int j = 0; ok && j < i; j++) ok = strcmp(at[j].app, at[i].app) != 0;  // one grant an app
+        if (!ok) {
+            free(at);
+            return;
+        }
+        i++;
+    }
+    m->folders_given = true;
+    m->folder_count = n;
+    m->folders = at;
 }
 
 static void copy(char *out, size_t size, const cJSON *v) {
@@ -182,6 +290,21 @@ static void add_saver(cJSON *o, const yk_proto_saver_t *v) {
     cJSON_AddStringToObject(image, "id", v->image_id);
     cJSON_AddStringToObject(image, "sha256", v->image_sha256);
 }
+bool yk_proto_buddy_id_ok(const char *id) {
+    const size_t n = id ? strlen(id) : 0;
+    if (n < 2 || n > 31 || id[0] < 'a' || id[0] > 'z') return false;
+    for (size_t i = 1; i < n; i++)
+        if (!((id[i] >= 'a' && id[i] <= 'z') || (id[i] >= '0' && id[i] <= '9') || id[i] == '-')) return false;
+    return true;
+}
+static bool buddy_ok(const yk_proto_buddy_t *v) {
+    return v && yk_proto_buddy_id_ok(v->id) && (!v->sha256 || sha256_ok(v->sha256));
+}
+static void add_buddy(cJSON *o, const yk_proto_buddy_t *v) {
+    cJSON *b = cJSON_AddObjectToObject(o, "buddy");
+    cJSON_AddStringToObject(b, "id", v->id);
+    if (v->sha256) cJSON_AddStringToObject(b, "sha256", v->sha256);
+}
 /** ^[a-z][a-z_.]{2,39}$ */
 static bool cap_ok(const char *c) {
     const size_t n = c ? strlen(c) : 0;
@@ -241,13 +364,24 @@ char *yk_proto_hello(const yk_proto_hello_t *h) {
     }
     if (h->pair) cJSON_AddStringToObject(o, "pair", h->pair);
     if (h->has_prefs) {
-        if (!prefs_ok(h->volume, h->brightness, h->screen_off_s) || (h->saver && !saver_ok(h->saver))) {
+        if (!prefs_ok(h->volume, h->brightness, h->screen_off_s) || (h->saver && !saver_ok(h->saver)) ||
+            (h->buddy && !buddy_ok(h->buddy))) {
             cJSON_Delete(o);
             return NULL;
         }
         cJSON *prefs = cJSON_AddObjectToObject(o, "prefs");
         add_prefs(prefs, h->volume, h->brightness, h->screen_off_s);
         if (h->saver) add_saver(prefs, h->saver);
+        if (h->buddy) add_buddy(prefs, h->buddy);
+    }
+    if (h->onboarding_step) {
+        if (h->onboarding_step < 1 || h->onboarding_step > 255) {
+            cJSON_Delete(o);
+            return NULL;
+        }
+        cJSON *onb = cJSON_AddObjectToObject(o, "onboarding");
+        cJSON_AddNumberToObject(onb, "step", h->onboarding_step);
+        cJSON_AddBoolToObject(onb, "finished", h->onboarding_finished);
     }
     if (h->caps) {
         if (h->cap_count < 0 || h->cap_count > 32) {
@@ -279,6 +413,74 @@ char *yk_proto_listen_start_ex(const char *turn, int preroll_ms, const char *sid
     cJSON_AddNumberToObject(o, "preroll", preroll_ms);
     if (side) cJSON_AddStringToObject(o, "side", side);
     if (held) cJSON_AddTrueToObject(o, "held");
+    return finish(o);
+}
+
+static bool mono_ok(const yk_proto_mono_t *m) { return m->boot <= 2147483648u && m->ms <= 1099511627776ull; }
+
+static cJSON *mono_json(const yk_proto_mono_t *m) {
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "bootId", (double)m->boot);
+    cJSON_AddNumberToObject(o, "monoMs", (double)m->ms);
+    return o;
+}
+
+char *yk_proto_listen_start_note(const char *turn, int preroll_ms, const char *recorded_at, const yk_proto_clock_t *clock) {
+    return yk_proto_listen_start_note_live(turn, preroll_ms, recorded_at, clock, NULL);
+}
+
+char *yk_proto_listen_start_note_live(const char *turn, int preroll_ms, const char *recorded_at,
+                                      const yk_proto_clock_t *clock, const char *live_turn) {
+    if (!yk_proto_turn_ok(turn) || preroll_ms < 0 || preroll_ms > 1000 || !clock || !mono_ok(&clock->at) ||
+        (live_turn && !yk_proto_turn_ok(live_turn)) ||
+        !mono_ok(&clock->now) || (clock->has_sync && (!mono_ok(&clock->sync) || !datetime_offset_ok(clock->sync_at))) ||
+        (recorded_at && !datetime_offset_ok(recorded_at)))
+        return NULL;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "type", "listen.start");
+    cJSON_AddStringToObject(o, "turn", turn);
+    cJSON_AddNumberToObject(o, "preroll", preroll_ms);
+    cJSON_AddTrueToObject(o, "held");
+    if (recorded_at) cJSON_AddStringToObject(o, "recordedAt", recorded_at);
+    cJSON *c = mono_json(&clock->at);
+    if (clock->has_sync) {
+        cJSON *sync = mono_json(&clock->sync);
+        cJSON_AddStringToObject(sync, "at", clock->sync_at);
+        cJSON_AddItemToObject(c, "lastSync", sync);
+    }
+    cJSON_AddItemToObject(c, "now", mono_json(&clock->now));
+    cJSON_AddItemToObject(o, "clock", c);
+    if (live_turn) cJSON_AddStringToObject(o, "liveTurn", live_turn);
+    return finish(o);
+}
+
+const char *yk_proto_time_offset(int64_t unix_ms, int offset_min, char out[32]) {
+    // Civil date from days since 1970 (Howard Hinnant's), so that it needs no time zone of the C library's.
+    const int64_t local_ms = unix_ms + (int64_t)offset_min * 60000;
+    int64_t days = local_ms >= 0 ? local_ms / 86400000 : -((-local_ms + 86399999) / 86400000);
+    const int64_t ms_day = local_ms - days * 86400000;
+    days += 719468;
+    const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    const unsigned doe = (unsigned)(days - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    const unsigned d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+    const int64_t y = (int64_t)yoe + era * 400 + (m <= 2);
+    const int off = (offset_min < 0 ? -offset_min : offset_min) % (24 * 60);
+    char buf[80];  // as wide as the compiler can think it (a year of nine digits); 29 characters in our years
+    snprintf(buf, sizeof(buf), "%04d-%02u-%02uT%02d:%02d:%02d.%03d%c%02d:%02d", (int)y, m, d, (int)(ms_day / 3600000),
+             (int)(ms_day / 60000 % 60), (int)(ms_day / 1000 % 60), (int)(ms_day % 1000), offset_min < 0 ? '-' : '+',
+             off / 60, off % 60);
+    snprintf(out, 32, "%.31s", buf);
+    return out;
+}
+
+char *yk_proto_offline_digest_say(const char *id) {
+    if (!uuid_ok(id)) return NULL;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "type", "offline.digest.say");
+    cJSON_AddStringToObject(o, "id", id);
     return finish(o);
 }
 
@@ -329,16 +531,71 @@ char *yk_proto_action_done_saver(const char *id, bool ok, const char *error, int
     return finish(o);
 }
 
+char *yk_proto_action_done_buddy(const char *id, bool ok, const char *error, const yk_proto_buddy_t *buddy) {
+    if (!buddy) return action_done(id, ok, error, NULL, -1);
+    if (!buddy_ok(buddy)) return NULL;
+    char *done = action_done(id, ok, error, NULL, -1);
+    cJSON *o = done ? cJSON_Parse(done) : NULL;
+    cJSON_free(done);
+    if (!o) return NULL;
+    add_buddy(o, buddy);
+    return finish(o);
+}
+
+char *yk_proto_find_stopped(const char *id, const char *by) {
+    static const char *const BY[] = {"tap", "key", "app", "timeout", "other", NULL};
+    if (!text_ok(id, 1, 40) || !by || !one_of(by, BY)) return NULL;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "type", "find.stopped");
+    cJSON_AddStringToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "by", by);
+    return finish(o);
+}
+
 char *yk_proto_prefs(int volume, int brightness, int screen_off_s) {
     return yk_proto_prefs_saver(volume, brightness, screen_off_s, NULL);
 }
 
 char *yk_proto_prefs_saver(int volume, int brightness, int screen_off_s, const yk_proto_saver_t *saver) {
-    if (!prefs_ok(volume, brightness, screen_off_s) || (saver && !saver_ok(saver))) return NULL;
+    return yk_proto_prefs_all(volume, brightness, screen_off_s, saver, NULL);
+}
+
+char *yk_proto_prefs_all(int volume, int brightness, int screen_off_s, const yk_proto_saver_t *saver,
+                         const yk_proto_buddy_t *buddy) {
+    if (!prefs_ok(volume, brightness, screen_off_s) || (saver && !saver_ok(saver)) || (buddy && !buddy_ok(buddy)))
+        return NULL;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "type", "prefs");
     add_prefs(o, volume, brightness, screen_off_s);
     if (saver) add_saver(o, saver);
+    if (buddy) add_buddy(o, buddy);
+    return finish(o);
+}
+
+/** The languages an account has (packages/contracts locales). */
+static const char *const ACCOUNT_LOCALES[] = {"en", "zh-Hans", "ja", "es-419", NULL};
+
+char *yk_proto_onboarding_step(const yk_proto_onb_report_t *steps, int count, const char *locale) {
+    static const char *const results[] = {"done", "skipped", "failed", NULL};
+    if (!steps || count < 1 || count > YK_PROTO_ONB_REPORTS_MAX || (locale && !one_of(locale, ACCOUNT_LOCALES))) return NULL;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "type", "onboarding.step");
+    cJSON *list = cJSON_AddArrayToObject(o, "steps");
+    for (int i = 0; i < count; i++) {
+        const yk_proto_onb_report_t *r = &steps[i];
+        if (r->step < 1 || r->step > 255 || r->item < 0 || r->item > 255 || !r->result || !one_of(r->result, results) ||
+            r->seconds > YK_PROTO_ONB_SECONDS_MAX) {
+            cJSON_Delete(o);
+            return NULL;
+        }
+        cJSON *one = cJSON_CreateObject();
+        cJSON_AddNumberToObject(one, "step", r->step);
+        if (r->item) cJSON_AddNumberToObject(one, "item", r->item);
+        cJSON_AddStringToObject(one, "result", r->result);
+        cJSON_AddNumberToObject(one, "seconds", r->seconds);
+        cJSON_AddItemToArray(list, one);
+    }
+    if (locale) cJSON_AddStringToObject(o, "locale", locale);
     return finish(o);
 }
 
@@ -527,17 +784,32 @@ static bool new_words(const cJSON *words, yk_srv_msg_t *m) {
     return true;
 }
 
-/** A screensaver image to download: url (https), sha256 and size (1..98304) into m (url owned). */
-static bool saver_image(const cJSON *o, yk_srv_msg_t *m) {
+/** A file to download: url (https), sha256 and size (1..max) into m (url owned). */
+static bool file_to_fetch(const cJSON *o, yk_srv_msg_t *m, int max) {
     const cJSON *url = get(o, "url"), *sha = get(o, "sha256"), *size = get(o, "size");
     if (!cJSON_IsString(url) || strncmp(url->valuestring, "https://", 8) || strlen(url->valuestring) < 9 ||
-        !cJSON_IsString(sha) || !sha256_ok(sha->valuestring) || !is_int(size, 1, YK_PROTO_SAVER_IMAGE_MAX))
+        !cJSON_IsString(sha) || !sha256_ok(sha->valuestring) || !is_int(size, 1, max))
         return false;
     copy(m->sha256, sizeof(m->sha256), sha);
     m->size = (uint32_t)size->valuedouble;
     free(m->url);
     m->url = dup(url);
     return m->url != NULL;
+}
+
+static bool saver_image(const cJSON *o, yk_srv_msg_t *m) { return file_to_fetch(o, m, YK_PROTO_SAVER_IMAGE_MAX); }
+
+/** buddy.set: one of the four; every one but Pip with its pack {url, sha256, size}, Pip without. */
+static bool parse_buddy_set(const cJSON *o, yk_srv_msg_t *m) {
+    static const char *const BUDDIES[] = {"pip", "mote", "dial", "bloom", NULL};
+    const cJSON *buddy = get(o, "buddy"), *pack = get(o, "pack");
+    if (!cJSON_IsString(buddy) || !one_of(buddy->valuestring, BUDDIES)) return false;
+    const bool pip = !strcmp(buddy->valuestring, "pip");
+    if (pip != !pack) return false;
+    if (pack && (!cJSON_IsObject(pack) || !file_to_fetch(pack, m, YK_PROTO_BUDDY_PACK_MAX))) return false;
+    copy(m->buddy, sizeof(m->buddy), buddy);
+    m->kind = YK_ACT_BUDDY_SET;
+    return true;
 }
 
 /** screensaver.set: at least one of on, after (30, 60, 300), duration (300, 600, 1800) and image {id, url, sha256,
@@ -568,6 +840,32 @@ static bool parse_saver_set(const cJSON *o, yk_srv_msg_t *m) {
     }
     if (!on && !after && !duration && !image) return false;  // something to change
     m->kind = YK_ACT_SAVER_SET;
+    return true;
+}
+
+/** onboarding.set: `skip` always, 16 steps at most, each 1..255; `locale` an account's; and something to change. */
+static bool parse_onboarding_set(const cJSON *o, yk_srv_msg_t *m) {
+    const cJSON *skip = get(o, "skip"), *locale = get(o, "locale"), *step;
+    if (!cJSON_IsArray(skip) || cJSON_GetArraySize(skip) > 16) return false;
+    if (locale && (!cJSON_IsString(locale) || !one_of(locale->valuestring, ACCOUNT_LOCALES))) return false;
+    if (!cJSON_GetArraySize(skip) && !locale) return false;
+    m->onb_skip = 0;
+    cJSON_ArrayForEach(step, skip) {
+        if (!is_int(step, 1, 255)) return false;
+        if (step->valuedouble < 16) m->onb_skip |= (uint16_t)(1u << (int)step->valuedouble);
+    }
+    if (locale) copy(m->onb_locale, sizeof(m->onb_locale), locale);
+    m->kind = YK_ACT_ONBOARDING_SET;
+    return true;
+}
+
+/** A colourway's name (packages/contracts buddy.ts COLORWAYS, only added to): 1 to 11 lower-case letters. Which of
+ *  them this firmware knows is the firmware's to say. */
+static bool colorway_ok(const char *s) {
+    const size_t n = strlen(s);
+    if (n < 1 || n > 11) return false;
+    for (size_t i = 0; i < n; i++)
+        if (s[i] < 'a' || s[i] > 'z') return false;
     return true;
 }
 
@@ -644,11 +942,46 @@ static bool parse_action(const cJSON *o, yk_srv_msg_t *m) {
         return true;
     }
     if (!strcmp(k, "screensaver.set")) return parse_saver_set(o, m);
+    if (!strcmp(k, "buddy.set")) return parse_buddy_set(o, m);
     if (!strcmp(k, "screensaver.preview")) {
         const cJSON *seconds = get(o, "seconds");
         if (!saver_image(o, m) || !is_int(seconds, 3, 30)) return false;
         m->kind = YK_ACT_SAVER_PREVIEW;
         m->seconds = (int)seconds->valuedouble;
+        return true;
+    }
+    if (!strcmp(k, "onboarding.set")) return parse_onboarding_set(o, m);
+    if (!strcmp(k, "find.ring")) {
+        const cJSON *seconds = get(o, "seconds");
+        if (!is_int(seconds, 5, 300)) return false;
+        m->kind = YK_ACT_FIND_RING;
+        m->seconds = (int)seconds->valuedouble;
+        return true;
+    }
+    if (!strcmp(k, "find.stop")) {  // `find`: the find.ring it stops, always named
+        const cJSON *find = get(o, "find");
+        if (!str_in(find, 1, 40)) return false;
+        m->kind = YK_ACT_FIND_STOP;
+        copy(m->find, sizeof(m->find), find);
+        return true;
+    }
+    if (!strcmp(k, "locale.set")) {  // as brightness.set, one field: the account's language, one of the four
+        const cJSON *locale = get(o, "locale");
+        if (!cJSON_IsString(locale) || !one_of(locale->valuestring, ACCOUNT_LOCALES)) return false;
+        copy(m->locale, sizeof(m->locale), locale);
+        m->kind = YK_ACT_LOCALE_SET;
+        return true;
+    }
+    if (!strcmp(k, "colorway.set")) {
+        const cJSON *colorway = get(o, "colorway");
+        if (!cJSON_IsString(colorway) || !colorway_ok(colorway->valuestring)) return false;
+        copy(m->colorway, sizeof(m->colorway), colorway);
+        m->kind = YK_ACT_COLORWAY_SET;
+        return true;
+    }
+    if (!strcmp(k, "folder.set")) {  // one app's grant after the App's switch (0.1.19, 方案 A)
+        if (!folder_grant(get(o, "grant"), &m->folder)) return false;
+        m->kind = YK_ACT_FOLDER_SET;
         return true;
     }
     m->kind = YK_ACT_UNKNOWN;  // a newer kind: the id is enough to say no
@@ -688,10 +1021,22 @@ static bool parse_into(const cJSON *o, yk_srv_msg_t *m) {
         // hello.ok with it.
         const cJSON *loc = get(owner, "locale");
         if (cJSON_IsString(loc) && locale_ok(loc->valuestring)) copy(m->owner_locale, sizeof(m->owner_locale), loc);
+        // The account's colour (0.1.19): optional too, and one that is not a name is left out.
+        const cJSON *colorway = get(owner, "colorway");
+        if (cJSON_IsString(colorway) && colorway_ok(colorway->valuestring))
+            copy(m->owner_colorway, sizeof(m->owner_colorway), colorway);
+        hello_folders(get(o, "folders"), m);  // the shared folders' grants (0.1.19): optional, never the hello.ok with it
+        // offlineNotes and binding (0.1.20): optional; one that is not one is left out (kept / not checked), never the
+        // hello.ok with it.
+        const cJSON *notes = get(o, "offlineNotes"), *binding = get(o, "binding");
+        m->offline_notes = cJSON_IsBool(notes) ? (int8_t)cJSON_IsTrue(notes) : -1;
+        if (cJSON_IsString(binding) && binding_ok(binding->valuestring)) copy(m->binding, sizeof(m->binding), binding);
         m->has_credits = true;  // credits is required here: an app reading has_credits gets it (#580)
         m->credits_remaining = (int)left->valuedouble;
         copy(m->reset_at, sizeof(m->reset_at), reset);
         m->dot = cJSON_IsTrue(dot);
+        // powerLog (0.1.20 4.10): optional; anything but true is off, never the hello.ok with it.
+        m->power_log = cJSON_IsTrue(get(o, "powerLog"));
         // nextReminderAt: optional; a value that is not a time leaves it not known, never the hello.ok with it.
         const cJSON *next = get(o, "nextReminderAt");
         m->next_reminder = -1;
@@ -733,6 +1078,20 @@ static bool parse_into(const cJSON *o, yk_srv_msg_t *m) {
         m->fix_line = kind && !strcmp(kind->valuestring, "fix");
         lang_field(get(o, "lang"), m);
         m->text = dup(text);
+        return m->text != NULL;
+    }
+    if (!strcmp(t, "offline.digest")) {
+        const cJSON *id = get(o, "id"), *counts = get(o, "counts"), *line = get(o, "line");
+        const cJSON *total = get(counts, "total"), *notes = get(counts, "notes"), *rem = get(counts, "reminders"),
+                    *untimed = get(counts, "untimed");
+        if (!cJSON_IsString(id) || !uuid_ok(id->valuestring) || !cJSON_IsObject(counts) || !is_int(total, 0, 1000) ||
+            !is_int(notes, 0, 1000) || !is_int(rem, 0, 1000) || !is_int(untimed, 0, 1000) || !str_in(line, 1, 200))
+            return false;
+        m->type = YK_SRV_OFFLINE_DIGEST;
+        copy(m->digest_id, sizeof(m->digest_id), id);
+        m->digest_total = (int)total->valuedouble, m->digest_notes = (int)notes->valuedouble;
+        m->digest_reminders = (int)rem->valuedouble, m->digest_untimed = (int)untimed->valuedouble;
+        m->text = dup(line);
         return m->text != NULL;
     }
     if (!strcmp(t, "app.records.ok")) {
@@ -821,12 +1180,26 @@ static bool parse_into(const cJSON *o, yk_srv_msg_t *m) {
     return false;
 }
 
+#ifdef ESP_PLATFORM
+static void *psram_alloc(size_t size) { return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
+#endif
+
 yk_srv_type_t yk_proto_parse(const char *json, size_t len, yk_srv_msg_t *out) {
     memset(out, 0, sizeof(*out));
     out->progress = -1.0f;
+#ifdef ESP_PLATFORM
+    // A long message's tree (a hello.ok with 64 grants: ~9 KB, hundreds of blocks) in PSRAM, not in internal RAM, where
+    // blocks this small go otherwise (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL), at the moment the session's TLS is new. The
+    // hooks are cJSON's one global, as Yay's store_parse sets them: free stays free(), which takes either heap's.
+    const bool big = len > YK_PROTO_PSRAM_FROM;
+    if (big) cJSON_InitHooks(&(cJSON_Hooks){.malloc_fn = psram_alloc});
+#endif
     cJSON *o = json ? cJSON_ParseWithLength(json, len) : NULL;
     const bool ok = o && parse_into(o, out);
     cJSON_Delete(o);
+#ifdef ESP_PLATFORM
+    if (big) cJSON_InitHooks(NULL);
+#endif
     if (!ok) {
         yk_proto_free(out);
         return YK_SRV_INVALID;
@@ -844,6 +1217,8 @@ yk_srv_type_t yk_proto_parse(const char *json, size_t len, yk_srv_msg_t *out) {
 
 void yk_proto_free(yk_srv_msg_t *m) {
     if (!m) return;
+    free(m->folders);
+    m->folders = NULL;
     free(m->text);
     cJSON_free(m->params);
     free(m->url);
@@ -894,7 +1269,7 @@ bool yk_proto_practice_merge(yk_srv_msg_t *into, yk_srv_msg_t *more) {
 const char *yk_proto_type_name(yk_srv_type_t type) {
     static const char *const names[] = {"invalid", "hello.ok", "stt.partial", "stt.final", "reply.line", "reply.end",
                                         "ui.state", "action", "inbox", "session.reauth", "error", "practice.turn",
-                                        "app.records.ok"};
+                                        "app.records.ok", "offline.digest"};
     return (unsigned)type < sizeof(names) / sizeof(names[0]) ? names[type] : "?";
 }
 

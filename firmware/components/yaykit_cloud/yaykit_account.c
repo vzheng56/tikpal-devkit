@@ -17,6 +17,7 @@
 #include "sdkconfig.h"
 #include "yaykit_link.h"
 #include "yk_codec.h"
+#include "yk_folder_net.h"
 #include "yk_http.h"
 #include "yk_locale.h"
 #include "yk_sign.h"
@@ -31,6 +32,7 @@ static const char *error = "";
 static char nickname[64];
 static char locale[8] = "zh";
 static bool have_key;
+static bool release_wanted;  // yk_acct `rel`: a factory reset's release not answered yet (11.4)
 static uint8_t private_key[YK_KEY_PRIVATE_BYTES], public_key[YK_KEY_PUBLIC_BYTES];
 static char token[512];
 static int64_t token_expires_us;
@@ -195,6 +197,7 @@ static bool sign_b64(const char *message, char *out, size_t size) {
  *  code, `unknown` set when the cloud answered DEVICE_NOT_ACTIVATED (it does not know this key as bound). */
 static const char *fetch_token(bool *unknown) {
     *unknown = false;
+    if (release_wanted) return "RELEASE_PENDING";  // that token would be the old owner's
     const char *device_id = yk_link_device_id();
     char json[400];
     snprintf(json, sizeof(json), "{\"deviceId\":\"%s\"}", device_id);
@@ -243,6 +246,59 @@ static bool bound_anyway(void) {
         if (unknown) return false;
     }
     return false;
+}
+
+static void release_keep(bool on) {
+    release_wanted = on;
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (on) nvs_set_u8(h, "rel", 1);
+    else nvs_erase_key(h, "rel");
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void yk_account_release_mark(void) { release_keep(true); }
+
+bool yk_account_release_pending(void) { return release_wanted; }
+
+esp_err_t yk_account_release(const char **code) {
+    if (code) *code = NULL;
+    if (!release_wanted) return ESP_OK;
+    if (!have_key) {  // nothing to sign with: nothing to say to the cloud, and no key the cloud could know
+        release_keep(false);
+        return ESP_OK;
+    }
+    if (yk_http_prepare(code) != ESP_OK) return ESP_FAIL;
+    const char *device_id = yk_link_device_id();
+    for (int attempt = 0; attempt < 2; attempt++) {
+        char json[400], nonce_text[96] = "", message[200], signature[128];
+        snprintf(json, sizeof(json), "{\"deviceId\":\"%s\"}", device_id);
+        yk_http_response_t res;
+        if (yk_http_json(HTTP_METHOD_POST, "/device/v1/token/challenge", NULL, json, &res) != ESP_OK) break;
+        cJSON *reply = res.status == 200 ? cJSON_Parse(res.body ? res.body : "") : NULL;
+        const cJSON *nonce = cJSON_GetObjectItemCaseSensitive(reply, "nonce");
+        if (cJSON_IsString(nonce)) snprintf(nonce_text, sizeof(nonce_text), "%s", nonce->valuestring);
+        cJSON_Delete(reply);
+        yk_http_free(&res);
+        if (!*nonce_text || !yk_release_message(device_id, nonce_text, message, sizeof(message)) ||
+            !sign_b64(message, signature, sizeof(signature)))
+            break;
+        snprintf(json, sizeof(json), "{\"deviceId\":\"%s\",\"nonce\":\"%s\",\"signature\":\"%s\"}", device_id, nonce_text,
+                 signature);
+        if (yk_http_json(HTTP_METHOD_POST, "/device/v1/release", NULL, json, &res) != ESP_OK) break;
+        const int status = res.status;
+        const char *why = status == 200 ? "" : yk_http_error_code(&res);
+        yk_http_free(&res);
+        // Released, or never added; or not the key it was added with, which nothing here can change: on to activating.
+        if (status == 200 || !strcmp(why, "SIGNATURE_INVALID")) {
+            release_keep(false);
+            return ESP_OK;
+        }
+        if (strcmp(why, "CHALLENGE_INVALID")) break;  // a stale nonce: once more; anything else waits for the next time
+    }
+    if (code) *code = "NETWORK";
+    return ESP_FAIL;
 }
 
 /** Activates with `claim`. Returns NULL or the failure code. */
@@ -305,14 +361,41 @@ static const char *activate_now(const char *claim_text) {
     return code;
 }
 
+/** yaykit_recstore's (Yay 0.1.20 开发文档 4.1 换主人时清): Yay's recordings that wait on the device are dropped when the
+ *  device leaves its owner or gets a new one. Linked weakly: a firmware without the component has nothing to drop. */
+void yk_rs_owner_changed(void) __attribute__((weak));
+
+static void owner_changed(void) {
+    if (yk_rs_owner_changed) yk_rs_owner_changed();
+}
+
 static void activate_task(void *arg) {
+    (void)arg;
+    const char *code = NULL;
+    if (yk_http_prepare(&code) == ESP_OK && yk_account_release(&code) == ESP_OK) code = activate_now(claim);
+    memset(claim, 0, sizeof(claim));
+    // Claimed: a new binding, so a new link key on the platform's side (device-link.ts: claimed again, by anyone, the
+    // key changes). What the unpaired mode kept was the binding before's, and forget() never saw it go when the claim
+    // came without the cloud's DEVICE_NOT_ACTIVATED first (the device removed in the app while it was off).
+    if (!code) yk_link_keys_forget();
+    if (!code) owner_changed();  // a new binding: nothing of the one before goes up under it
+    set_state(code ? YK_ACCOUNT_FAILED : YK_ACCOUNT_BOUND, code);
+    vTaskDelete(NULL);
+}
+
+/** Bluetooth off first, then the activation's own task: its 10 KB of stack beside Bluetooth's 31.6 KB, and the stop task
+ *  yk_link_ble_stop() makes from another core, would come to under the 40,000 bytes line. On NimBLE's core, so that the
+ *  stop runs here (#1259 the same way), with the 4 KB the stop has everywhere. */
+static void activate_after_link(void *arg) {
     (void)arg;
     // Let the {"state":"received"} reply reach the phone before Bluetooth goes off.
     vTaskDelay(pdMS_TO_TICKS(1500));
-    const char *code = NULL;
-    if (yk_http_prepare(&code) == ESP_OK) code = activate_now(claim);
-    memset(claim, 0, sizeof(claim));
-    set_state(code ? YK_ACCOUNT_FAILED : YK_ACCOUNT_BOUND, code);
+    if (yk_link_ble_active()) yk_link_ble_stop();
+    // Internal-RAM stack: TLS, signing and NVS writes happen here.
+    if (xTaskCreate(activate_task, "yk_activate", 10240, NULL, 5, NULL) != pdPASS) {
+        memset(claim, 0, sizeof(claim));
+        set_state(YK_ACCOUNT_FAILED, "NETWORK");
+    }
     vTaskDelete(NULL);
 }
 
@@ -336,13 +419,22 @@ static esp_err_t start_activation(const char *claim_text, const char **code) {
         return ESP_ERR_INVALID_STATE;
     }
     changed();
-    // Internal-RAM stack: TLS, signing and NVS writes happen here.
-    if (xTaskCreate(activate_task, "yk_activate", 10240, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(activate_after_link, "yk_act_link", 4096, NULL, 5, NULL, yk_link_ble_core()) != pdPASS) {
+        memset(claim, 0, sizeof(claim));
         set_state(YK_ACCOUNT_FAILED, "NETWORK");
         *code = "NO_MEMORY";
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+bool yk_account_recover(void) {
+    if (state != YK_ACCOUNT_UNBOUND || !have_key || release_wanted) return false;
+    if (yk_http_prepare(NULL) != ESP_OK || !bound_anyway()) return false;
+    save_binding(true);  // the owner's name and language come with the next hello or /me
+    owner_changed();     // bound by an activation whose answer was lost: a new binding all the same
+    set_state(YK_ACCOUNT_BOUND, NULL);
+    return true;
 }
 
 static void forget(void) {
@@ -353,19 +445,71 @@ static void forget(void) {
     xSemaphoreGive(lock);
     kept_token_drop();
     save_binding(false);
+    yk_folder_net_forget();  // the shared folders' answers were this owner's: none is told to the next one
+    yk_link_keys_forget();   // the unpaired mode's link keys too: the old owner's phone could still open them
+    owner_changed();         // and the recordings Yay kept for them (yaykit_recstore)
     set_state(YK_ACCOUNT_UNBOUND, NULL);
+}
+
+/** The unpaired mode's link key for this device and this app (device-link.ts: GET /device/v1/link-key with the app's
+ *  token). Only yaykit_link calls it (yk_link_unpaired_refresh(), a weak reference, so it lives here, in the file
+ *  every firmware with yaykit_cloud links): no public header declares it and the review blocks it, so an app never
+ *  holds a key. ESP_FAIL: no network; ESP_ERR_INVALID_RESPONSE: the platform said no, or nonsense. */
+esp_err_t yk_api_link_key_fetch(uint32_t *kid, uint8_t key[32]);
+esp_err_t yk_api_link_key_fetch(uint32_t *kid, uint8_t key[32]) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        char bearer[512];
+        const char *code = NULL;
+        if (yk_account_token(bearer, sizeof(bearer), &code) != ESP_OK)
+            return code && !strcmp(code, "NETWORK") ? ESP_FAIL : ESP_ERR_INVALID_RESPONSE;
+        yk_http_response_t res;
+        const esp_err_t sent = yk_http_json(HTTP_METHOD_GET, "/device/v1/link-key", bearer, NULL, &res);
+        memset(bearer, 0, sizeof(bearer));
+        if (sent != ESP_OK) return ESP_FAIL;
+        if (res.status == 200) {
+            cJSON *reply = cJSON_Parse(res.body ? res.body : "");
+            const cJSON *k = cJSON_GetObjectItemCaseSensitive(reply, "kid");
+            const cJSON *text = cJSON_GetObjectItemCaseSensitive(reply, "key");
+            bool ok = cJSON_IsNumber(k) && k->valuedouble >= 1 && k->valuedouble <= 4294967295.0 &&
+                      cJSON_IsString(text) && strlen(text->valuestring) == 43 &&
+                      yk_b64url_decode(text->valuestring, key, 32) == 32;
+            if (ok) *kid = (uint32_t)k->valuedouble;
+            if (cJSON_IsString(text)) memset(text->valuestring, 0, strlen(text->valuestring));
+            cJSON_Delete(reply);
+            if (res.body) memset(res.body, 0, res.len);
+            yk_http_free(&res);
+            if (!ok) memset(key, 0, 32);
+            return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+        }
+        code = yk_http_error_code(&res);
+        const int status = res.status;
+        yk_http_free(&res);
+        if (status == 401 && !strcmp(code, "TOKEN_EXPIRED")) {
+            yk_account_token_expired();
+            continue;  // once more with a new token
+        }
+        if (status == 401 && !strcmp(code, "DEVICE_NOT_ACTIVATED")) yk_account_unbound_by_server();
+        ESP_LOGW(TAG, "link key: %d %s", status, code);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_ERR_INVALID_RESPONSE;
 }
 
 esp_err_t yk_account_init(const yk_account_config_t *config) {
     if (!config || !config->app_slug || !config->app_version || !config->board) return ESP_ERR_INVALID_ARG;
     cfg = *config;
     yk_http_set_app(cfg.app_slug, cfg.app_version);
+    yk_folder_net_offer();  // the shared folders' grants at the service, to yaykit_tf when the firmware has it
     if (!lock) lock = xSemaphoreCreateMutex();
     if (!lock) return ESP_ERR_NO_MEM;
     nvs_handle_t h;
     uint8_t bound = 0;
+    release_wanted = false;
     if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
         nvs_get_u8(h, "bound", &bound);
+        uint8_t rel = 0;
+        nvs_get_u8(h, "rel", &rel);
+        release_wanted = rel;
         size_t len = sizeof(nickname);
         if (nvs_get_str(h, "nick", nickname, &len) != ESP_OK) nickname[0] = 0;
         len = sizeof(locale);

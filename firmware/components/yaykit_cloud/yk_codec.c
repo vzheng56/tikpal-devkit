@@ -22,11 +22,52 @@ size_t yk_b64url_encode(const uint8_t *in, size_t len, char *out, size_t out_siz
     return o;
 }
 
+static int b64url_value(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '-') return 62;
+    if (c == '_') return 63;
+    return -1;
+}
+
+size_t yk_b64url_decode(const char *in, uint8_t *out, size_t out_size) {
+    if (!in || !out) return 0;
+    const size_t len = strlen(in);
+    if (len % 4 == 1) return 0;
+    const size_t need = len / 4 * 3 + (len % 4 ? len % 4 - 1 : 0);
+    if (out_size < need) return 0;
+    size_t o = 0;
+    uint32_t v = 0;
+    for (size_t i = 0; i < len; i++) {
+        const int d = b64url_value(in[i]);
+        if (d < 0) return 0;
+        v = v << 6 | (uint32_t)d;
+        if (i % 4 == 3) {
+            out[o++] = (uint8_t)(v >> 16), out[o++] = (uint8_t)(v >> 8), out[o++] = (uint8_t)v;
+            v = 0;
+        }
+    }
+    if (len % 4 == 2) {
+        if (v & 0x0f) return 0;  // bits past the last byte
+        out[o++] = (uint8_t)(v >> 4);
+    } else if (len % 4 == 3) {
+        if (v & 0x03) return 0;
+        out[o++] = (uint8_t)(v >> 10), out[o++] = (uint8_t)(v >> 2);
+    }
+    return o;
+}
+
 /** snprintf's result as a length, or 0 when the text did not fit. */
 static size_t fitted(size_t size, int n) { return n > 0 && (size_t)n < size ? (size_t)n : 0; }
 
 size_t yk_activation_message(const char *device_id, const char *claim, char *out, size_t size) {
     return fitted(size, snprintf(out, size, "yaykit-activate:v1:%s:%s", device_id, claim));
+}
+
+size_t yk_release_message(const char *device_id, const char *nonce, char *out, size_t size) {
+    const int n = snprintf(out, size, "yaykit-release:v1:%s:%s", device_id, nonce);
+    return n > 0 && (size_t)n < size ? (size_t)n : 0;
 }
 
 size_t yk_token_message(const char *device_id, const char *app, const char *nonce, char *out, size_t size) {

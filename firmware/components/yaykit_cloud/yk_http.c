@@ -44,6 +44,11 @@ esp_err_t yk_http_prepare(const char **code) {
         if (code) *code = "NO_WIFI";
         return ESP_ERR_TIMEOUT;
     }
+    // Bluetooth came on during that wait (up to 20 s): this phone has not had its turn, and it is here to set Wi-Fi up.
+    if (yk_link_ble_active()) {
+        if (code) *code = "LINK";
+        return ESP_ERR_INVALID_STATE;
+    }
     return ESP_OK;
 }
 
@@ -56,8 +61,8 @@ esp_http_client_handle_t yk_http_client(const char *path, esp_http_client_method
         .method = method,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = timeout_ms,
-        .buffer_size = 2048,
-        .buffer_size_tx = 1536,
+        .buffer_size = YK_HTTP_BUFFER(2048),
+        .buffer_size_tx = YK_HTTP_BUFFER(1536),
         .keep_alive_enable = false,
         .event_handler = yk_http_on_event,
     };

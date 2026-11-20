@@ -70,7 +70,7 @@ void yk_notice_show(yk_notice_line_t *line, yk_notice_t notice, yk_yay_t *yay, y
     }
     if (yay && notice != YK_NOTICE_BATTERY_LOW) yk_yay_pose(yay, s->pose, FADE_MS);
     if (!line) return;
-    const char *text = override ? override : (english ? s->en : s->zh);
+    const char *text = override ? override : yk_notice_text(notice, english);
     if (!text || !text[0]) {
         fade(line->label, LV_OPA_TRANSP);
         return;

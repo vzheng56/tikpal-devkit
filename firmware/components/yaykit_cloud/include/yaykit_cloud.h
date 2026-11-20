@@ -1,6 +1,7 @@
 // Device API client for first-party firmware (services/device). HTTPS with the certificate bundle; every call
 // turns Bluetooth off first and waits for Wi-Fi. Error codes are stable strings for the UI:
-//   NO_WIFI, NETWORK, DEVICE_NOT_ACTIVATED, CREDITS_EXHAUSTED, RATE_LIMITED, VOICE_BUSY, SERVICE_BUSY,
+//   NO_WIFI, LINK (Bluetooth came on while it waited for Wi-Fi: nothing sent), NETWORK, DEVICE_NOT_ACTIVATED,
+//   CREDITS_EXHAUSTED, RATE_LIMITED, VOICE_BUSY, SERVICE_BUSY,
 //   CONTENT_BLOCKED, OPERATION_NOT_ALLOWED, AUDIO, SERVER.
 // Level 2 (YK_CLOUD_API_LEVEL, the device API v1 of docs/design/yay-device.md §13.4) adds a function per capability and
 // gives their refusals as the API names them (yk_api_code: FILE_GONE, VERSION_CONFLICT…). Check a capability with
@@ -115,6 +116,8 @@ esp_err_t yk_cloud_inbox(const char *since, yk_cloud_inbox_fn on_item, void *ctx
                          const char **code);
 /** POST /device/v1/status with a report ({firmware:{slug,version}, battery, wifi, storage, slots}). */
 esp_err_t yk_cloud_status(const cJSON *report, const char **code);
+/** The same with the report as text: nothing of a cJSON tree is alive during the request's TLS. */
+esp_err_t yk_cloud_status_text(const char *json, const char **code);
 
 /** Whether the cloud got through lately, for the system pull-down's 「连不上服务器」 (docs/delivery/2026-11-02-system-
  *  pulldown.md 8): every HTTPS connection yaykit_cloud opens (the API, the account's tokens, file parts, downloads)
@@ -135,8 +138,44 @@ esp_err_t yk_cloud_apps(const char *layout, const char *lang, char **json, const
  *  sent as they are: letters, digits, '.', '-', '_' only (else BAD_REQUEST). One request against the device API's 20
  *  a minute. */
 esp_err_t yk_cloud_updates(const char *slug, const char *version, const char *layout, char **json, const char **code);
+/** GET /device/v1/resources?slug=&version=&layout= (Yay 0.1.18 开发文档 4.2, the contract's resourcesAnswer): what the
+ *  release running reads outside its image, `{"resources": [{kind, partition, offset, size, sha256, url}]}` (at most 4,
+ *  an empty list for a version it does not know), into *json (PSRAM; free() it). Yay asks only when its Pip's place does
+ *  not hold its own file. As yk_cloud_updates: safe characters only (else BAD_REQUEST), one request; NOT_FOUND from a
+ *  device service from before it. Yay from 0.1.18; extensions have no use for it. */
+esp_err_t yk_cloud_resources(const char *slug, const char *version, const char *layout, char **json, const char **code);
+/** GET /device/v1/figures (Yay 0.1.18 开发文档 2.4, 4.9; packages/contracts/src/device-api.ts figuresAnswer): the buddies'
+ *  picture packs, for Yay to keep on its card, the body ({"figures": [{buddy, theme, size, sha256, url}]}, at most 16)
+ *  into *json (PSRAM; free() it). One request, no query; NOT_FOUND from a device service from before it. Yay from 0.1.18;
+ *  extensions have no use for it. */
+esp_err_t yk_cloud_figures(char **json, const char **code);
+/** GET /device/v1/library?lang= (Yay 0.1.19 开发文档 2.2, 4.5; packages/contracts/src/device-api.ts libraryAnswer): the
+ *  factory library Yay puts into the shared folders by itself, the body ({"revision", "items": [{id, folder, name, lang,
+ *  size, sha256, url}]}, at most 32) into *json (PSRAM; free() it). `lang`: the account's language tag (letters, digits
+ *  and '-', at most 15; else BAD_REQUEST). One request; NOT_FOUND from a device service from before it. Yay from 0.1.19;
+ *  extensions have no use for it. */
+esp_err_t yk_cloud_library(const char *lang, char **json, const char **code);
+/** GET /device/v1/prepare?yay=&layout= (docs/delivery/2026-11-06-固件公共能力.md 3.6): what this device should have ready, the
+ *  body ({"items": [{slug, version, size, sha256, url, signature}]}, at most 16) into *json (PSRAM; free() it). `yay` the Yay
+ *  running; `layout` NULL: yaykit-v1. As yk_cloud_updates: safe characters only (else BAD_REQUEST), one request. */
+esp_err_t yk_cloud_prepare(const char *yay, const char *layout, char **json, const char **code);
 /** GET a small public file (an app's round-screen icon, /device/v1/apps iconFile.url) from the asset host: https only,
  *  no token, not the device API (not in its 20 requests a minute). At most `size` bytes into `buf`, their count in
  *  *len. Codes: BAD_URL (not https), NO_WIFI, NETWORK, SERVER (not 200), TOO_BIG (more than `size`). The caller checks
  *  what it got (its sha256). */
 esp_err_t yk_cloud_get(const char *url, uint8_t *buf, size_t size, size_t *len, int timeout_ms, const char **code);
+/** The same for a file that takes a while (a buddy's picture pack, 628 KB): `go_on` (NULL: never stops) is asked before
+ *  connecting and every 4 KB after, and when it says no the connection closes there: code STOPPED, `*len` what came so far.
+ *  A read that stalls is only left when `timeout_ms` is up. */
+esp_err_t yk_cloud_get_while(const char *url, uint8_t *buf, size_t size, size_t *len, int timeout_ms,
+                             bool (*go_on)(void *ctx), void *ctx, const char **code);
+/** Where yk_cloud_get_to() hands each piece: `at` is the piece's place in the file. False stops it (code WRITE). */
+typedef bool (*yk_cloud_piece_fn)(void *ctx, uint64_t at, const uint8_t *data, size_t len);
+/** The same for a file too big for memory (a factory library item, Yay 0.1.19 开发文档 4.5): from byte `from` on (a
+ *  Range request when it is not 0), read into `buf` (`size` bytes, 4 KB is plenty) and handed to `piece` as it comes,
+ *  `go_on` (NULL: never stops) asked before connecting and before every read. A server that sends the whole file anyway
+ *  (200 to a Range) starts at 0: its first piece says `at` 0, and the caller starts its file again. `*got`: the bytes
+ *  handed over. https only, no token, not the device API. Codes: BAD_URL, NO_WIFI, NETWORK, SERVER (not 200 or 206, or a
+ *  206 from elsewhere than `from`), STOPPED, WRITE. The caller checks what it got (its size and sha256). */
+esp_err_t yk_cloud_get_to(const char *url, uint64_t from, uint8_t *buf, size_t size, yk_cloud_piece_fn piece,
+                          bool (*go_on)(void *ctx), void *ctx, int timeout_ms, uint64_t *got, const char **code);

@@ -77,9 +77,17 @@ static const yk_proto_saver_t *saver_of(const cJSON *v, yk_proto_saver_t *out) {
     return out;
 }
 
+/** A buddy object (prefs.buddy, action.done's) as the firmware holds it; NULL when there is none. */
+static const yk_proto_buddy_t *buddy_of(const cJSON *v, yk_proto_buddy_t *out) {
+    if (!v) return NULL;
+    *out = (yk_proto_buddy_t){.id = str(v, "id"), .sha256 = str(v, "sha256")};
+    return out;
+}
+
 /** Builds the device message the way the firmware does, from the fixture's fields. NULL when the builder refuses. */
 static char *build(const cJSON *m) {
     yk_proto_saver_t saver;
+    yk_proto_buddy_t buddy;
     const char *type = str(m, "type");
     if (!strcmp(type, "hello")) {
         const cJSON *practice = cJSON_GetObjectItemCaseSensitive(m, "practice");
@@ -109,6 +117,14 @@ static char *build(const cJSON *m) {
             h.brightness = (int)num(prefs, "brightness", -1);
             h.screen_off_s = (int)num(prefs, "screenOff", -1);
             h.saver = saver_of(cJSON_GetObjectItemCaseSensitive(prefs, "screensaver"), &saver);
+            h.buddy = buddy_of(cJSON_GetObjectItemCaseSensitive(prefs, "buddy"), &buddy);
+        }
+        const cJSON *onb = cJSON_GetObjectItemCaseSensitive(m, "onboarding");
+        if (onb) {
+            h.onboarding_step = (int)num(onb, "step", -1);
+            if (!h.onboarding_step) h.onboarding_step = -1;  // the field's 0 is no onboarding at all: this is a bad one
+            h.onboarding_finished = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(onb, "finished"));
+            if (!cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(onb, "finished"))) return NULL;  // Yay always says it
         }
         const char *cap_list[33];
         if (caps) {
@@ -118,9 +134,40 @@ static char *build(const cJSON *m) {
         }
         return yk_proto_hello(&h);
     }
+    const cJSON *clock = cJSON_GetObjectItemCaseSensitive(m, "clock");
+    if (!strcmp(type, "listen.start") && clock) {  // a turn said offline (0.1.20): as yay_run.c builds it
+        const cJSON *sync = cJSON_GetObjectItemCaseSensitive(clock, "lastSync"), *now = cJSON_GetObjectItemCaseSensitive(clock, "now");
+        if (!now || !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m, "held"))) return NULL;  // the firmware always has both
+        yk_proto_clock_t c = {.at = {(uint32_t)num(clock, "bootId", -1), (uint64_t)num(clock, "monoMs", -1)},
+                              .now = {(uint32_t)num(now, "bootId", -1), (uint64_t)num(now, "monoMs", -1)}};
+        if (num(clock, "bootId", -1) > 4294967295.0 || num(now, "bootId", -1) > 4294967295.0) return NULL;  // past uint32
+        if (sync) {
+            c.has_sync = true;
+            c.sync = (yk_proto_mono_t){(uint32_t)num(sync, "bootId", -1), (uint64_t)num(sync, "monoMs", -1)};
+            c.sync_at = str(sync, "at");
+        }
+        return yk_proto_listen_start_note_live(str(m, "turn"), (int)num(m, "preroll", -1), str(m, "recordedAt"), &c,
+                                               str(m, "liveTurn"));
+    }
     if (!strcmp(type, "listen.start"))
         return yk_proto_listen_start_ex(str(m, "turn"), (int)num(m, "preroll", -1), str(m, "side"),
                                         cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m, "held")));
+    if (!strcmp(type, "offline.digest.say")) return yk_proto_offline_digest_say(str(m, "id"));
+    if (!strcmp(type, "onboarding.step")) {
+        yk_proto_onb_report_t reports[YK_PROTO_ONB_REPORTS_MAX + 2] = {0};
+        int n = 0;
+        const cJSON *r;
+        cJSON_ArrayForEach(r, cJSON_GetObjectItemCaseSensitive(m, "steps")) {
+            if (n > YK_PROTO_ONB_REPORTS_MAX) break;
+            const cJSON *step = cJSON_GetObjectItemCaseSensitive(r, "step"), *seconds = cJSON_GetObjectItemCaseSensitive(r, "seconds");
+            const cJSON *item = cJSON_GetObjectItemCaseSensitive(r, "item");
+            if (!cJSON_IsNumber(step) || !cJSON_IsNumber(seconds) || seconds->valuedouble < 0 || (item && !item->valuedouble))
+                return NULL;  // as the firmware holds them: a number, never below 0, an item from 1 (0 is none)
+            reports[n++] = (yk_proto_onb_report_t){.step = step->valueint, .item = (int)num(r, "item", 0),
+                                                   .result = str(r, "result"), .seconds = (uint32_t)seconds->valuedouble};
+        }
+        return yk_proto_onboarding_step(reports, n, str(m, "locale"));
+    }
     if (!strcmp(type, "pair.set")) return yk_proto_pair_set(str(m, "pair"));
     if (!strcmp(type, "translate.text")) return yk_proto_translate_text(str(m, "turn"), str(m, "text"), str(m, "from"));
     if (!strcmp(type, "practice.open")) return yk_proto_practice_open(str(m, "why"));
@@ -148,6 +195,8 @@ static char *build(const cJSON *m) {
         // kind is only sent again for an install from an earlier session, value only for a setting: never both.
         if (str(m, "kind")) return yk_proto_action_done_kind(str(m, "id"), ok, str(m, "error"), str(m, "kind"));
         // screensaver.set's: the screensaver Yay uses after it
+        const cJSON *shows = cJSON_GetObjectItemCaseSensitive(m, "buddy");
+        if (shows) return yk_proto_action_done_buddy(str(m, "id"), ok, str(m, "error"), buddy_of(shows, &buddy));
         const cJSON *uses = cJSON_GetObjectItemCaseSensitive(m, "screensaver");
         if (uses)
             return yk_proto_action_done_saver(str(m, "id"), ok, str(m, "error"), (int)num(m, "value", -1),
@@ -155,8 +204,9 @@ static char *build(const cJSON *m) {
         return yk_proto_action_done_value(str(m, "id"), ok, str(m, "error"), (int)num(m, "value", -1));
     }
     if (!strcmp(type, "prefs"))
-        return yk_proto_prefs_saver((int)num(m, "volume", -1), (int)num(m, "brightness", -1), (int)num(m, "screenOff", -1),
-                                    saver_of(cJSON_GetObjectItemCaseSensitive(m, "screensaver"), &saver));
+        return yk_proto_prefs_all((int)num(m, "volume", -1), (int)num(m, "brightness", -1), (int)num(m, "screenOff", -1),
+                                  saver_of(cJSON_GetObjectItemCaseSensitive(m, "screensaver"), &saver),
+                                  buddy_of(cJSON_GetObjectItemCaseSensitive(m, "buddy"), &buddy));
     if (!strcmp(type, "app.result")) {
         char *data = cJSON_PrintUnformatted(cJSON_GetObjectItemCaseSensitive(m, "data"));
         char *out = yk_proto_app_result(str(m, "slug"), data);
@@ -170,6 +220,7 @@ static char *build(const cJSON *m) {
                                (uint32_t)num(m, "heapMin", 0));
     }
     if (!strcmp(type, "auth")) return yk_proto_auth(str(m, "token"));
+    if (!strcmp(type, "find.stopped")) return yk_proto_find_stopped(str(m, "id"), str(m, "by"));
     return yk_proto_turn_message(type, str(m, "turn"));  // listen.stop, listen.cancel, playback.stop (or refused)
 }
 
@@ -199,6 +250,19 @@ static void test_device(const cJSON *cases, bool valid) {
     }
 }
 
+/** The firmware's grant says what the fixture's does (app, state, the kinds as bits, rev). */
+static bool folder_is(const yk_proto_folder_t *f, const cJSON *g) {
+    static const char *const KINDS[] = {"music", "stories", "pictures", "documents"};
+    unsigned bits = 0;
+    const cJSON *k;
+    cJSON_ArrayForEach(k, cJSON_GetObjectItemCaseSensitive(g, "folders"))
+        for (int i = 0; i < 4; i++)
+            if (cJSON_IsString(k) && !strcmp(k->valuestring, KINDS[i])) bits |= 1u << i;
+    const cJSON *rev = cJSON_GetObjectItemCaseSensitive(g, "rev");
+    return f && g && !strcmp(f->app, str(g, "app")) && f->state == (!strcmp(str(g, "state"), "granted") ? 1 : 2) &&
+           f->folders == bits && cJSON_IsNumber(rev) && f->rev == (uint32_t)rev->valuedouble;
+}
+
 static void test_server(const cJSON *cases, bool valid) {
     const cJSON *c;
     cJSON_ArrayForEach(c, cases) {
@@ -213,8 +277,29 @@ static void test_server(const cJSON *cases, bool valid) {
         const bool lenient = !strcmp(name, "an unknown error code");
         // Older servers sent brightness "auto": read, and answered UNSUPPORTED (no light sensor).
         const bool auto_brightness = !strcmp(name, "automatic brightness (no light sensor)");
+        // A colour COLORWAYS does not have yet (0.1.19): the schema calls it invalid, the device reads it and keeps its
+        // own accent (colorway.set answered UNSUPPORTED; hello.ok kept), so that a later colour never costs a session.
+        const bool later_colour = !strcmp(name, "follow: a colour not in COLORWAYS"),
+                   later_colour_hello = !strcmp(name, "follow: hello.ok with a colour not in COLORWAYS");
+        // The shared folders' (0.1.19, the folder group): a grant with a field more is a newer server's, and read; a
+        // hello.ok whose folders are no list the device takes (null, an app twice, more than 64) is the hello.ok still,
+        // its folders not taken (the check goes by GET), never the session with it.
+        const bool folder_more = !valid && !strcmp(name, "folder: a grant with more than it has"),
+                   folder_hello = !valid && !strncmp(name, "folder: hello.ok", 16);
+        // hello.ok's binding (0.1.20) that is not one: the hello.ok still, the binding left out (the check skipped).
+        const bool binding_bad = !valid && !strncmp(name, "offline: a binding", 18);
         if (lenient) {
             CHECK_CASE(t == YK_SRV_ERROR && !strcmp(msg.code, "OOPS"), name);
+        } else if (later_colour) {
+            CHECK_CASE(t == YK_SRV_ACTION && msg.kind == YK_ACT_COLORWAY_SET && !strcmp(msg.colorway, str(m, "colorway")), name);
+        } else if (later_colour_hello) {
+            CHECK_CASE(t == YK_SRV_HELLO_OK, name);
+        } else if (folder_more) {
+            CHECK_CASE(t == YK_SRV_ACTION && msg.kind == YK_ACT_FOLDER_SET && msg.folder.rev > 0, name);
+        } else if (folder_hello) {
+            CHECK_CASE(t == YK_SRV_HELLO_OK && !msg.folders_given && !msg.folders, name);
+        } else if (binding_bad) {
+            CHECK_CASE(t == YK_SRV_HELLO_OK && !msg.binding[0], name);
         } else if (auto_brightness) {
             CHECK_CASE(t == YK_SRV_ACTION && msg.kind == YK_ACT_BRIGHTNESS && msg.level == -1 && msg.step == 0, name);
         } else if (valid) {
@@ -222,9 +307,45 @@ static void test_server(const cJSON *cases, bool valid) {
             CHECK_CASE(msg.text != NULL, name);
             const char *turn = str(m, "turn");
             CHECK_CASE(!turn || !strcmp(msg.turn, turn), name);
+            if (t == YK_SRV_ACTION && !strcmp(str(m, "kind"), "onboarding.set")) {  // as the fixture has it
+                unsigned want = 0;
+                const cJSON *step;
+                cJSON_ArrayForEach(step, cJSON_GetObjectItemCaseSensitive(m, "skip")) want |= 1u << step->valueint;
+                const char *loc = str(m, "locale");
+                CHECK_CASE(msg.kind == YK_ACT_ONBOARDING_SET && msg.onb_skip == want, name);
+                CHECK_CASE(!strcmp(msg.onb_locale, loc ? loc : ""), name);
+            }
             if (t == YK_SRV_HELLO_OK) {  // the account's language as the fixture has it (#545), "" without one
                 const char *loc = str(cJSON_GetObjectItemCaseSensitive(m, "owner"), "locale");
                 CHECK_CASE(!strcmp(msg.owner_locale, loc ? loc : ""), name);
+                const char *colorway = str(cJSON_GetObjectItemCaseSensitive(m, "owner"), "colorway");  // 0.1.19
+                CHECK_CASE(!strcmp(msg.owner_colorway, colorway ? colorway : ""), name);
+            }
+            if (t == YK_SRV_ACTION && !strcmp(str(m, "kind"), "locale.set"))  // 0.1.19, the follow group
+                CHECK_CASE(msg.kind == YK_ACT_LOCALE_SET && !strcmp(msg.locale, str(m, "locale")), name);
+            if (t == YK_SRV_ACTION && !strcmp(str(m, "kind"), "colorway.set"))
+                CHECK_CASE(msg.kind == YK_ACT_COLORWAY_SET && !strcmp(msg.colorway, str(m, "colorway")), name);
+            if (t == YK_SRV_ACTION && !strcmp(str(m, "kind"), "folder.set"))  // 0.1.19, the folder group
+                CHECK_CASE(msg.kind == YK_ACT_FOLDER_SET && folder_is(&msg.folder, cJSON_GetObjectItemCaseSensitive(m, "grant")), name);
+            if (t == YK_SRV_HELLO_OK) {  // the shared folders' whole list as the fixture has it, or none given
+                const cJSON *list = cJSON_GetObjectItemCaseSensitive(m, "folders");
+                CHECK_CASE(msg.folders_given == cJSON_IsArray(list), name);
+                CHECK_CASE(!list || msg.folder_count == cJSON_GetArraySize(list), name);
+                for (int i = 0; list && i < msg.folder_count; i++)
+                    CHECK_CASE(folder_is(&msg.folders[i], cJSON_GetArrayItem(list, i)), name);
+                // offlineNotes and binding (0.1.20): as the fixture has them, -1 / "" when left out
+                const cJSON *notes = cJSON_GetObjectItemCaseSensitive(m, "offlineNotes");
+                const char *binding = str(m, "binding");
+                CHECK_CASE(msg.offline_notes == (cJSON_IsBool(notes) ? cJSON_IsTrue(notes) : -1), name);
+                CHECK_CASE(!strcmp(msg.binding, binding ? binding : ""), name);
+            }
+            if (t == YK_SRV_OFFLINE_DIGEST) {  // 0.1.20: its id, what it made, its line
+                const cJSON *counts = cJSON_GetObjectItemCaseSensitive(m, "counts");
+                CHECK_CASE(!strcmp(msg.digest_id, str(m, "id")) && !strcmp(msg.text, str(m, "line")), name);
+                CHECK_CASE(msg.digest_total == (int)num(counts, "total", -1) && msg.digest_notes == (int)num(counts, "notes", -1) &&
+                               msg.digest_reminders == (int)num(counts, "reminders", -1) &&
+                               msg.digest_untimed == (int)num(counts, "untimed", -1),
+                           name);
             }
         } else {
             CHECK_CASE(t == YK_SRV_INVALID, name);
@@ -263,6 +384,23 @@ static void test_fields(void) {
                  reminders[i].json);
         CHECK(parse(hello, &m) == YK_SRV_HELLO_OK);
         CHECK(m.next_reminder == reminders[i].want && (reminders[i].want != 1 || m.next_reminder_ms == reminders[i].ms));
+        yk_proto_free(&m);
+    }
+    // powerLog (0.1.20 4.10, 测试员计划): true turns the report's extra fields on; left out, false or anything else is off,
+    // the hello.ok kept all the same.
+    static const struct {
+        const char *json;
+        bool want;
+    } power[] = {{",\"powerLog\":true", true}, {",\"powerLog\":false", false}, {"", false},
+                 {",\"powerLog\":\"true\"", false}, {",\"powerLog\":1", false}, {",\"powerLog\":null", false}};
+    for (size_t i = 0; i < sizeof(power) / sizeof(power[0]); i++) {
+        char hello[320];
+        snprintf(hello, sizeof(hello),
+                 "{\"type\":\"hello.ok\",\"session\":\"s1\",\"time\":1792310400000,\"owner\":{\"nickname\":\"n\"},"
+                 "\"credits\":{\"remaining\":10,\"resetAt\":\"2026-11-15T16:00:00.000Z\"},\"dot\":false%s}",
+                 power[i].json);
+        yk_srv_msg_t m;
+        CHECK(parse(hello, &m) == YK_SRV_HELLO_OK && m.power_log == power[i].want);
         yk_proto_free(&m);
     }
     // owner.locale (#545): kept as said; a value a device would not keep is left out, the hello.ok kept all the same
@@ -521,6 +659,56 @@ static void test_practice_parts(const cJSON *valid) {
     cJSON_free((void *)second);
 }
 
+static void test_buddy(void) {
+    yk_srv_msg_t m;
+    const char *sha = "9e3b7f1d5a0c8e2f6b4d1a7c3e9f5b0d2c8a6e4f1b7d3a9c5e0f2b8d6a4c1e7f";
+    // What the loop takes: the buddy, and its pack in the fields a download has.
+    CHECK(parse("{\"type\":\"action\",\"id\":\"a21\",\"kind\":\"buddy.set\",\"buddy\":\"mote\",\"pack\":{\"url\":"
+                "\"https://x.dev/mote-sage-1.ykfig\",\"sha256\":\"9e3b7f1d5a0c8e2f6b4d1a7c3e9f5b0d2c8a6e4f1b7d3a9c5e0f2b8d6a4c1e7f\","
+                "\"size\":643072}}", &m) == YK_SRV_ACTION);
+    CHECK(m.kind == YK_ACT_BUDDY_SET && !strcmp(m.buddy, "mote") && !strcmp(m.action_id, "a21"));
+    CHECK(m.size == 643072 && !strcmp(m.sha256, sha) && !strcmp(m.url, "https://x.dev/mote-sage-1.ykfig"));
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"a22\",\"kind\":\"buddy.set\",\"buddy\":\"pip\"}", &m) == YK_SRV_ACTION);
+    CHECK(m.kind == YK_ACT_BUDDY_SET && !strcmp(m.buddy, "pip") && !m.url && !m.size);
+    yk_proto_free(&m);
+    // A newer field in the pack is read past.
+    CHECK(parse("{\"type\":\"action\",\"id\":\"a21\",\"kind\":\"buddy.set\",\"buddy\":\"dial\",\"pack\":{\"url\":"
+                "\"https://x.dev/d\",\"sha256\":\"9e3b7f1d5a0c8e2f6b4d1a7c3e9f5b0d2c8a6e4f1b7d3a9c5e0f2b8d6a4c1e7f\","
+                "\"size\":1,\"art\":2}}", &m) == YK_SRV_ACTION);
+    yk_proto_free(&m);
+    // A pack that is null is no pack; the buddy is not a number.
+    CHECK(parse("{\"type\":\"action\",\"id\":\"a21\",\"kind\":\"buddy.set\",\"buddy\":\"pip\",\"pack\":null}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"a21\",\"kind\":\"buddy.set\",\"buddy\":4}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+
+    // What Yay says it shows: Pip without a sha256, a pack with its own, hello, prefs and action.done alike.
+    const yk_proto_buddy_t pip = {.id = "pip"}, dial = {.id = "dial", .sha256 = sha};
+    char *p = yk_proto_prefs_all(6, 8, 30, NULL, &pip);
+    CHECK(p && strstr(p, "\"buddy\":{\"id\":\"pip\"}"));
+    cJSON_free(p);
+    p = yk_proto_prefs_all(6, 8, 30, NULL, &dial);
+    CHECK(p && strstr(p, "\"buddy\":{\"id\":\"dial\",\"sha256\":\"9e3b7f"));
+    cJSON_free(p);
+    p = yk_proto_prefs_all(6, 8, 30, NULL, NULL);  // a firmware without the cap: as before
+    CHECK(p && !strstr(p, "buddy"));
+    cJSON_free(p);
+    p = yk_proto_action_done_buddy("a21", false, "BUSY", &dial);
+    CHECK(p && strstr(p, "\"error\":\"BUSY\"") && strstr(p, "\"buddy\":{\"id\":\"dial\"") && !strstr(p, "value"));
+    cJSON_free(p);
+    p = yk_proto_action_done_buddy("a21", true, NULL, NULL);
+    CHECK(p && !strstr(p, "buddy"));
+    cJSON_free(p);
+    const yk_proto_buddy_t later = {.id = "new-friend-2"}, odd = {.id = "Dial"}, short_sha = {.id = "dial", .sha256 = "abc"};
+    p = yk_proto_prefs_all(6, 8, 30, NULL, &later);  // any id of the contract's shape
+    CHECK(p != NULL);
+    cJSON_free(p);
+    CHECK(!yk_proto_prefs_all(6, 8, 30, NULL, &odd) && !yk_proto_action_done_buddy("a1", true, NULL, &short_sha));
+    CHECK(yk_proto_buddy_id_ok("pip") && !yk_proto_buddy_id_ok("p") && !yk_proto_buddy_id_ok(NULL) &&
+          !yk_proto_buddy_id_ok("9lives") && !yk_proto_buddy_id_ok("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+}
+
 static void test_saver(void) {
     yk_srv_msg_t m;
     // Everything, a catalog image: what to change, and the image to fetch.
@@ -614,6 +802,256 @@ static void test_backoff(void) {
     CHECK(yk_proto_backoff_ms(-1, 0) == 750 && yk_proto_backoff_ms(1000, 0) == 22500);
 }
 
+/** Yay 0.1.19 (开发文档 2.5, 4.7): locale.set and colorway.set, and hello.ok's owner.colorway. Until the contract has
+ *  their samples (the contract session's PR), these are the shapes the 开发文档 gives: as brightness.set, one field. */
+static void test_follow(void) {
+    yk_srv_msg_t m;
+    static const struct {
+        const char *json;
+        bool ok;
+        const char *want;
+    } locales[] = {
+        {"\"ja\"", true, "ja"},   {"\"es-419\"", true, "es-419"}, {"\"zh-Hans\"", true, "zh-Hans"}, {"\"en\"", true, "en"},
+        {"\"zh\"", false, ""},    {"\"fr\"", false, ""},          {"5", false, ""},                {"null", false, ""},
+    };
+    for (size_t i = 0; i < sizeof(locales) / sizeof(locales[0]); i++) {
+        char json[160];
+        snprintf(json, sizeof(json), "{\"type\":\"action\",\"id\":\"l1\",\"kind\":\"locale.set\",\"locale\":%s}",
+                 locales[i].json);
+        const yk_srv_type_t t = parse(json, &m);
+        CHECK(locales[i].ok ? t == YK_SRV_ACTION && m.kind == YK_ACT_LOCALE_SET && !strcmp(m.locale, locales[i].want) &&
+                                  !strcmp(m.action_id, "l1")
+                            : t == YK_SRV_INVALID);
+        yk_proto_free(&m);
+    }
+    CHECK(parse("{\"type\":\"action\",\"id\":\"l2\",\"kind\":\"locale.set\"}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    // A colour's name: the five, and a later one too (the firmware answers it UNSUPPORTED); not a name, invalid.
+    static const struct {
+        const char *json;
+        bool ok;
+        const char *want;
+    } colors[] = {
+        {"\"original\"", true, "original"}, {"\"honey\"", true, "honey"},  {"\"cocoa\"", true, "cocoa"},
+        {"\"lavender\"", true, "lavender"}, {"\"Sage\"", false, ""},       {"\"\"", false, ""},
+        {"\"twelveletter\"", false, ""},    {"\"sage-2\"", false, ""},     {"3", false, ""},
+    };
+    for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
+        char json[160];
+        snprintf(json, sizeof(json), "{\"type\":\"action\",\"id\":\"c1\",\"kind\":\"colorway.set\",\"colorway\":%s}",
+                 colors[i].json);
+        const yk_srv_type_t t = parse(json, &m);
+        CHECK(colors[i].ok ? t == YK_SRV_ACTION && m.kind == YK_ACT_COLORWAY_SET && !strcmp(m.colorway, colors[i].want)
+                           : t == YK_SRV_INVALID);
+        yk_proto_free(&m);
+    }
+    // hello.ok's owner.colorway: kept as said; not a name, left out, the hello.ok kept all the same (as owner.locale).
+    for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
+        char hello[400];
+        snprintf(hello, sizeof(hello),
+                 "{\"type\":\"hello.ok\",\"session\":\"s1\",\"time\":1792310400000,\"owner\":{\"nickname\":\"小鱼\","
+                 "\"locale\":\"ja\",\"colorway\":%s},\"credits\":{\"remaining\":846,\"resetAt\":\"2026-10-18T16:00:00.000Z\"},"
+                 "\"dot\":false}",
+                 colors[i].json);
+        CHECK(parse(hello, &m) == YK_SRV_HELLO_OK);
+        CHECK(!strcmp(m.owner_colorway, colors[i].want) && !strcmp(m.owner_locale, "ja"));
+        yk_proto_free(&m);
+    }
+    CHECK(parse("{\"type\":\"hello.ok\",\"session\":\"s1\",\"time\":1792310400000,\"owner\":{\"nickname\":\"\"},"
+                "\"credits\":{\"remaining\":1,\"resetAt\":\"2026-10-18T16:00:00.000Z\"},\"dot\":false}",
+                &m) == YK_SRV_HELLO_OK);
+    CHECK(!m.owner_colorway[0]);  // a server from before: none
+    yk_proto_free(&m);
+    // The caps a firmware says: "locale" and "colorway" go in hello as any other.
+    static const char *const caps[] = {"buddy", "locale", "colorway"};
+    yk_proto_hello_t h = {.fw = "yay/0.1.19", .board = "tikpal-r1", .locale = "ja", .tz = "Asia/Tokyo", .battery_pct = 50,
+                          .rssi = -50, .out_rate = 16000, .caps = caps, .cap_count = 3};
+    char *json = yk_proto_hello(&h);
+    CHECK(json && strstr(json, "\"caps\":[\"buddy\",\"locale\",\"colorway\"]"));
+    cJSON_free(json);
+}
+
+/** Beyond the fixtures: a step no firmware has yet is left out of the bits, and a hello without it says nothing. */
+static void test_onboarding(void) {
+    yk_srv_msg_t m;
+    const char *far = "{\"type\":\"action\",\"id\":\"a1\",\"kind\":\"onboarding.set\",\"skip\":[7,16,200]}";
+    CHECK(parse(far, &m) == YK_SRV_ACTION && m.kind == YK_ACT_ONBOARDING_SET && m.onb_skip == 1u << 7);
+    yk_proto_free(&m);
+    yk_proto_hello_t h = {.fw = "yay/0.2.0", .board = "tikpal-r1", .locale = "zh", .tz = "Asia/Shanghai", .battery_pct = 50,
+                          .rssi = -50, .out_rate = 16000};
+    char *json = yk_proto_hello(&h);
+    CHECK(json && !strstr(json, "onboarding"));
+    cJSON_free(json);
+    h.onboarding_step = 256;
+    CHECK(!yk_proto_hello(&h));
+    const yk_proto_onb_report_t bad = {.step = 5, .result = "done", .seconds = YK_PROTO_ONB_SECONDS_MAX + 1};
+    CHECK(!yk_proto_onboarding_step(&bad, 1, NULL));
+    const yk_proto_onb_report_t most = {.step = 5, .result = "done", .seconds = YK_PROTO_ONB_SECONDS_MAX};
+    json = yk_proto_onboarding_step(&most, 1, NULL);
+    CHECK(json && strstr(json, "\"seconds\":2592000"));
+    cJSON_free(json);
+    CHECK(!yk_proto_onboarding_step(&most, 1, "zh"));  // hello's old word for it, not an account's language
+    const yk_proto_onb_report_t none = {.step = 0, .result = "done"};
+    CHECK(!yk_proto_onboarding_step(&none, 1, NULL));
+}
+
+/** Find my Tikpal (docs/design/find-my-tikpal.md 2.3), before the contract's own examples: the two actions and find.stopped. */
+static void test_find(void) {
+    yk_srv_msg_t m;
+    CHECK(parse("{\"type\":\"action\",\"id\":\"f1\",\"kind\":\"find.ring\",\"seconds\":30}", &m) == YK_SRV_ACTION);
+    CHECK(m.kind == YK_ACT_FIND_RING && m.seconds == 30 && !strcmp(m.action_id, "f1"));
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"f1\",\"kind\":\"find.ring\",\"seconds\":5}", &m) == YK_SRV_ACTION &&
+          m.seconds == 5);
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"f1\",\"kind\":\"find.ring\",\"seconds\":300}", &m) == YK_SRV_ACTION &&
+          m.seconds == 300);
+    yk_proto_free(&m);
+    // seconds out of 5..300, not whole, not a number, or missing: not a find.ring (ignored, no answer)
+    static const char *const bad_ring[] = {"4", "301", "30.5", "\"30\"", "null"};
+    for (size_t i = 0; i < sizeof(bad_ring) / sizeof(bad_ring[0]); i++) {
+        char json[160];
+        snprintf(json, sizeof(json), "{\"type\":\"action\",\"id\":\"f1\",\"kind\":\"find.ring\",\"seconds\":%s}",
+                 bad_ring[i]);
+        CHECK(parse(json, &m) == YK_SRV_INVALID);
+        yk_proto_free(&m);
+    }
+    CHECK(parse("{\"type\":\"action\",\"id\":\"f1\",\"kind\":\"find.ring\"}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    // find.stop: the ring it stops, always named (the contract's FIND, #1845)
+    CHECK(parse("{\"type\":\"action\",\"id\":\"s1\",\"kind\":\"find.stop\",\"find\":\"f1\"}", &m) == YK_SRV_ACTION);
+    CHECK(m.kind == YK_ACT_FIND_STOP && !strcmp(m.find, "f1") && !strcmp(m.action_id, "s1"));
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"s1\",\"kind\":\"find.stop\"}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"s1\",\"kind\":\"find.stop\",\"find\":\"\"}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"s1\",\"kind\":\"find.stop\",\"find\":7}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    char id41[42];
+    memset(id41, 'a', 41);
+    id41[41] = 0;
+    char json[200];
+    snprintf(json, sizeof(json), "{\"type\":\"action\",\"id\":\"s1\",\"kind\":\"find.stop\",\"find\":\"%s\"}", id41);
+    CHECK(parse(json, &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    // find.stopped: each way it stops; nothing else is a way
+    static const char *const by[] = {"tap", "key", "app", "timeout", "other"};
+    for (size_t i = 0; i < sizeof(by) / sizeof(by[0]); i++) {
+        char *s = yk_proto_find_stopped("f1", by[i]);
+        char want[80];
+        snprintf(want, sizeof(want), "{\"type\":\"find.stopped\",\"id\":\"f1\",\"by\":\"%s\"}", by[i]);
+        CHECK(s && !strcmp(s, want));
+        cJSON_free(s);
+    }
+    CHECK(!yk_proto_find_stopped("f1", "unknown") && !yk_proto_find_stopped("f1", NULL) &&
+          !yk_proto_find_stopped("", "tap") && !yk_proto_find_stopped(NULL, "tap") && !yk_proto_find_stopped(id41, "tap"));
+    id41[40] = 0;
+    char *s = yk_proto_find_stopped(id41, "key");
+    CHECK(s != NULL);
+    cJSON_free(s);
+}
+
+// The shared folders' grants (0.1.19, 方案 A): hello.ok's whole list, or nothing of it; folder.set's one.
+static void test_folders(void) {
+    yk_srv_msg_t m;
+    char json[12000];
+    const char *head = "{\"type\":\"hello.ok\",\"session\":\"s1\",\"time\":1792310400000,\"owner\":{\"nickname\":\"小鱼\"},"
+                       "\"credits\":{\"remaining\":846,\"resetAt\":\"2026-10-18T16:00:00.000Z\"},\"dot\":true";
+    // Two grants: taken, the kinds as bits, in their order whatever the list's.
+    snprintf(json, sizeof(json), "%s,\"folders\":[{\"app\":\"bedtime-stories\",\"state\":\"granted\",\"folders\":"
+             "[\"stories\",\"music\"],\"rev\":1},{\"app\":\"photo-frame\",\"state\":\"denied\",\"folders\":[\"pictures\"],"
+             "\"rev\":3}]}", head);
+    CHECK(parse(json, &m) == YK_SRV_HELLO_OK && m.folders_given && m.folder_count == 2);
+    CHECK(m.folders && !strcmp(m.folders[0].app, "bedtime-stories") && m.folders[0].state == 1 &&
+          m.folders[0].folders == 3 && m.folders[0].rev == 1);
+    CHECK(m.folders && !strcmp(m.folders[1].app, "photo-frame") && m.folders[1].state == 2 && m.folders[1].folders == 4 &&
+          m.folders[1].rev == 3);
+    yk_proto_free(&m);
+    CHECK(!m.folders);
+    // None asked yet: an empty list, given.
+    snprintf(json, sizeof(json), "%s,\"folders\":[]}", head);
+    CHECK(parse(json, &m) == YK_SRV_HELLO_OK && m.folders_given && m.folder_count == 0 && !m.folders);
+    yk_proto_free(&m);
+    // Left out, or null (the platform waited on Yaykit too long): not given, the hello.ok all the same.
+    snprintf(json, sizeof(json), "%s}", head);
+    CHECK(parse(json, &m) == YK_SRV_HELLO_OK && !m.folders_given && !m.folders);
+    yk_proto_free(&m);
+    snprintf(json, sizeof(json), "%s,\"folders\":null}", head);
+    CHECK(parse(json, &m) == YK_SRV_HELLO_OK && !m.folders_given);
+    yk_proto_free(&m);
+    // One that is not a grant, or an app twice: nothing of the list is taken (a part would clear the others).
+    static const char *const bad[] = {
+        "{\"app\":\"voice-notes\",\"state\":\"granted\",\"folders\":[\"recordings\"],\"rev\":1}",
+        "{\"app\":\"a\",\"state\":\"granted\",\"folders\":[],\"rev\":1}",
+        "{\"app\":\"Bad-App\",\"state\":\"granted\",\"folders\":[],\"rev\":1}",
+        "{\"app\":\"photo-frame\",\"state\":\"ask\",\"folders\":[],\"rev\":1}",
+        "{\"app\":\"photo-frame\",\"state\":\"granted\",\"folders\":[\"music\",\"music\"],\"rev\":1}",
+        "{\"app\":\"photo-frame\",\"state\":\"granted\",\"folders\":[\"music\"],\"rev\":0}",
+        "{\"app\":\"bedtime-stories\",\"state\":\"denied\",\"folders\":[],\"rev\":2}",  // the first one's app again
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        snprintf(json, sizeof(json), "%s,\"folders\":[{\"app\":\"bedtime-stories\",\"state\":\"granted\",\"folders\":"
+                 "[\"music\"],\"rev\":1},%s]}", head, bad[i]);
+        CHECK(parse(json, &m) == YK_SRV_HELLO_OK && !m.folders_given && !m.folders);
+        yk_proto_free(&m);
+    }
+    // 64 with the longest slug: taken; 65: not.
+    int at = snprintf(json, sizeof(json), "%s,\"folders\":[", head);
+    for (int i = 0; i < 65; i++)
+        at += snprintf(json + at, sizeof(json) - (size_t)at, "%s{\"app\":\"a%02dxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\","
+                       "\"state\":\"granted\",\"folders\":[\"music\",\"stories\",\"pictures\",\"documents\"],\"rev\":%d}",
+                       i ? "," : "", i, 1000000 + i);
+    snprintf(json + at, sizeof(json) - (size_t)at, "]}");
+    CHECK(parse(json, &m) == YK_SRV_HELLO_OK && !m.folders_given);
+    yk_proto_free(&m);
+    char *last = strrchr(json, '{');  // drop the 65th
+    snprintf(last - 1, sizeof(json) - (size_t)(last - 1 - json), "]}");
+    CHECK(parse(json, &m) == YK_SRV_HELLO_OK && m.folders_given && m.folder_count == 64 && m.folders[63].folders == 15 &&
+          m.folders[63].rev == 1000063 && strlen(m.folders[63].app) == 41);
+    yk_proto_free(&m);
+    // folder.set: one grant, as the App left it.
+    CHECK(parse("{\"type\":\"action\",\"id\":\"g1\",\"kind\":\"folder.set\",\"grant\":{\"app\":\"photo-frame\","
+                "\"state\":\"denied\",\"folders\":[\"pictures\"],\"rev\":4}}", &m) == YK_SRV_ACTION);
+    CHECK(m.kind == YK_ACT_FOLDER_SET && !strcmp(m.action_id, "g1") && !strcmp(m.folder.app, "photo-frame") &&
+          m.folder.state == 2 && m.folder.folders == 4 && m.folder.rev == 4);
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"g1\",\"kind\":\"folder.set\"}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    CHECK(parse("{\"type\":\"action\",\"id\":\"g1\",\"kind\":\"folder.set\",\"grant\":{\"app\":\"photo-frame\","
+                "\"state\":\"denied\",\"folders\":[\"recordings\"],\"rev\":4}}", &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+}
+
+/** yk_proto_time_offset (0.1.20): the local time at the offset, as z.iso.datetime({offset: true}) takes it. */
+static void test_time_offset(void) {
+    static const struct {
+        int64_t ms;
+        int off;
+        const char *want;
+    } cases[] = {
+        {1794625083000LL, 480, "2026-11-14T10:58:03.000+08:00"},
+        {1835499599999LL, -300, "2028-02-29T23:59:59.999-05:00"},
+        {1798759800250LL, 0, "2026-12-31T23:30:00.250+00:00"},
+        {1798761600000LL, 345, "2027-01-01T05:45:00.000+05:45"},
+        {0LL, 0, "1970-01-01T00:00:00.000+00:00"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char out[32];
+        yk_proto_time_offset(cases[i].ms, cases[i].off, out);
+        CHECK_CASE(!strcmp(out, cases[i].want), cases[i].want);
+        if (strcmp(out, cases[i].want)) printf("  got %s\n", out);
+    }
+    // ... and what it makes is what listen.start takes; a time without its offset is not.
+    const yk_proto_clock_t c = {.at = {3, 52000}, .now = {3, 290000}};
+    char at[32];
+    char *ok = yk_proto_listen_start_note("t7f3a9c21d0e4b55", 300, yk_proto_time_offset(1763089083000LL, 480, at), &c);
+    CHECK(ok != NULL && strstr(ok, "\"recordedAt\":\"2025-11-14T10:58:03.000+08:00\""));
+    cJSON_free(ok);
+    CHECK(yk_proto_listen_start_note("t7f3a9c21d0e4b55", 300, "2026-11-14T10:58:03", &c) == NULL);
+    CHECK(yk_proto_offline_digest_say("not-a-uuid") == NULL);
+}
+
 int main(int argc, char **argv) {
     char *text = argc > 1 ? read_file(argv[1]) : NULL;
     cJSON *fixtures = text ? cJSON_Parse(text) : NULL;
@@ -624,6 +1062,7 @@ int main(int argc, char **argv) {
         test_server(cJSON_GetObjectItemCaseSensitive(fixtures, "valid"), true);
         test_server(cJSON_GetObjectItemCaseSensitive(fixtures, "invalid"), false);
         test_frames(cJSON_GetObjectItemCaseSensitive(fixtures, "frames"));
+        test_time_offset();
         test_practice_parts(cJSON_GetObjectItemCaseSensitive(fixtures, "valid"));
         // The screensaver's own (docs/design/screensaver.md): Yay's hello and prefs with it, its actions, the answers.
         const cJSON *saver = cJSON_GetObjectItemCaseSensitive(fixtures, "screensaver");
@@ -632,8 +1071,67 @@ int main(int argc, char **argv) {
         test_device(cJSON_GetObjectItemCaseSensitive(saver, "invalid"), false);
         test_server(cJSON_GetObjectItemCaseSensitive(saver, "valid"), true);
         test_server(cJSON_GetObjectItemCaseSensitive(saver, "invalid"), false);
+        // The buddy's own: hello and prefs with it, buddy.set, the answers.
+        const cJSON *buddy = cJSON_GetObjectItemCaseSensitive(fixtures, "buddy");
+        CHECK(buddy != NULL);
+        test_device(cJSON_GetObjectItemCaseSensitive(buddy, "valid"), true);
+        test_device(cJSON_GetObjectItemCaseSensitive(buddy, "invalid"), false);
+        test_server(cJSON_GetObjectItemCaseSensitive(buddy, "valid"), true);
+        test_server(cJSON_GetObjectItemCaseSensitive(buddy, "invalid"), false);
+        // Yay's first setup (登录与开箱 5.3): hello.onboarding, onboarding.step, onboarding.set.
+        const cJSON *onboarding = cJSON_GetObjectItemCaseSensitive(fixtures, "onboarding");
+        CHECK(onboarding != NULL);
+        test_device(cJSON_GetObjectItemCaseSensitive(onboarding, "valid"), true);
+        test_device(cJSON_GetObjectItemCaseSensitive(onboarding, "invalid"), false);
+        test_server(cJSON_GetObjectItemCaseSensitive(onboarding, "valid"), true);
+        test_server(cJSON_GetObjectItemCaseSensitive(onboarding, "invalid"), false);
+        // Find my Tikpal's, once the contract has them (find-my-tikpal.md 2.3): find.ring, find.stop, find.stopped.
+        const cJSON *find = cJSON_GetObjectItemCaseSensitive(fixtures, "find");
+        if (find) {
+            test_device(cJSON_GetObjectItemCaseSensitive(find, "valid"), true);
+            test_device(cJSON_GetObjectItemCaseSensitive(find, "invalid"), false);
+            test_server(cJSON_GetObjectItemCaseSensitive(find, "valid"), true);
+            test_server(cJSON_GetObjectItemCaseSensitive(find, "invalid"), false);
+        }
+        // Yay 0.1.19's shared folders (#1936): Yay's hello with `folder`, folder.set, action.done, hello.ok's folders.
+        const cJSON *folder = cJSON_GetObjectItemCaseSensitive(fixtures, "folder");
+        CHECK(folder != NULL);
+        test_device(cJSON_GetObjectItemCaseSensitive(folder, "valid"), true);
+        test_device(cJSON_GetObjectItemCaseSensitive(folder, "invalid"), false);
+        test_server(cJSON_GetObjectItemCaseSensitive(folder, "valid"), true);
+        test_server(cJSON_GetObjectItemCaseSensitive(folder, "invalid"), false);
+        // Yay 0.1.20's offline group (offlineNotes, binding, listen.start's clock, offline.digest): once the contract has it
+        // (#2239).
+        const cJSON *offline = cJSON_GetObjectItemCaseSensitive(fixtures, "offline");
+        if (offline) {
+            test_device(cJSON_GetObjectItemCaseSensitive(offline, "valid"), true);
+            test_device(cJSON_GetObjectItemCaseSensitive(offline, "invalid"), false);
+            test_server(cJSON_GetObjectItemCaseSensitive(offline, "valid"), true);
+            test_server(cJSON_GetObjectItemCaseSensitive(offline, "invalid"), false);
+        }
+        // ... and listen.start's liveTurn (用户 11-18: kept after it went out live, its connection gone before stt.final).
+        const cJSON *live = cJSON_GetObjectItemCaseSensitive(fixtures, "liveTurn");
+        if (live) {
+            test_device(cJSON_GetObjectItemCaseSensitive(live, "valid"), true);
+            test_device(cJSON_GetObjectItemCaseSensitive(live, "invalid"), false);
+        }
+        // Yay 0.1.19's follow group (locale.set, colorway.set, owner.colorway): once the contract has it (#1845).
+        const cJSON *follow = cJSON_GetObjectItemCaseSensitive(fixtures, "follow");
+        if (follow) {
+            test_device(cJSON_GetObjectItemCaseSensitive(follow, "valid"), true);
+            test_device(cJSON_GetObjectItemCaseSensitive(follow, "invalid"), false);
+            test_server(cJSON_GetObjectItemCaseSensitive(follow, "valid"), true);
+            test_server(cJSON_GetObjectItemCaseSensitive(follow, "invalid"), false);
+        } else {
+            printf("yaykit_session: the contract has no follow group yet (#1845): test_follow's own examples only\n");
+        }
     }
+    test_folders();
+    test_find();
+    test_onboarding();
+    test_follow();
     test_saver();
+    test_buddy();
     test_fields();
     test_modes();
     test_turns();

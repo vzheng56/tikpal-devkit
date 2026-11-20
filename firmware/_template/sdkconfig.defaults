@@ -36,10 +36,16 @@ CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_NVS_PERSIST=n
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+# 不配对的蓝牙口（yk_link_keep_start_unpaired()，app.json 写了 bluetooth_unpaired）要 NimBLE 主机任务栈至少 5120 字节，
+# 少了组件不开通道、./kit check 也不过；多占约 1 KB 内部 RAM。用到它的应用把下一行的 # 去掉。
+# CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
 CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_0=n
 CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_1=n
 CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_2=y
 CONFIG_LV_USE_QRCODE=y
+# An app on Wi-Fi (this template is not, until yaykit_wifi is added): back on it faster after a restart, and every app
+# switch is one: ask DHCP for the last address again (no discover/offer), kept in NVS dhcp_state, shared with Yay.
+CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y
 # Boot time: the 8 MB PSRAM test costs ~420 ms on every start (each app switch is a restart).
 CONFIG_SPIRAM_MEMTEST=n
 # Development commands (yay tap|double|hold|say|launch); turn off for a release.

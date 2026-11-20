@@ -29,6 +29,7 @@
 #include "yk_apps.h"
 #include "yk_hint.h"
 #include "yk_round.h"
+#include "yk_words.h"
 
 static const char *TAG = "yk_power";
 
@@ -37,7 +38,12 @@ static const char *TAG = "yk_power";
 // deep sleep powers it down by itself (ESP-IDF's PHY sleep callback), the app's wrap-up has closed its connection, and a
 // reference to esp_wifi_stop() would keep the whole Wi-Fi stack (7 KB of internal RAM) in an app that never starts it
 // (Recording Card links yaykit_wifi through yaykit_cloud only).
+// yaykit_tf's own stop (its private yk_tf_card.h), compiled in every firmware with the card: yk_tf_sys_suspend() is
+// only the system's name for it (CONFIG_YK_TF_SYSTEM), and an app has none (yaykit_tf/test/run.sh checks the two agree).
 void yk_speak_sleep(void) __attribute__((weak));
+void yk_haptic_stop(void) __attribute__((weak));  // yaykit_haptic: the motor off before the sleep
+esp_err_t yk_tf_card_suspend(uint32_t wait_ms) __attribute__((weak));
+#define TF_SLEEP_WAIT_MS 300  // a holder's read or write to end; the sleep goes on all the same
 
 #define WATCH_MS 1000      // the LVGL timer: is a look at the battery due (a time compare, nothing more)
 #define SLEEP_STACK 6144   // the page, the app's wrap-up wait and esp_ota's check of Yay's image (as leaving's task)
@@ -85,6 +91,10 @@ static void load(void) {
     s_stored.screen_off_s = off;
     memcpy(s_stored.locale, locale, sizeof(locale));
     taskEXIT_CRITICAL(&s_mux);
+    // An extension's screens' language for every shared component's words (yaykit_strings, Yay 0.1.19 4.7): all four,
+    // from the same owner's language as yk_app_english(). Yay sets its own (yay_locale: the owner's, or the one chosen on
+    // the device before it has one), and so does the recovery.
+    if (yk_app_is_extension()) yk_words_set(yk_locale_from_tag(locale));
 }
 
 void yk_app_settings(yk_settings_t *out) {
@@ -191,6 +201,8 @@ static bool reading(int *pct, bool *usb) {
  *  whatever wakes it starts Yay, which looks at the battery itself (yay_power_boot). Last, the amplifier off and the
  *  panel (`panel`: it was drawn) into sleep-in with the peripheral power (GPIO21) off, both held. Never returns. */
 static void deep_sleep(bool panel, int pct) {
+    // The card stops first: deep sleep has no hook that may wait (yk_tf_sys.h). Only a firmware with yaykit_tf has this.
+    if (yk_tf_card_suspend) yk_tf_card_suspend(TF_SLEEP_WAIT_MS);
     const char *home = "yay";
     const esp_err_t boot = yk_app_boot_home_next(&home);
     if (boot != ESP_OK) ESP_LOGE(TAG, "boot partition not set to %s: %s", home, esp_err_to_name(boot));
@@ -212,6 +224,7 @@ static void deep_sleep(bool panel, int pct) {
 #endif
     esp_sleep_enable_timer_wakeup((uint64_t)look_s * 1000000ULL);
     if (yk_speak_sleep) yk_speak_sleep();
+    if (yk_haptic_stop) yk_haptic_stop();
     const esp_err_t held = board_sleep_prepare(panel);
     printf("YAY_APP power deep_sleep next=%s boot_set=%d key=%d usb=1 look_s=%d pct=%d panel_sleep=%d held=%d\n", home,
            boot == ESP_OK, key, look_s, pct, panel, held == ESP_OK);
@@ -234,7 +247,7 @@ static lv_obj_t *plain(lv_obj_t *parent, int x, int y, int w, int h, uint32_t co
 /** 「电量用完了，请充电」 over everything, as Yay's battery page draws it (yay_ui_power_screen): a battery lying down,
  *  nearly empty, and the line under it. Under the board lock. */
 static void sleep_page(void) {
-    yk_apps_close(false);  // the app ring and 「回到 Yay 说？」, when up
+    yk_apps_close(false);  // the app ring and 「回到主屏幕说？」, when up
     yk_apps_ask_close();
     yk_app_sheet_close("sleep");  // the system pull-down
     yk_hint_hide();
@@ -249,7 +262,7 @@ static void sleep_page(void) {
     lv_obj_set_style_border_color(cell, lv_color_hex(YK_INK2), 0);
     lv_obj_t *knob = plain(scr, 233 + 66 - 6 + 3, 150 + 20, 10, 24, YK_INK2);
     lv_obj_set_style_radius(knob, 4, 0);
-    lv_obj_t *left = plain(cell, 5, 5, 16, 64 - 20, YK_AMBER);
+    lv_obj_t *left = plain(cell, 5, 5, 16, 64 - 20, YK_CORAL);  // battery low: coral, amber before 0.1.19
     lv_obj_set_style_radius(left, 5, 0);
     lv_obj_t *l = lv_label_create(scr);
     lv_obj_set_pos(l, 78, 250);
@@ -259,7 +272,7 @@ static void sleep_page(void) {
     lv_obj_set_style_text_color(l, lv_color_hex(YK_INK), 0);
     const lv_font_t *f = cjk_font_get(22);
     if (f) lv_obj_set_style_text_font(l, f, 0);
-    lv_label_set_text(l, yk_app_english() ? "Out of battery. Please charge me." : "电量用完了，请充电");
+    lv_label_set_text(l, yk_word_in(yk_app_english(), YK_STR_YAYKIT_MORE_BATTERY_OUT));
     lv_screen_load(scr);
     lv_display_trigger_activity(NULL);  // the app's own screen-off waits from now (it is not shown anyway)
 }

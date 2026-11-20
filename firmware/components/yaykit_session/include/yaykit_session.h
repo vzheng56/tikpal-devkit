@@ -13,6 +13,7 @@
 
 #include "esp_err.h"
 #include "yk_proto.h"
+#include "yk_conn_drop.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +62,8 @@ void yk_session_new_turn(void);
 
 /** Try again now (the network came back). */
 void yk_session_kick(void);
+/** The TLS session kept across restarts goes (a factory reset: it says who this device was). */
+void yk_session_forget_ticket(void);
 /** Close and reconnect (a new token after session.reauth is sent with `auth` instead; this is for 4001). */
 void yk_session_reconnect(void);
 /** Closes the connection as WebSocket closes it, then holds the session closed (as yk_session_hold(true)): a close
@@ -74,7 +77,9 @@ void yk_session_reconnect(void);
 esp_err_t yk_session_close(uint32_t timeout_ms);
 /** Hold the session closed (true) and let it reconnect (false): the phone link and an install need the memory TLS
  *  takes (docs/design/yay-device.md 6.3: pairing, installing and talking exclude each other). The USB bridge is never
- *  held (no TLS there, and the bridge connects only once). */
+ *  held (no TLS there, and the bridge connects only once). Held while a connection is being made: a token being fetched
+ *  goes on to its end, then it stops there with no WebSocket; a WebSocket already dialling is torn down, up to its network
+ *  timeout. yk_session_state() says when it is closed. */
 bool yk_session_hold(bool hold);  // false when it does not apply (the USB bridge, not started)
 /** Held closed on purpose (yk_session_hold(true)): a session that is not up then is not a network fault. */
 bool yk_session_held(void);
@@ -85,6 +90,12 @@ typedef struct {
     uint32_t connect_ms;  // last connection: start to hello sent
 } yk_session_stats_t;
 void yk_session_stats(yk_session_stats_t *out);
+
+/** How the session went away and came back (Yay 0.1.20 4.8; the report's `net`, yk_conn_drop.h): a copy, any task.
+ *  Drops are the session going down by itself after it was up; held or closed on purpose is none. */
+void yk_session_drop(yk_drop_t *out);
+/** A report carrying `n` drops went out: those are said (the latest stays known). */
+void yk_session_drop_taken(uint32_t n);
 
 /** `session stat` and, in development builds, `ys <c|d|t|b> [base64]` for the USB bridge. */
 esp_err_t yk_session_register_console(void);

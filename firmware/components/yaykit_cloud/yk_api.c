@@ -27,7 +27,7 @@ const char *yk_api_code(const char *error) {
         "TARGET_NOT_ALLOWED",     "TARGET_NOT_CONNECTED",  "NOTION_PARENT_REQUIRED", "NOTHING_TO_DELIVER",
         "OWNER_EMAIL_MISSING",    "DELIVERY_NOT_FOUND",    "DELIVERY_BUSY",         "RETRY_NEEDS_TEXT",
         "CONNECTION_INACTIVE",    "CONNECTOR_SCOPE_REQUIRED", "TEXT_EMPTY",           "DELIVERIES_WAITING",
-        "RETRY_TOO_SOON",         "RETRY_LIMIT",
+        "RETRY_TOO_SOON",         "RETRY_LIMIT",           "GRANT_CHANGED",         "GRANTS_FULL",
     };
     if (error)
         for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
@@ -454,4 +454,114 @@ size_t yk_api_escape(const char *value, char *out, size_t size) {
     if (n >= size) return 0;
     out[n] = 0;
     return n;
+}
+
+// ---------------------------------------------------------------- the shared folders' grants (Yay 0.1.19 开发文档 2.1)
+
+static const char *const FOLDER_KINDS[] = {"music", "stories", "pictures", "documents"};  // device-api.ts folderKinds
+
+bool yk_api_folder_grant(const cJSON *grant, const char *slug, yk_api_grant_t *out) {
+    const cJSON *app = cJSON_GetObjectItemCaseSensitive(grant, "app");
+    const cJSON *state = cJSON_GetObjectItemCaseSensitive(grant, "state");
+    const cJSON *folders = cJSON_GetObjectItemCaseSensitive(grant, "folders");
+    const cJSON *rev = cJSON_GetObjectItemCaseSensitive(grant, "rev");
+    if (!cJSON_IsString(app) || !slug || strcmp(app->valuestring, slug) || !cJSON_IsString(state) ||
+        !cJSON_IsArray(folders) || !cJSON_IsNumber(rev))
+        return false;
+    yk_api_grant_t g = {0};
+    if (!strcmp(state->valuestring, "granted")) g.state = 1;
+    else if (!strcmp(state->valuestring, "denied")) g.state = 2;
+    else return false;
+    const cJSON *kind;
+    cJSON_ArrayForEach(kind, folders) {
+        int bit = -1;
+        for (int i = 0; i < 4 && cJSON_IsString(kind); i++)
+            if (!strcmp(kind->valuestring, FOLDER_KINDS[i])) bit = i;
+        if (bit < 0 || g.folders & 1u << bit) return false;  // a kind not listed (Recordings), or one twice
+        g.folders |= (uint8_t)(1u << bit);
+    }
+    if (rev->valuedouble < 1 || rev->valuedouble > 4294967295.0 || rev->valuedouble != (double)(uint32_t)rev->valuedouble)
+        return false;
+    g.rev = (uint32_t)rev->valuedouble;
+    *out = g;
+    return true;
+}
+
+int yk_api_folder_grants(const char *json, const char *slug, yk_api_grant_t *out) {
+    memset(out, 0, sizeof(*out));
+    cJSON *root = cJSON_Parse(json ? json : "");
+    const cJSON *grants = cJSON_GetObjectItemCaseSensitive(root, "grants");
+    int found = cJSON_IsArray(grants) ? 0 : -1;
+    if (found == 0) {
+        const cJSON *g;
+        cJSON_ArrayForEach(g, grants) {
+            const cJSON *app = cJSON_GetObjectItemCaseSensitive(g, "app");
+            if (!cJSON_IsString(app) || !slug || strcmp(app->valuestring, slug)) continue;  // another app's: Yay's to read
+            if (found || !yk_api_folder_grant(g, slug, out)) {
+                found = -1;  // twice, or not a grant: nothing of it is taken
+                break;
+            }
+            found = 1;
+        }
+    }
+    if (found < 0) memset(out, 0, sizeof(*out));
+    cJSON_Delete(root);
+    return found;
+}
+
+int yk_api_folder_each(const char *json, yk_api_grant_fn each, void *ctx) {
+    cJSON *root = cJSON_Parse(json ? json : "");
+    const cJSON *grants = cJSON_GetObjectItemCaseSensitive(root, "grants");
+    int n = cJSON_IsArray(grants) ? 0 : -1;
+    if (n == 0) {
+        const cJSON *g;
+        cJSON_ArrayForEach(g, grants) {
+            const cJSON *app = cJSON_GetObjectItemCaseSensitive(g, "app");
+            if (!cJSON_IsString(app)) continue;
+            // Listed twice: neither is taken (yk_api_folder_grants says -1 for it).
+            int times = 0;
+            const cJSON *other;
+            cJSON_ArrayForEach(other, grants) {
+                const cJSON *a = cJSON_GetObjectItemCaseSensitive(other, "app");
+                times += cJSON_IsString(a) && !strcmp(a->valuestring, app->valuestring);
+            }
+            yk_api_grant_t one;
+            if (times == 1 && yk_api_folder_grant(g, app->valuestring, &one)) {
+                each(app->valuestring, &one, ctx);
+                n++;
+            }
+        }
+    }
+    cJSON_Delete(root);
+    return n;
+}
+
+char *yk_api_folder_put_body(uint8_t state, uint8_t folders, bool known, uint32_t rev) {
+    if (state != 1 && state != 2) return NULL;
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "state", state == 1 ? "granted" : "denied");
+    cJSON *list = cJSON_AddArrayToObject(body, "folders");
+    for (int i = 0; i < 4; i++)
+        if (folders & 1u << i) cJSON_AddItemToArray(list, cJSON_CreateString(FOLDER_KINDS[i]));
+    if (known && rev >= 1) cJSON_AddNumberToObject(body, "base", (double)rev);
+    else cJSON_AddNullToObject(body, "base");
+    char *out = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    return out;
+}
+
+int yk_api_folder_put_answer(int status, const char *json, const char *slug, yk_api_grant_t *out) {
+    memset(out, 0, sizeof(*out));
+    if (status != 200 && status != 409) return 0;
+    cJSON *root = cJSON_Parse(json ? json : "");
+    const cJSON *error = cJSON_GetObjectItemCaseSensitive(root, "error");
+    const cJSON *grant = cJSON_GetObjectItemCaseSensitive(root, "grant");
+    int said = 0;
+    if (status == 200) said = yk_api_folder_grant(grant, slug, out) ? 1 : 0;
+    else if (cJSON_IsString(error) && !strcmp(error->valuestring, "GRANT_CHANGED"))
+        said = yk_api_folder_grant(grant, slug, out) ? 2 : 0;  // without the grant there is nothing to take
+    else if (cJSON_IsString(error) && !strcmp(error->valuestring, "GRANTS_FULL")) said = 3;
+    if (said == 0 || said == 3) memset(out, 0, sizeof(*out));
+    cJSON_Delete(root);
+    return said;
 }

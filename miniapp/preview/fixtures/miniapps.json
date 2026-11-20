@@ -857,6 +857,1106 @@
       ]
     }
   },
+  "level3": {
+    "calls": {
+      "valid": [
+        {
+          "name": "level 3: connect to the device the code named",
+          "request": {
+            "id": "n1",
+            "method": "device.link.open",
+            "params": {
+              "mark": 490492
+            }
+          },
+          "response": {
+            "id": "n1",
+            "ok": true,
+            "result": {
+              "connected": true,
+              "name": "Tikpal Voice",
+              "mark": 490492
+            }
+          }
+        },
+        {
+          "name": "level 3: the device holds another key",
+          "request": {
+            "id": "n2",
+            "method": "device.link.open",
+            "params": {}
+          },
+          "response": {
+            "id": "n2",
+            "ok": true,
+            "result": {
+              "connected": false,
+              "reason": "key_mismatch"
+            }
+          }
+        },
+        {
+          "name": "level 3: an app message (自拍屏's remote)",
+          "request": {
+            "id": "n3",
+            "method": "device.link.send",
+            "params": {
+              "data": "AQ=="
+            }
+          },
+          "response": {
+            "id": "n3",
+            "ok": true,
+            "result": {}
+          }
+        },
+        {
+          "name": "level 3: done with the device",
+          "request": {
+            "id": "n4",
+            "method": "device.link.close",
+            "params": {}
+          },
+          "response": {
+            "id": "n4",
+            "ok": true,
+            "result": {}
+          }
+        },
+        {
+          "name": "level 3: start a trip home",
+          "request": {
+            "id": "n5",
+            "method": "trip.start",
+            "params": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              }
+            }
+          },
+          "response": {
+            "id": "n5",
+            "ok": true,
+            "result": {
+              "started": true
+            }
+          }
+        },
+        {
+          "name": "level 3: location only while open",
+          "request": {
+            "id": "n6",
+            "method": "trip.start",
+            "params": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              },
+              "voice": true
+            }
+          },
+          "response": {
+            "id": "n6",
+            "ok": true,
+            "result": {
+              "started": false,
+              "reason": "background_denied"
+            }
+          }
+        },
+        {
+          "name": "level 3: home from a 声波码, the app counting down 3 s (the moment it is tapped, in front)",
+          "request": {
+            "id": "n6b",
+            "method": "trip.start",
+            "params": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              },
+              "countdownSeconds": 3
+            }
+          },
+          "response": {
+            "id": "n6b",
+            "ok": true,
+            "result": {
+              "started": true
+            }
+          }
+        },
+        {
+          "name": "level 3: the countdown, back from the lock screen",
+          "request": {
+            "id": "n6c",
+            "method": "trip.status",
+            "params": {}
+          },
+          "response": {
+            "id": "n6c",
+            "ok": true,
+            "result": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              },
+              "progress": {
+                "state": "countdown",
+                "endsAt": 1794643203000,
+                "step": 1,
+                "toActionM": 354,
+                "remainingM": 2400,
+                "remainingS": 540,
+                "progress": 0,
+                "offRouteM": 0,
+                "position": null,
+                "heading": null,
+                "device": true
+              }
+            }
+          }
+        },
+        {
+          "name": "level 3: 「现在出发」 in the countdown (its own trip replaced)",
+          "request": {
+            "id": "n6d",
+            "method": "trip.start",
+            "params": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              },
+              "countdownSeconds": 0
+            }
+          },
+          "response": {
+            "id": "n6d",
+            "ok": true,
+            "result": {
+              "started": true
+            }
+          }
+        },
+        {
+          "name": "level 3: back from the lock screen",
+          "request": {
+            "id": "n7",
+            "method": "trip.status",
+            "params": {}
+          },
+          "response": {
+            "id": "n7",
+            "ok": true,
+            "result": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              },
+              "progress": {
+                "state": "navigating",
+                "step": 1,
+                "toActionM": 120,
+                "remainingM": 640,
+                "remainingS": 145,
+                "progress": 733,
+                "offRouteM": 3,
+                "position": {
+                  "lng": 116.488001,
+                  "lat": 39.995201
+                },
+                "heading": 212,
+                "device": true
+              }
+            }
+          }
+        },
+        {
+          "name": "level 3: no trip on",
+          "request": {
+            "id": "n8",
+            "method": "trip.status",
+            "params": {}
+          },
+          "response": {
+            "id": "n8",
+            "ok": true,
+            "result": {
+              "state": "none"
+            }
+          }
+        },
+        {
+          "name": "level 3: arrived at the lock screen, the page opened after",
+          "request": {
+            "id": "n8b",
+            "method": "trip.status",
+            "params": {}
+          },
+          "response": {
+            "id": "n8b",
+            "ok": true,
+            "result": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              },
+              "ended": {
+                "reason": "arrived",
+                "tripS": 1260,
+                "tripM": 4120
+              }
+            }
+          }
+        },
+        {
+          "name": "level 3: end the trip",
+          "request": {
+            "id": "n9",
+            "method": "trip.stop",
+            "params": {}
+          },
+          "response": {
+            "id": "n9",
+            "ok": true,
+            "result": {}
+          }
+        },
+        {
+          "name": "level 3: routes home from 「我这里」",
+          "request": {
+            "id": "n10",
+            "method": "map.routes",
+            "params": {
+              "to": {
+                "place": "home"
+              },
+              "mode": "bike",
+              "alternatives": 3
+            }
+          },
+          "response": {
+            "id": "n10",
+            "ok": true,
+            "result": {
+              "routes": [
+                {
+                  "mode": "bike",
+                  "meters": 2400,
+                  "seconds": 540,
+                  "line": [
+                    [
+                      116.486912,
+                      39.997812
+                    ],
+                    [
+                      116.488912,
+                      39.995021
+                    ],
+                    [
+                      116.47911,
+                      39.988301
+                    ]
+                  ],
+                  "steps": [
+                    {
+                      "action": "right",
+                      "meters": 1860,
+                      "seconds": 418,
+                      "road": "阜通东大街",
+                      "instruction": "右转进入阜通东大街骑行1860米",
+                      "at": 0
+                    },
+                    {
+                      "action": "slight_left",
+                      "meters": 540,
+                      "seconds": 122,
+                      "road": null,
+                      "instruction": "向左前方骑行540米",
+                      "at": 1
+                    },
+                    {
+                      "action": "arrive",
+                      "meters": 0,
+                      "seconds": 0,
+                      "road": null,
+                      "instruction": "到达目的地",
+                      "at": 2
+                    }
+                  ],
+                  "to": {
+                    "name": "家"
+                  },
+                  "turns": 2,
+                  "via": [
+                    "阜通东大街"
+                  ]
+                }
+              ],
+              "left": 57
+            }
+          }
+        },
+        {
+          "name": "level 3: the day's routes used up",
+          "request": {
+            "id": "n11",
+            "method": "map.routes",
+            "params": {
+              "from": {
+                "lng": 116.486912,
+                "lat": 39.997812
+              },
+              "to": {
+                "lng": 116.486912,
+                "lat": 39.997812
+              },
+              "mode": "walk"
+            }
+          },
+          "response": {
+            "id": "n11",
+            "ok": false,
+            "error": {
+              "code": "SERVER",
+              "status": 429,
+              "serverCode": "MAP_LIMIT"
+            }
+          }
+        },
+        {
+          "name": "level 3: typing 图书",
+          "request": {
+            "id": "n12",
+            "method": "map.tips",
+            "params": {
+              "q": "图书",
+              "near": {
+                "lng": 116.486912,
+                "lat": 39.997812
+              }
+            }
+          },
+          "response": {
+            "id": "n12",
+            "ok": true,
+            "result": {
+              "items": [
+                {
+                  "name": "图书馆（东区分馆）",
+                  "address": "学院路 18 号",
+                  "city": "北京市",
+                  "district": "海淀区",
+                  "point": {
+                    "lng": 116.481002,
+                    "lat": 39.99012
+                  },
+                  "meters": 1800
+                }
+              ],
+              "left": 199
+            }
+          }
+        },
+        {
+          "name": "level 3: search around",
+          "request": {
+            "id": "n13",
+            "method": "map.search",
+            "params": {
+              "q": "图书馆",
+              "near": {
+                "lng": 116.486912,
+                "lat": 39.997812
+              },
+              "radius": 3000
+            }
+          },
+          "response": {
+            "id": "n13",
+            "ok": true,
+            "result": {
+              "items": [
+                {
+                  "name": "图书馆（东区分馆）",
+                  "address": "学院路 18 号",
+                  "city": "北京市",
+                  "district": "海淀区",
+                  "point": {
+                    "lng": 116.481002,
+                    "lat": 39.99012
+                  },
+                  "meters": 1800
+                }
+              ],
+              "next": null,
+              "left": 198
+            }
+          }
+        },
+        {
+          "name": "level 3: an address to a point",
+          "request": {
+            "id": "n14",
+            "method": "map.geocode",
+            "params": {
+              "address": "学院路 18 号",
+              "city": "北京"
+            }
+          },
+          "response": {
+            "id": "n14",
+            "ok": true,
+            "result": {
+              "items": [
+                {
+                  "point": {
+                    "lng": 116.481002,
+                    "lat": 39.99012
+                  },
+                  "address": "北京市海淀区学院路18号",
+                  "level": "门牌号"
+                }
+              ],
+              "left": 99
+            }
+          }
+        },
+        {
+          "name": "level 3: where am I",
+          "request": {
+            "id": "n15",
+            "method": "map.regeo",
+            "params": {}
+          },
+          "response": {
+            "id": "n15",
+            "ok": true,
+            "result": {
+              "address": "北京市朝阳区望京街道",
+              "city": "北京市",
+              "district": "朝阳区",
+              "area": "望京",
+              "left": 98
+            }
+          }
+        },
+        {
+          "name": "level 3: a static map of the route",
+          "request": {
+            "id": "n16",
+            "method": "map.static",
+            "params": {
+              "fit": [
+                {
+                  "lng": 116.486912,
+                  "lat": 39.997812
+                },
+                {
+                  "lng": 116.481002,
+                  "lat": 39.99012
+                }
+              ],
+              "width": 390,
+              "height": 270
+            }
+          },
+          "response": {
+            "id": "n16",
+            "ok": true,
+            "result": {
+              "image": "data:image/png;base64,iVBORw0KGgo=",
+              "center": {
+                "lng": 116.484,
+                "lat": 39.993
+              },
+              "zoom": 14,
+              "width": 390,
+              "height": 270,
+              "scale": 2,
+              "left": 99
+            }
+          }
+        },
+        {
+          "name": "level 3: the names of home and work",
+          "request": {
+            "id": "n17",
+            "method": "places.saved",
+            "params": {}
+          },
+          "response": {
+            "id": "n17",
+            "ok": true,
+            "result": {
+              "home": {
+                "name": "望京西园三区",
+                "city": "北京市"
+              },
+              "work": null
+            }
+          }
+        },
+        {
+          "name": "level 3: remember a place",
+          "request": {
+            "id": "n18",
+            "method": "storage.set",
+            "params": {
+              "key": "recent",
+              "value": "[\"图书馆（东区分馆）\"]"
+            }
+          },
+          "response": {
+            "id": "n18",
+            "ok": true,
+            "result": {}
+          }
+        },
+        {
+          "name": "level 3: read it back",
+          "request": {
+            "id": "n19",
+            "method": "storage.get",
+            "params": {
+              "key": "recent"
+            }
+          },
+          "response": {
+            "id": "n19",
+            "ok": true,
+            "result": {
+              "value": "[\"图书馆（东区分馆）\"]"
+            }
+          }
+        },
+        {
+          "name": "level 3: forget it",
+          "request": {
+            "id": "n20",
+            "method": "storage.remove",
+            "params": {
+              "key": "recent"
+            }
+          },
+          "response": {
+            "id": "n20",
+            "ok": true,
+            "result": {}
+          }
+        },
+        {
+          "name": "level 3: what it keeps",
+          "request": {
+            "id": "n21",
+            "method": "storage.keys",
+            "params": {}
+          },
+          "response": {
+            "id": "n21",
+            "ok": true,
+            "result": {
+              "keys": []
+            }
+          }
+        },
+        {
+          "name": "level 3 in a level-2 container",
+          "request": {
+            "id": "n22",
+            "method": "map.tips",
+            "params": {
+              "q": "图书"
+            }
+          },
+          "response": {
+            "id": "n22",
+            "ok": false,
+            "error": {
+              "code": "UNSUPPORTED"
+            }
+          }
+        }
+      ],
+      "invalid": [
+        {
+          "name": "a mark wider than 20 bits",
+          "request": {
+            "id": "z1",
+            "method": "device.link.open",
+            "params": {
+              "mark": 1048576
+            }
+          }
+        },
+        {
+          "name": "an app message of 87 bytes",
+          "request": {
+            "id": "z2",
+            "method": "device.link.send",
+            "params": {
+              "data": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            }
+          }
+        },
+        {
+          "name": "a trip without a route",
+          "request": {
+            "id": "z3",
+            "method": "trip.start",
+            "params": {}
+          }
+        },
+        {
+          "name": "a countdown of 10 s (the device's message carries at most 9)",
+          "request": {
+            "id": "z3b",
+            "method": "trip.start",
+            "params": {
+              "route": {
+                "mode": "bike",
+                "meters": 2400,
+                "seconds": 540,
+                "line": [
+                  [
+                    116.486912,
+                    39.997812
+                  ],
+                  [
+                    116.488912,
+                    39.995021
+                  ],
+                  [
+                    116.47911,
+                    39.988301
+                  ]
+                ],
+                "steps": [
+                  {
+                    "action": "right",
+                    "meters": 1860,
+                    "seconds": 418,
+                    "road": "阜通东大街",
+                    "instruction": "右转进入阜通东大街骑行1860米",
+                    "at": 0
+                  },
+                  {
+                    "action": "slight_left",
+                    "meters": 540,
+                    "seconds": 122,
+                    "road": null,
+                    "instruction": "向左前方骑行540米",
+                    "at": 1
+                  },
+                  {
+                    "action": "arrive",
+                    "meters": 0,
+                    "seconds": 0,
+                    "road": null,
+                    "instruction": "到达目的地",
+                    "at": 2
+                  }
+                ],
+                "to": {
+                  "name": "家"
+                },
+                "turns": 2,
+                "via": [
+                  "阜通东大街"
+                ]
+              },
+              "countdownSeconds": 10
+            }
+          }
+        },
+        {
+          "name": "routes by car",
+          "request": {
+            "id": "z4",
+            "method": "map.routes",
+            "params": {
+              "to": {
+                "place": "home"
+              },
+              "mode": "drive"
+            }
+          }
+        },
+        {
+          "name": "typing nothing",
+          "request": {
+            "id": "z5",
+            "method": "map.tips",
+            "params": {
+              "q": ""
+            }
+          }
+        },
+        {
+          "name": "a static map 2000 wide",
+          "request": {
+            "id": "z6",
+            "method": "map.static",
+            "params": {
+              "center": {
+                "lng": 116.486912,
+                "lat": 39.997812
+              },
+              "zoom": 15,
+              "width": 2000,
+              "height": 300
+            }
+          }
+        },
+        {
+          "name": "a storage key with a space",
+          "request": {
+            "id": "z7",
+            "method": "storage.get",
+            "params": {
+              "key": "my key"
+            }
+          }
+        }
+      ]
+    }
+  },
   "events": [
     {
       "name": "playing",
@@ -928,6 +2028,163 @@
             "top": 44,
             "bottom": 34
           }
+        }
+      }
+    },
+    {
+      "name": "level 3: the link went out of reach",
+      "event": {
+        "event": "device.link.state",
+        "data": {
+          "state": "lost"
+        }
+      }
+    },
+    {
+      "name": "level 3: a message from the device's app",
+      "event": {
+        "event": "device.link.message",
+        "data": {
+          "data": "AgM="
+        }
+      }
+    },
+    {
+      "name": "level 3: a second of the trip",
+      "event": {
+        "event": "trip.progress",
+        "data": {
+          "state": "navigating",
+          "step": 1,
+          "toActionM": 120,
+          "remainingM": 640,
+          "remainingS": 145,
+          "progress": 733,
+          "offRouteM": 3,
+          "position": {
+            "lng": 116.488001,
+            "lat": 39.995201
+          },
+          "heading": 212,
+          "device": true
+        }
+      }
+    },
+    {
+      "name": "level 3: a second of the trip, the manifest without location (no position)",
+      "event": {
+        "event": "trip.progress",
+        "data": {
+          "state": "navigating",
+          "step": 1,
+          "toActionM": 120,
+          "remainingM": 640,
+          "remainingS": 145,
+          "progress": 733,
+          "offRouteM": 3,
+          "position": null,
+          "heading": 212,
+          "device": true
+        }
+      }
+    },
+    {
+      "name": "level 3: a second of the countdown",
+      "event": {
+        "event": "trip.progress",
+        "data": {
+          "state": "countdown",
+          "endsAt": 1794643203000,
+          "step": 1,
+          "toActionM": 354,
+          "remainingM": 2400,
+          "remainingS": 540,
+          "progress": 0,
+          "offRouteM": 0,
+          "position": null,
+          "heading": null,
+          "device": true
+        }
+      }
+    },
+    {
+      "name": "level 3: a new route after a wrong turn",
+      "event": {
+        "event": "trip.rerouted",
+        "data": {
+          "route": {
+            "mode": "bike",
+            "meters": 2400,
+            "seconds": 540,
+            "line": [
+              [
+                116.486912,
+                39.997812
+              ],
+              [
+                116.488912,
+                39.995021
+              ],
+              [
+                116.47911,
+                39.988301
+              ]
+            ],
+            "steps": [
+              {
+                "action": "right",
+                "meters": 1860,
+                "seconds": 418,
+                "road": "阜通东大街",
+                "instruction": "右转进入阜通东大街骑行1860米",
+                "at": 0
+              },
+              {
+                "action": "slight_left",
+                "meters": 540,
+                "seconds": 122,
+                "road": null,
+                "instruction": "向左前方骑行540米",
+                "at": 1
+              },
+              {
+                "action": "arrive",
+                "meters": 0,
+                "seconds": 0,
+                "road": null,
+                "instruction": "到达目的地",
+                "at": 2
+              }
+            ],
+            "to": {
+              "name": "家"
+            },
+            "turns": 2,
+            "via": [
+              "阜通东大街"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "level 3: arrived",
+      "event": {
+        "event": "trip.ended",
+        "data": {
+          "reason": "arrived",
+          "tripS": 1080,
+          "tripM": 4100
+        }
+      }
+    },
+    {
+      "name": "level 3: another 回家 code scanned while open",
+      "event": {
+        "event": "voiceCode.scanned",
+        "data": {
+          "action": 8,
+          "value": 7847872
         }
       }
     },

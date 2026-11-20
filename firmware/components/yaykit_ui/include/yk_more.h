@@ -1,22 +1,25 @@
 // 「我的应用」 (docs/design/app-ecosystem.md 4.5, the design's round board 3): all of one's apps on a honeycomb,
-// opaque over the whole screen. The one in the middle is big (100 px), the first ring 72, the second 54, those farther
-// 40 and darker. Autofocus (docs/delivery/2026-10-26-more-autofocus.md, Apple Watch's way): sizes, light and a halo go
-// by each app's distance from the middle on the screen, every frame of a drag, and the nearest one is the focus as it is
-// dragged; let go, it settles with that one in the middle. A tap on the middle one, or on any app on the device (in a
-// slot, in the package cache), reports it (opening or installing it is the caller's); one to download or coming soon
-// is brought to the middle first (260 ms). Above, 「我的应用 · N」 (18); below, the middle one's name (22) and where it is (16,
-// app-ecosystem.md 2: 在圆屏上 / 下载过 · 约 20 秒 (the copying) / 要下载 · 约 40 秒, from the last download's speed,
-// or its size).
+// opaque over the whole screen. The one in the middle is big (116 px since Yay 0.1.18; 100 before), the first ring 80,
+// the second 60, those farther 46 and darker. Autofocus (docs/delivery/2026-10-26-more-autofocus.md, Apple Watch's
+// way): sizes, light and a halo go by each app's distance from the middle on the screen, every frame of a drag, and the
+// nearest one is the focus as it is dragged; let go, it settles with that one in the middle. A tap (0.1.18: down and up
+// on the same app, the finger moving no more than 10 px, held under 1.5 s) on the middle one, or on any app on the
+// device (in a slot, in the package cache), reports it (opening or installing it is the caller's); one to download or
+// coming soon is brought to the middle first (260 ms). Above the honeycomb (0.1.18, the meeting's item 20: a thumb
+// sliding from below never covers them; no title any more), the middle one's name (24) and where it is (22,
+// app-ecosystem.md 2: 已装好 · 点一下打开 / 约 20 秒 (the copying) / 约 40 秒, from the last download's speed, or its
+// size). A new name fades in (200 ms); while a finger drags, the two lines are dimmed (55 %, 40 %). Each time another
+// app comes to the middle, yk_more_on_focus()'s callback hears it (Yay ticks there).
 //
 // Marks as on the app ring: in a slot none (a coral dot on the upper right when it has a newer version, `update`); in
 // the package cache a hollow sage ring on the lower right; to download dimmed to 42 % with the sage download mark; in
 // use a sage ring around it. On the app's disc its icon (Yay 0.1.5,
-// #531: the store's 64 x 64 A8 in its colour, at 84, 61, 45 or 34 px by the disc's size), or without one the name's
+// #531: the store's 64 x 64 A8 in its colour, at 84, 67, 51 or 39 px by the disc's size), or without one the name's
 // first character. Coming soon (即将推出): all of it at 42 %, no mark; the middle one tapped only shakes a little. A
-// preview (the store has no stable release of it) says 预览版 before where it is.
+// preview (the store has no stable release of it) looks and reads like any other (Yay 0.1.18: no 预览版 on the screen).
 //
 // One drawing object over the screen, only while it is open; what each frame repaints is the honeycomb's band (or
-// just the line below it). Under board_lock() (or from LVGL callbacks).
+// just the lines above it). Under board_lock() (or from LVGL callbacks).
 #pragma once
 
 #include <stdbool.h>
@@ -45,7 +48,7 @@ typedef struct {
     const char *name;  // NULL: the slug
     yk_more_where_t where;
     bool current;      // the app in use (正在用)
-    bool preview;      // only a preview is out (the store's channel): 预览版 · …
+    bool preview;      // only a preview is out (the store's channel); the screen says nothing of it (0.1.18)
     const char *glyph; // the character on its disc; NULL: the name's first
     uint32_t size;     // to download: its image's bytes (0: not known) ...
     int eta_s;         // ... and how long installing it would take, by the last download's speed (0: not measured);
@@ -96,6 +99,12 @@ bool yk_more_let_go(void);
 void yk_more_dev_halo(int opa);
 /** The index in the middle (-1: closed). */
 int yk_more_focus(void);
+/** Another app came to the middle (a drag passing it, a tap bringing it there): its index. On LVGL's task, in the
+ *  middle of a drag: be quick (post it on). */
+typedef void (*yk_more_focus_cb_t)(int index, void *ctx);
+/** Who hears it (NULL: nobody, the default). Kept across opens. Only added (0.1.18): Yay plays the settings dial's
+ *  「嗒」 there. */
+void yk_more_on_focus(yk_more_focus_cb_t cb, void *ctx);
 
 /** Development: how long opening took and how the frames went since it opened. */
 typedef struct {

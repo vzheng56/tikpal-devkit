@@ -3,7 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 OUT=$(mktemp -d)
-cc -std=c11 -Wall -Wextra -Werror -O1 -I ../include -o "$OUT/test_cloud" test_cloud.c ../yk_codec.c ../yk_sse.c ../yk_locale.c
+trap 'rm -rf "$OUT"' EXIT
+cc -std=c11 -Wall -Wextra -Werror -O1 -I ../include -I .. -o "$OUT/test_cloud" test_cloud.c ../yk_codec.c ../yk_sse.c ../yk_locale.c
 "$OUT/test_cloud"
 rm -rf "$OUT"
 
@@ -25,6 +26,9 @@ if [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/components/json/cJSON/cJSON.c" ]; t
   cc -std=c11 -Wall -Wextra -Werror -O1 -I stub -I ../include -I .. -I "$CJSON" -o "$OUT/test_me" test_me.c ../yaykit_cloud.c \
     ../yk_api.c ../yk_sse.c ../yk_locale.c ../yk_codec.c "$CJSON/cJSON.c"
   "$OUT/test_me"
+  cc -std=c11 -Wall -Wextra -Werror -O1 -DCONFIG_YK_CLOUD_HTTP_BUFFER_MIN=4100 -I stub -I ../include -I .. -I "$CJSON" \
+    -o "$OUT/test_me" test_me.c ../yaykit_cloud.c ../yk_api.c ../yk_sse.c ../yk_locale.c ../yk_codec.c "$CJSON/cJSON.c"
+  "$OUT/test_me"
   rm -rf "$OUT"
   # Activation and its fallback (a token by the device key after no answer or a 5xx): yaykit_account.c itself,
   # against test/stub, as a development build (`account drop`)
@@ -32,6 +36,16 @@ if [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/components/json/cJSON/cJSON.c" ]; t
   cc -std=c11 -Wall -Wextra -Werror -O1 -DCONFIG_YAY_DEV=1 -I stub -I ../include -I .. -I "$CJSON" \
     -o "$OUT/test_account" test_account.c ../yaykit_account.c ../yk_codec.c ../yk_locale.c "$CJSON/cJSON.c"
   "$OUT/test_account"
+  rm -rf "$OUT"
+  # What stands before a request's TLS: yk_http.c itself, against test/stub
+  OUT=$(mktemp -d)
+  cc -std=c11 -Wall -Wextra -Werror -O1 -I stub -I ../include -I .. -I "$CJSON" -o "$OUT/test_http" test_http.c ../yk_http.c \
+    "$CJSON/cJSON.c"
+  "$OUT/test_http"
+  # ... with the buffers a firmware asks for above its malloc limit (Yay)
+  cc -std=c11 -Wall -Wextra -Werror -O1 -DCONFIG_YK_CLOUD_HTTP_BUFFER_MIN=4100 -I stub -I ../include -I .. -I "$CJSON" \
+    -o "$OUT/test_http" test_http.c ../yk_http.c "$CJSON/cJSON.c"
+  "$OUT/test_http"
   rm -rf "$OUT"
 else
   echo "device API check skipped: set IDF_PATH for ESP-IDF's cJSON"

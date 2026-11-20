@@ -3,8 +3,8 @@
 #include <time.h>
 
 #include "yk_sheet.h"
+#include "yk_words.h"
 
-#define T(zh, en) (english ? (en) : (zh))
 
 // yaykit_wifi's yk_wifi_state_t, yaykit_cloud's yk_cloud_reach_t and yk_account_state_t, by number (this stays free of
 // those components: yaykit_app links them weakly).
@@ -14,17 +14,29 @@ enum { ACCOUNT_UNBOUND, ACCOUNT_ACTIVATING, ACCOUNT_BOUND, ACCOUNT_FAILED };
 
 const char *yk_sheet_battery_text(const yk_sheet_battery_t *b, bool named, bool english, char *buf, size_t size) {
     if (!size) return buf;
-    const char *name = named ? T("电量 ", "Battery ") : "";
     // Very low and the fault say so instead of a number (it would read 0 % for a long while); full and stopped as
     // the power chip says.
-    if (b->percent < 0) snprintf(buf, size, "%s", named ? T("电量还读不到", "Battery not read yet") : T("还读不到", "Not read yet"));
-    else if (b->usb && b->fault) snprintf(buf, size, "%s", T("电池可能有问题", "Battery may be faulty"));
-    else if (b->usb && b->low)
-        snprintf(buf, size, "%s", named ? T("电量很低，正在充电", "Very low, charging") : T("很低，正在充电", "Very low, charging"));
-    else if (b->usb && b->full) snprintf(buf, size, T("%s%d%% · 充满了", "%s%d%% · fully charged"), name, b->percent);
-    else if (b->usb && b->stopped) snprintf(buf, size, T("%s%d%% · 没在充电", "%s%d%% · not charging"), name, b->percent);
-    else if (b->charging) snprintf(buf, size, T("%s%d%% · 充电中", "%s%d%% · charging"), name, b->percent);
-    else snprintf(buf, size, "%s%d%%", name, b->percent);
+    char pct[12], value[48];
+    yk_words_num(pct, b->percent);
+    if (b->percent < 0) {
+        snprintf(buf, size, "%s", yk_word_in(english, named ? YK_STR_YAYKIT_SHEET_BATTERY_NOT_READ : YK_STR_YAYKIT_SHEET_NOT_READ));
+        return buf;
+    }
+    if (b->usb && b->fault) {
+        snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_BATTERY_FAULTY));
+        return buf;
+    }
+    if (b->usb && b->low) {
+        snprintf(buf, size, "%s", yk_word_in(english, named ? YK_STR_YAYKIT_BATTERY_LOW_CHARGING : YK_STR_YAYKIT_SHEET_LOW_CHARGING));
+        return buf;
+    }
+    const yk_str_t id = b->usb && b->full      ? YK_STR_YAYKIT_SHEET_BATTERY_FULL
+                        : b->usb && b->stopped ? YK_STR_YAYKIT_SHEET_BATTERY_STOPPED
+                        : b->charging          ? YK_STR_YAYKIT_SHEET_BATTERY_CHARGING
+                                               : YK_STR_YAYKIT_SHEET_PERCENT;
+    yk_wordf_in(english, value, sizeof(value), id, pct);
+    if (named) yk_wordf_in(english, buf, size, YK_STR_YAYKIT_SHEET_BATTERY_NAMED, value);
+    else snprintf(buf, size, "%s", value);
     return buf;
 }
 
@@ -34,20 +46,20 @@ const char *yk_sheet_wifi_text(int wifi, const char *ssid, int rssi, int reach, 
     if (!size) return buf;
     if (wifi == WIFI_CONNECTED && reach == REACH_FAILED) {
         wrong = true;
-        snprintf(buf, size, "%s", T("连不上服务器", "Can't reach server"));
+        snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_WIFI_NO_SERVER));
     } else if (wifi == WIFI_CONNECTED) {
-        const char *signal = rssi > -60 ? T("信号好", "strong") : rssi > -72 ? T("信号一般", "fair") : T("信号弱", "weak");
+        const char *signal = rssi > -60 ? yk_word_in(english, YK_STR_YAYKIT_WIFI_STRONG) : rssi > -72 ? yk_word_in(english, YK_STR_YAYKIT_WIFI_FAIR) : yk_word_in(english, YK_STR_YAYKIT_WIFI_WEAK);
         if (ssid && ssid[0]) snprintf(buf, size, "%s · %s", ssid, signal);  // one line, cut with … at a character
         else snprintf(buf, size, "%s", signal);
     } else if (wifi == WIFI_CONNECTING) {
-        snprintf(buf, size, "%s", T("正在连接", "Connecting"));  // connecting is never 没网
+        snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_WIFI_CONNECTING));  // connecting is never 没网
     } else if (wifi == WIFI_OFF) {
         // The app has not started it (yaykit_wifi has no stop: off means not started since this boot): its choice, not
         // a fault, so not 没打开 (user 11-02).
-        snprintf(buf, size, "%s", T("不用时关着", "Off when not in use"));
+        snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_WIFI_IDLE_OFF));
     } else {
         wrong = true;
-        snprintf(buf, size, "%s", T("没连上", "Not connected"));
+        snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_WIFI_NOT_CONNECTED));
     }
     if (problem) *problem = wrong;
     return buf;
@@ -66,9 +78,9 @@ const char *yk_sheet_phone_text(int account, const char *nickname, bool english,
     if (problem) *problem = account != ACCOUNT_BOUND && account != ACCOUNT_ACTIVATING;
     if (!size) return buf;
     if (account == ACCOUNT_BOUND && nickname && nickname[0])
-        snprintf(buf, size, T("已添加 · %s的手机", "Added · %s's phone"), nickname);
-    else if (account == ACCOUNT_BOUND) snprintf(buf, size, "%s", T("已添加", "Added"));
-    else if (account == ACCOUNT_ACTIVATING) snprintf(buf, size, "%s", T("正在添加", "Adding"));
-    else snprintf(buf, size, "%s", T("还没添加", "Not added"));
+        yk_wordf_in(english, buf, size, YK_STR_YAYKIT_PHONE_ADDED_TO, nickname);
+    else if (account == ACCOUNT_BOUND) snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_PHONE_ADDED));
+    else if (account == ACCOUNT_ACTIVATING) snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_PAIR_ADDING));
+    else snprintf(buf, size, "%s", yk_word_in(english, YK_STR_YAYKIT_ACCOUNT_NOT_ADDED));
     return buf;
 }

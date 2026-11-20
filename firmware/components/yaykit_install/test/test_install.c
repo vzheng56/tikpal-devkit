@@ -779,18 +779,88 @@ static void test_replace_review(void) {
 
 // ---------------------------------------------------------------- keys
 
+static void test_card(void) {
+    // Where the image comes from: the quickest that has it.
+    CHECK(yk_inst_from(true, true, true) == YK_INST_FROM_CACHE);
+    CHECK(yk_inst_from(true, false, false) == YK_INST_FROM_CACHE);
+    CHECK(yk_inst_from(false, true, true) == YK_INST_FROM_CARD);
+    CHECK(yk_inst_from(false, true, false) == YK_INST_FROM_CARD);  // no network, on the card: opens
+    CHECK(yk_inst_from(false, false, true) == YK_INST_FROM_NET);
+    CHECK(yk_inst_from(false, false, false) == YK_INST_FROM_NOWHERE);
+
+    // Nothing in the slot: nothing to keep.
+    yk_inst_keep_t k = yk_inst_keep(false, false, false);
+    CHECK(!k.backup && !k.record);
+    k = yk_inst_keep(false, true, true);
+    CHECK(!k.backup && !k.record);
+    // As before the card: a copy in the cache, or one made there.
+    k = yk_inst_keep(true, true, false);
+    CHECK(!k.backup && k.record);
+    k = yk_inst_keep(true, false, false);
+    CHECK(k.backup && k.record);
+    // On the card: no backup, and no record, which could only go looking in the cache.
+    k = yk_inst_keep(true, false, true);
+    CHECK(!k.backup && !k.record);
+    // In both: the cache can put it back by itself, so it does.
+    k = yk_inst_keep(true, true, true);
+    CHECK(!k.backup && k.record);
+
+    // The card gave out in ③.
+    CHECK(yk_inst_card_retry("SOURCE_FAILED", true));
+    CHECK(yk_inst_card_retry("HASH_MISMATCH", true));
+    CHECK(yk_inst_card_retry("BAD_IMAGE", true));
+    CHECK(!yk_inst_card_retry("FLASH_ERROR", true));  // the slot's flash: the network would meet the same
+    CHECK(!yk_inst_card_retry("SOURCE_FAILED", false));
+    CHECK(!yk_inst_card_retry(NULL, true));
+}
+
 static void test_keys(void) {
     size_t count;
     const uint8_t (*keys)[YK_SIG_KEY_BYTES] = yk_install_keys(&count);
     char id[17];
-    CHECK(count == 2);  // built with CONFIG_YAY_DEV (test/sdkconfig.h)
+    CHECK(count == 3);  // built with CONFIG_YAY_DEV (test/sdkconfig.h)
     CHECK(yk_sig_key_id(keys[0], id) && !strcmp(id, "07f1c022330a0a65"));
-    CHECK(count > 1 && yk_sig_key_id(keys[1], id) && !strcmp(id, "acdc1a5c2d08e68c"));
+    CHECK(count > 1 && yk_sig_key_id(keys[1], id) && !strcmp(id, "11cce39eabf1dcab"));
+    CHECK(count > 2 && yk_sig_key_id(keys[2], id) && !strcmp(id, "acdc1a5c2d08e68c"));
+    // Only the automation key is for extensions only.
+    CHECK(yk_install_key_extensions_only("11cce39eabf1dcab"));
+    CHECK(!yk_install_key_extensions_only("07f1c022330a0a65"));
+    CHECK(!yk_install_key_extensions_only("acdc1a5c2d08e68c"));
+    CHECK(!yk_install_key_extensions_only(""));
+    CHECK(!yk_install_key_extensions_only(NULL));
     // A signature from a test key (firmware/signing/TEST-ONLY-vectors.json) is never trusted.
     const yk_sig_image_t img = {.slug = "party-play", .version = "0.2.0", .size = 1234567,
                                 .sha256 = "a3f1c2d4e5b6a7980a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
                                 .board = "tikpal-r1", .layout = "yaykit-v1"};
     CHECK(yk_sig_verify(&img, "yks1.0000000000000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", keys, count) == YK_SIG_UNKNOWN_KEY);
+    CHECK(yk_install_verify(&img, "yks1.0000000000000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") == YK_SIG_UNKNOWN_KEY);
+
+    // The automation key's two vectors (docs/handoff/2026-11-05-另一台机器接手.md 9; tests/firmware-signature.test.ts
+    // has the same): both signatures are the key's own, but only the extension's is installed.
+    const yk_sig_image_t ext = {.slug = "breathe", .version = "1.2.3", .size = 2048000,
+                                .sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                                .board = "tikpal-r1", .layout = "yaykit-v1"};
+    const char *ext_sig = "yks1.11cce39eabf1dcab.ta_jnLSkMXJXk_6daaj6bnBDhZANkJ4ME9EvMMU1YwNcm_XE3YsncTnGebk5dugp6SmIFgtc6yVlkJtcDt4FKA";
+    const yk_sig_image_t yay = {.slug = "yay", .version = "1.2.3", .size = 3434784,
+                                .sha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                                .board = "tikpal-r1", .layout = "yaykit-v1"};
+    const char *yay_sig = "yks1.11cce39eabf1dcab.92pb2kmyREUlglvbx1SoNqiAhdPdjJMNgjOzBIUHWo2UGj3BwBrVNkASHlNLI5nEZSyaAGkf59Av1nSMUYAE8w";
+    CHECK(yk_install_verify(&ext, ext_sig) == YK_SIG_OK);
+    CHECK(yk_sig_verify(&yay, yay_sig, keys, count) == YK_SIG_OK);  // the curve says yes ...
+    CHECK(yk_install_verify(&yay, yay_sig) == YK_SIG_UNKNOWN_KEY);  // ... but it is not a key for Yay
+    // Nor for the recovery or the launcher, whatever the signature; the order of the verdicts stays yk_sig_verify's.
+    yk_sig_image_t sys = yay;
+    sys.slug = "recovery";
+    CHECK(yk_install_verify(&sys, yay_sig) == YK_SIG_UNKNOWN_KEY);
+    sys.slug = "launcher";
+    CHECK(yk_install_verify(&sys, yay_sig) == YK_SIG_UNKNOWN_KEY);
+    CHECK(yk_install_verify(&yay, "yks1.11cce39eabf1dcab.short") == YK_SIG_MALFORMED);
+    // Another app with the extension's signature: the key may sign it, the curve says no.
+    yk_sig_image_t other = ext;
+    other.slug = "party-play";
+    CHECK(yk_install_verify(&other, ext_sig) == YK_SIG_MISMATCH);
+    // The extension's signature over Yay's fields is still "unknown-key" (the key comes before the curve).
+    CHECK(yk_install_verify(&yay, ext_sig) == YK_SIG_UNKNOWN_KEY);
 }
 
 /** `pkg forget`: nothing after it (a line cut short) must not empty the cache (10-25). */
@@ -812,7 +882,35 @@ static void test_forget_args(void) {
     CHECK(yk_inst_forget_args(3, empty, &slug) == YK_FORGET_USAGE);
 }
 
+/** A USB install's quiet reads: the ACK said again while the host waits for it, never mid-chunk, never before the
+ *  first ACK; USB_TIMEOUT after 5 s of nothing, as before (11-18: an ACK lost while the recovery logged Wi-Fi). */
+static void test_usb_quiet(void) {
+    // Just after an ACK: wait.
+    CHECK(yk_inst_usb_quiet(0, 0, 4096, 0) == YK_INST_USB_WAIT);
+    CHECK(yk_inst_usb_quiet(999, 0, 4096, 999) == YK_INST_USB_WAIT);
+    // A second with nothing of the next chunk: the ACK again; then once a second.
+    CHECK(yk_inst_usb_quiet(1000, 0, 4096, 1000) == YK_INST_USB_AGAIN);
+    CHECK(yk_inst_usb_quiet(1250, 0, 4096, 250) == YK_INST_USB_WAIT);  // said again 250 ms ago
+    CHECK(yk_inst_usb_quiet(2000, 0, 4096, 1000) == YK_INST_USB_AGAIN);
+    CHECK(yk_inst_usb_quiet(4999, 0, 4096, 1000) == YK_INST_USB_AGAIN);
+    // Part of the chunk in: the host is sending, nothing to say again.
+    CHECK(yk_inst_usb_quiet(1500, 512, 4096, 1500) == YK_INST_USB_WAIT);
+    // No ACK yet (before the first chunk): nothing to say again.
+    CHECK(yk_inst_usb_quiet(3000, 0, 0, 3000) == YK_INST_USB_WAIT);
+    // 5 s without a byte: USB_TIMEOUT, whatever came of the chunk.
+    CHECK(yk_inst_usb_quiet(5000, 0, 4096, 1000) == YK_INST_USB_TIMEOUT);
+    CHECK(yk_inst_usb_quiet(5000, 512, 4096, 5000) == YK_INST_USB_TIMEOUT);
+    CHECK(yk_inst_usb_quiet(5000, 0, 0, 5000) == YK_INST_USB_TIMEOUT);
+    // A host that stalled 1.2 s, got the first ACK late and sent the next chunk: the device said it again once (a
+    // count the host has passed: skipped) and the bytes come in; the next ACK is the new count.
+    uint32_t said = 0;
+    for (uint32_t t = 0; t < 1200; t += 50)
+        if (yk_inst_usb_quiet(t, 0, 4096, t - said) == YK_INST_USB_AGAIN) said = t;
+    CHECK(said == 1000);
+}
+
 int main(void) {
+    test_usb_quiet();
     test_writer_slot();
     test_writer_power_cut_and_restart();
     test_writer_cache_extent();
@@ -828,6 +926,7 @@ int main(void) {
     test_replace_next();
     test_replace_cut_and_restore();
     test_replace_review();
+    test_card();
     test_keys();
     test_forget_args();
     if (failures) {

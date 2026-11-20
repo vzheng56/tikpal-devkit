@@ -26,6 +26,8 @@
 #define YKM_REST_G_MIN 0.85f // what |a| reads at rest is taken only within these (a sensor further off is broken)
 #define YKM_REST_G_MAX 1.15f
 #define YKM_UNSETTLED_G 0.04f  // before the first steady second: rest is |a| within still_g + this of 1 g
+#define YKM_START_G_MIN 0.5f   // the estimate starts from the first sample whose |a| is within these; the ones before are
+#define YKM_START_G_MAX 1.5f   // dropped (a sensor just switched on reads all zeros: that is not lying flat glass up)
 
 typedef struct {
     int64_t t_ms;
@@ -55,6 +57,7 @@ typedef struct {
     // rest and movement
     int64_t rest_since_ms, quiet_since_ms, last_motion_ms;
     bool still, moving, was_moved;  // was_moved: moved since the last rest (a put-down is due)
+    bool rested;                   // still at least once since the start: a pick-up is only from rest
     float rest_g[3];               // gravity when it came to rest (the lift's tilt reference)
     int64_t lift_cond_since_ms, last_lift_ms;
     // orientation
@@ -84,6 +87,7 @@ typedef struct {
     int64_t hist_last_ms;
     float holder_angle, holder_conf;
     bool holder_known;
+    bool holder_stale;             // holder_conf is already the halved one: nothing new since it was worked out
 } ykm_core_t;
 
 void ykm_init(ykm_core_t *c, const yk_motion_thresholds_t *th, const yk_motion_cal_t *cal);
@@ -107,3 +111,11 @@ int ykm_csv_format(char *out, size_t size, int64_t t_us, const float acc[3], con
 #define YKM_CSV_HEADER "t_us,ax,ay,az,gx,gy,gz"
 
 const char *ykm_kind_name(yk_motion_kind_t kind);
+
+/** A gyroscope sample that gives nothing: every axis at -full scale at once (raw 0x8000; 新四号机 11-18, a part whose
+ *  gyroscope never started). Every axis there at once is no real turn. The driver says it in the log; it still feeds
+ *  the reading as it is: fed as none (all zeros, the accelerometer-only way) the recordings of that device told no
+ *  shake either, and pick-ups changed (test_dead_gyro). */
+static inline bool ykm_gyro_pinned(const int16_t raw[3]) {
+    return raw[0] == INT16_MIN && raw[1] == INT16_MIN && raw[2] == INT16_MIN;
+}

@@ -2,6 +2,7 @@
 #pragma once
 #include <stdint.h>
 typedef struct _lv_obj_t lv_obj_t;
+typedef struct _lv_indev_t lv_indev_t;  // yaykit_ui.h (yk_ui_screen_taps)
 typedef struct _lv_layer_t lv_layer_t;
 typedef struct _lv_event_t lv_event_t;
 typedef struct _lv_image_dsc_t lv_image_dsc_t;

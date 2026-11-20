@@ -8,6 +8,7 @@ void yk_key_sm_init(yk_key_sm_t *sm, const yk_key_config_t *cfg) {
     if (sm->cfg.hold_ms <= 0) sm->cfg.hold_ms = 300;
     if (sm->cfg.double_ms <= 0) sm->cfg.double_ms = 450;
     sm->tap_release_ms = -1;
+    sm->up_seen_ms = -1;
 }
 
 static int emit(yk_key_event_t *out, int n, yk_key_event_type_t type, int64_t at, int32_t held) {
@@ -32,7 +33,8 @@ static int hold_if_due(yk_key_sm_t *sm, int64_t now_ms, yk_key_event_t *out, int
 }
 
 int yk_key_sm_tick(yk_key_sm_t *sm, int64_t now_ms, yk_key_event_t *out) {
-    int n = hold_if_due(sm, now_ms, out, 0);
+    // Read up while down here: HOLD waits for the second reading (yk_key_sm_align), which may make it a tap.
+    int n = sm->up_seen_ms < 0 ? hold_if_due(sm, now_ms, out, 0) : 0;
     // With the key up and the window closed, no double click can follow any more.
     if (!sm->pressed && sm->tap_release_ms >= 0 && now_ms - sm->tap_release_ms > sm->cfg.double_ms) {
         if (sm->tap_pending) n = send_pending_tap(sm, out, n);
@@ -43,11 +45,16 @@ int yk_key_sm_tick(yk_key_sm_t *sm, int64_t now_ms, yk_key_event_t *out) {
 
 int yk_key_sm_edge(yk_key_sm_t *sm, bool pressed, int64_t now_ms, yk_key_event_t *out) {
     if (pressed == sm->pressed) return 0;  // repeated or bounced edge
+    // Read up before any HOLD was sent: the key was up when HOLD came due, so this press was never a hold.
+    if (!pressed && sm->up_seen_ms >= 0 && !sm->hold_sent && now_ms >= sm->press_ms + sm->cfg.hold_ms)
+        now_ms = sm->press_ms + sm->cfg.hold_ms - 1;
+    sm->up_seen_ms = -1;
     int n = yk_key_sm_tick(sm, now_ms, out);  // anything due before this edge comes first
     if (pressed) {
         sm->pressed = true;
         sm->hold_sent = false;
         sm->press_ms = now_ms;
+        sm->level_ms = now_ms;
         sm->second = !sm->cfg.no_double && sm->tap_release_ms >= 0 && now_ms - sm->tap_release_ms <= sm->cfg.double_ms;
         return emit(out, n, YK_KEY_DOWN, now_ms, 0);
     }
@@ -73,8 +80,23 @@ int yk_key_sm_edge(yk_key_sm_t *sm, bool pressed, int64_t now_ms, yk_key_event_t
     return n < YK_KEY_SM_MAX_EVENTS ? n : YK_KEY_SM_MAX_EVENTS;
 }
 
+int yk_key_sm_align(yk_key_sm_t *sm, bool pressed, int64_t now_ms, yk_key_event_t *out) {
+    if (sm->pressed) {
+        sm->level_ms = now_ms;
+        if (pressed) sm->up_seen_ms = -1;  // as it should be, or it bounced back
+        else if (sm->up_seen_ms < 0) sm->up_seen_ms = now_ms;  // read it again YK_KEY_SM_CONFIRM_MS later
+        else if (now_ms - sm->up_seen_ms >= YK_KEY_SM_CONFIRM_MS) return yk_key_sm_edge(sm, false, now_ms, out);
+    }
+    return yk_key_sm_tick(sm, now_ms, out);
+}
+
 int64_t yk_key_sm_deadline(const yk_key_sm_t *sm) {
-    if (sm->pressed) return sm->hold_sent ? -1 : sm->press_ms + sm->cfg.hold_ms;
+    if (sm->pressed) {
+        if (sm->up_seen_ms >= 0) return sm->up_seen_ms + YK_KEY_SM_CONFIRM_MS;
+        if (sm->hold_sent) return sm->level_ms + YK_KEY_SM_POLL_HELD_MS;
+        const int64_t poll = sm->level_ms + YK_KEY_SM_POLL_MS, hold = sm->press_ms + sm->cfg.hold_ms;
+        return poll < hold ? poll : hold;
+    }
     if (sm->tap_release_ms >= 0) return sm->tap_release_ms + sm->cfg.double_ms + 1;
     return -1;
 }

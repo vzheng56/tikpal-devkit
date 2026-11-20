@@ -156,9 +156,22 @@ static void test_battery_adc_and_prefs(void) {
     CHECK(!yk_board_tz_ok(tz_long));
     tz_long[YK_PREF_TZ_MAX - 1] = 0;
     CHECK(yk_board_tz_ok(tz_long));  // 63 characters: the most
+    // The device's language (0.1.17): as the platform says it, what yk_locale_ok takes (yaykit_cloud: this one has no
+    // access to it).
+    CHECK(yk_board_lang_ok("zh-Hans") && yk_board_lang_ok("en") && yk_board_lang_ok("ja") && yk_board_lang_ok("es-419"));
+    CHECK(!yk_board_lang_ok(NULL) && !yk_board_lang_ok("") && !yk_board_lang_ok("z") && !yk_board_lang_ok("-en") &&
+          !yk_board_lang_ok("9a") && !yk_board_lang_ok("en US") && !yk_board_lang_ok("zh-Hans-CN") &&
+          !yk_board_lang_ok("\xe4\xb8\xad\xe6\x96\x87"));
+    CHECK(yk_board_lang_ok("abcdefg") && !yk_board_lang_ok("abcdefgh"));  // 7 characters: the most
     CHECK(yk_board_tz_offset_ok(480) && yk_board_tz_offset_ok(-720) && yk_board_tz_offset_ok(840) &&
           yk_board_tz_offset_ok(345) && yk_board_tz_offset_ok(0));  // Shanghai, the ends, Kathmandu, UTC
     CHECK(!yk_board_tz_offset_ok(-721) && !yk_board_tz_offset_ok(841) && !yk_board_tz_offset_ok(-2147483647));
+    // The colourway (0.1.19 4.7): after the buddy; 0..4 stand (COLORWAYS' order), missing or one this build does not
+    // know is the original.
+    CHECK(YK_PREF_COLORWAY == 4 && yk_board_pref_read(YK_PREF_COLORWAY, -1) == 0);
+    for (int c = 0; c <= 4; c++) CHECK(yk_board_pref_read(YK_PREF_COLORWAY, c) == c && yk_board_pref_clamp(YK_PREF_COLORWAY, c) == c);
+    CHECK(yk_board_pref_read(YK_PREF_COLORWAY, 5) == 0 && yk_board_pref_read(YK_PREF_COLORWAY, 254) == 0 &&
+          yk_board_pref_clamp(YK_PREF_COLORWAY, 9) == 0 && yk_board_pref_clamp(YK_PREF_COLORWAY, -1) == 0);
     // The buddy (0.1.12): added after the others, which keep their numbers (NVS keys are looked up by them).
     CHECK(YK_PREF_VOLUME == 0 && YK_PREF_BRIGHTNESS == 1 && YK_PREF_SCREEN_OFF == 2 && YK_PREF_BUDDY == 3);
     // Never written (no main firmware does yet): Pip. 0 Pip, 3 Mote, 4 Dial, 5 Bloom stand.

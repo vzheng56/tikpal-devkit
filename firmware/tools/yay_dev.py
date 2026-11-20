@@ -6,7 +6,10 @@ erases anything. Opening the port may restart the device once; that changes no d
 
   yay_dev.py [--port P] info | heap | logs [seconds] [prefix ...]
   yay_dev.py tap | double | hold <ms> | say <seconds> [text]       (development builds, CONFIG_YAY_DEV)
-  yay_dev.py state <mode> | action '<json>' | inbox '<json>' | server <url>   (main firmware, development builds)
+  yay_dev.py state | server <url>                        (main firmware, development builds)
+  yay_dev.py action '<json>'                             (a server action, through mock-voice-server.ts: POST to
+                                                          127.0.0.1:8789/action, to every device connected to it,
+                                                          e.g. `yay server usb` and a bridge; not the serial port)
   yay_dev.py launch <slug> ['<json>'] | switch <slot 1-3> | exit | recovery
   yay_dev.py install --slot <1-3> <build dir or .bin> [--slug s] [--open]
   yay_dev.py snap <out.png>
@@ -16,6 +19,8 @@ erases anything. Opening the port may restart the device once; that changes no d
   yay_dev.py clip <16 kHz mono wav> | firstword [trials] [full|plain|nsonly] [last.wav]
                                                          (main firmware, development builds: the first-word
                                                           test plays the clip through the speaker)
+  yay_dev.py pip-load <yay_pip.ykres>                    (Yay 0.1.18 development builds: Pip's place's file
+                                                          over USB, checked, hung and written: no network needed)
   yay_dev.py bridge [host:port] [seconds]                (main firmware, development builds, `yay server usb`:
                                                           the session over USB to mock-voice-server.ts)
   yay_dev.py run '<console line>' [seconds]
@@ -138,13 +143,15 @@ def cmd_install(con, args):
     if '--slug' in args:
         slug = args[args.index('--slug') + 1]
     info = con.info()
-    if not info or info['app']['slug'] != 'launcher':
+    switched = not info or info['app']['slug'] != 'launcher'
+    if switched:
         send(con, 'app recovery')
         if not wait_for(con, 'YAYKIT_LAUNCHER_READY', 20):
             sys.exit('the recovery did not start')
-        time.sleep(0.5)
     print(f'installing {slug} ({len(data)} bytes) into slot {slot}', flush=True)
-    result = install(con, slot - 1, data, slug)
+    # The recovery settled first: just started, at least 10 s (its first seconds, Wi-Fi's, are its console's busiest:
+    # an install begun 0.5 s in lost a YK_ACK twice on 新四号机, 11-18); then its Wi-Fi up or 3 s quiet, 20 s at most.
+    result = install(con, slot - 1, data, slug, settle=(10 if switched else 0, 3, 20))
     print(json.dumps(result), flush=True)
     if not str(result.get('result', '')).startswith('YK_INSTALL OK'):
         sys.exit(1)
@@ -305,6 +312,24 @@ def cmd_clip(con, path):
     print(wait_for(con, 'YAY_CLIP done', 5))
 
 
+def cmd_pip_load(con, path):
+    """Pip's place's file (the build's yay_pip.ykres) into a development Yay over USB (`yay pip put`): checked against
+    the sha256 built into it, then hung and written into Pip's place as a fetched one is (Yay 0.1.18)."""
+    data = open(path, 'rb').read()
+    con.s.reset_input_buffer()
+    send(con, 'yay pip put begin')
+    if not wait_for(con, 'YAY_PIP put begin', 5):
+        sys.exit('no answer to `yay pip put` (a development build of Yay 0.1.18 or later?)')
+    step = 1536
+    for at in range(0, len(data), step):
+        piece = base64.b64encode(data[at:at + step]).decode()
+        send(con, f'yay pip put {at} {piece}')
+        if not wait_for(con, f'YAY_PIP put at={at + len(data[at:at + step])}', 5):
+            sys.exit(f'stopped at byte {at}')
+    send(con, 'yay pip put commit')
+    print(wait_for(con, 'YAY_PIP fetched', 10) or wait_for(con, 'YAY_PIP put commit', 2) or 'no answer to commit')
+
+
 def cmd_firstword(con, trials, how='full', out=None):
     """Runs `yay firstword` and prints its lines; with out, saves the last trial's recording."""
     con.s.reset_input_buffer()
@@ -386,14 +411,33 @@ def cmd_bridge(con, target, seconds):
         sock.close()
 
 
+def cmd_action(body, address='127.0.0.1:8789'):
+    """A server action (`app.open`, `app.install`, `volume.set`…) through the local mock-voice-server, as the platform
+    sends one: its fields as JSON, the mock adds the id. The device's action.done is in the mock's log. The serial port
+    is not opened: a bridge (`yay_dev.py bridge`) holds it while the device talks to the mock."""
+    import urllib.error, urllib.request
+    try:
+        fields = json.loads(body)
+    except ValueError:
+        sys.exit("action '<json>': the action's fields, e.g. '{\"kind\":\"app.open\",\"slug\":\"language-buddy\"}'")
+    request = urllib.request.Request(f'http://{address}/action', data=json.dumps(fields).encode(), method='POST')
+    try:
+        with urllib.request.urlopen(request, timeout=5) as answer:
+            print(answer.read().decode().strip())
+    except (urllib.error.URLError, OSError) as e:
+        sys.exit(f'no mock-voice-server at {address} ({e}): node --import tsx yaykit/scripts/mock-voice-server.ts')
+
+
 def main():
     args = sys.argv[1:]
-    port = default_port()
+    port = None
     if args[:1] == ['--port']:
         port, args = args[1], args[2:]
     if not args:
         sys.exit(__doc__)
-    con = Console(port)
+    if args[0] == 'action':  # the mock's HTTP, not the device's port
+        return cmd_action(args[1] if len(args) > 1 else '')
+    con = Console(port or default_port())
     time.sleep(0.3)
     cmd, rest = args[0], args[1:]
     if cmd == 'info':
@@ -411,9 +455,7 @@ def main():
     elif cmd == 'say':
         run(con, 'yay say ' + ' '.join(rest), float(rest[0]) + 8)
     elif cmd in ('state', 'server'):
-        run(con, f'yay {cmd} {rest[0]}', 3)
-    elif cmd in ('action', 'inbox'):
-        run(con, f"yay {cmd} {rest[0]}", 5)
+        run(con, ' '.join(['yay', cmd] + rest[:1]), 3)  # `yay state` takes nothing
     elif cmd == 'launch':
         run(con, 'yay launch ' + ' '.join(rest), 8)
     elif cmd == 'switch':  # slots 1-3 here; launcher.switch has always taken 0-2
@@ -434,6 +476,8 @@ def main():
         cmd_bridge(con, rest[0] if rest else '127.0.0.1:8788', rest[1] if len(rest) > 1 else 3600)
     elif cmd == 'clip':
         cmd_clip(con, rest[0])
+    elif cmd == 'pip-load':
+        cmd_pip_load(con, rest[0])
     elif cmd == 'firstword':
         cmd_firstword(con, rest[0] if rest else '20', rest[1] if len(rest) > 1 else 'full',
                       rest[2] if len(rest) > 2 else None)

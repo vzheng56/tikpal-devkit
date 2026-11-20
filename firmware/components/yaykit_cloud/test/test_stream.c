@@ -39,8 +39,26 @@ static const char *str(const cJSON *o, const char *name) {
 }
 
 /** A fileStreamRegister fixture: the device's body for the same file says the same. */
+static yk_cloud_mono_t mono_of(const cJSON *o) {
+    return (yk_cloud_mono_t){(uint32_t)at(o, "bootId")->valuedouble, (uint64_t)at(o, "monoMs")->valuedouble};
+}
+
 static void stream_register(const cJSON *v) {
     const cJSON *rec = at(v, "recording"), *t = at(v, "transcribe");
+    // Yay 0.1.20's fields, when the fixture has them (packages/contracts after the 0.1.20 contract).
+    const cJSON *ck = at(v, "clock"), *ls = ck ? at(ck, "lastSync") : NULL, *bt = at(v, "batch");
+    yk_cloud_clock_t clock = {0};
+    if (ck) {
+        clock.at = mono_of(ck);
+        clock.synced = ls != NULL;
+        if (ls) {
+            clock.last_sync = mono_of(ls);
+            clock.last_sync_at = str(ls, "at");
+        }
+        clock.now = mono_of(at(ck, "now"));
+    }
+    const yk_cloud_batch_t batch = {bt ? str(bt, "id") : NULL, bt ? (int)at(bt, "index")->valuedouble : 0,
+                                    bt ? (int)at(bt, "count")->valuedouble : 0};
     const yk_cloud_stream_t f = {
         .id = "rec-1",
         .recording = str(rec, "id"),
@@ -50,6 +68,10 @@ static void stream_register(const cJSON *v) {
         .transcribe = t && cJSON_IsTrue(at(t, "enabled")),
         .language = t ? str(t, "language") : NULL,
         .retention = str(v, "retention"),
+        .purpose = str(v, "purpose"),
+        .capture = str(v, "capture"),
+        .clock = ck ? &clock : NULL,
+        .batch = bt ? &batch : NULL,
     };
     char *body = yk_api_stream_body(&f);
     cJSON *got = cJSON_Parse(body);
@@ -67,6 +89,49 @@ static void stream_register(const cJSON *v) {
     if (!t) CHECK(cJSON_IsFalse(at(at(got, "transcribe"), "enabled")));
     cJSON_Delete(got);
     cJSON_free(body);
+}
+
+/** The recording card's request is 0.4.0's, byte for byte (the device service is strict: a field more is a 400 before
+ *  its contract has it): what 0.4.0's yk_api_stream_body made for these two files, saved before 0.1.20's fields. */
+static void test_card_body_unchanged(void) {
+    current = "the card's body as 0.4.0's";
+    const yk_cloud_stream_t a = {.id = "20261115-101500-a1b2-1", .recording = "20261115-101500-a1b2", .segment = 1,
+                                 .recorded_at = "2026-11-15T10:15:00Z", .clock_trusted = true, .transcribe = true};
+    const yk_cloud_stream_t b = {.id = "t0-0badf00d-2", .recording = "t0-0badf00d", .segment = 2, .transcribe = false};
+    char *x = yk_api_stream_body(&a), *y = yk_api_stream_body(&b);
+    CHECK(!strcmp(x, "{\"kind\":\"recording\",\"contentType\":\"audio/ogg\",\"recordedAt\":\"2026-11-15T10:15:00Z\","
+                     "\"clockTrusted\":true,\"recording\":{\"id\":\"20261115-101500-a1b2\",\"segment\":1},"
+                     "\"transcribe\":{\"enabled\":true}}"));
+    CHECK(!strcmp(y, "{\"kind\":\"recording\",\"contentType\":\"audio/ogg\",\"clockTrusted\":false,"
+                     "\"recording\":{\"id\":\"t0-0badf00d\",\"segment\":2},\"transcribe\":{\"enabled\":false}}"));
+    cJSON_free(x);
+    cJSON_free(y);
+    // Yay's: every field, the numbers whole at their limits.
+    current = "Yay's body";
+    const yk_cloud_clock_t k = {.at = {7, 1099511627775ull}, .synced = true, .last_sync = {6, 42},
+                                .last_sync_at = "2026-11-15T09:00:00Z", .now = {2147483647u, 0}};
+    const yk_cloud_batch_t bt = {"b-1", 2, 5};
+    const yk_cloud_stream_t c = {.id = "t0-cafe-1", .recording = "t0-cafe", .segment = 1, .purpose = "offline_note",
+                                 .capture = "hold", .clock = &k, .batch = &bt};
+    char *z = yk_api_stream_body(&c);
+    cJSON *got = cJSON_Parse(z);
+    CHECK(!strcmp(str(got, "purpose"), "offline_note") && !strcmp(str(got, "capture"), "hold"));
+    const cJSON *gc = at(got, "clock"), *gl = at(gc, "lastSync"), *gn = at(gc, "now"), *gb = at(got, "batch");
+    CHECK(at(gc, "bootId")->valuedouble == 7 && at(gc, "monoMs")->valuedouble == 1099511627775.0);
+    CHECK(strstr(z, "\"monoMs\":1099511627775") != NULL);  // printed whole
+    CHECK(at(gl, "bootId")->valuedouble == 6 && at(gl, "monoMs")->valuedouble == 42 &&
+          !strcmp(str(gl, "at"), "2026-11-15T09:00:00Z"));
+    CHECK(at(gn, "bootId")->valuedouble == 2147483647.0 && at(gn, "monoMs")->valuedouble == 0);
+    CHECK(!strcmp(str(gb, "id"), "b-1") && at(gb, "index")->valuedouble == 2 && at(gb, "count")->valuedouble == 5);
+    cJSON_Delete(got);
+    cJSON_free(z);
+    const yk_cloud_clock_t k2 = {.at = {1, 5}, .now = {1, 9}};  // never set: no lastSync
+    const yk_cloud_stream_t d = {.id = "t0-cafe-1", .recording = "t0-cafe", .segment = 1, .clock = &k2};
+    z = yk_api_stream_body(&d);
+    got = cJSON_Parse(z);
+    CHECK(at(got, "clock") && !at(at(got, "clock"), "lastSync") && !at(got, "purpose") && !at(got, "batch"));
+    cJSON_Delete(got);
+    cJSON_free(z);
 }
 
 static void stream_state(const cJSON *v) {
@@ -181,9 +246,15 @@ int main(int argc, char **argv) {
         read++;
     }
     CHECK(read >= 6);  // two of each, as the contract has them
+    test_card_body_unchanged();
     test_answers();
     test_codes();
     test_paths();
+    // The completion's time by the recording's length (新四号机 11-18: a 4 s note's held the flash task 51 s).
+    CHECK(yk_api_stream_complete_ms(0) == 15000 && yk_api_stream_complete_ms(-1) == 15000);
+    CHECK(yk_api_stream_complete_ms(4000) == 15133);
+    CHECK(yk_api_stream_complete_ms(60000) == 17000);
+    CHECK(yk_api_stream_complete_ms(3600000) == 130000 && yk_api_stream_complete_ms(36000000) == 130000);
     printf("yaykit_cloud stream host tests: %d checks over %d fixtures, %d failures\n", checks, read, failures);
     cJSON_Delete(fixtures);
     free(text);

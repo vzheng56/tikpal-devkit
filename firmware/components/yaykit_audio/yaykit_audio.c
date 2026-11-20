@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "model_path.h"
 #include "yk_ptt.h"
+#include "yk_retry.h"
 #include "yk_srmodels.h"
 
 static const char *TAG = "yk_audio";
@@ -42,6 +43,8 @@ static struct {
     TaskHandle_t task;
     SemaphoreHandle_t stopped;
     volatile bool run, running;
+    volatile bool open_failed;  // the last start's open gave up (yk_audio_open_failed)
+    uint32_t open_retried, open_gave_up;  // since the firmware started (yk_audio_stats)
     yk_audio_config_t cfg;
     yk_fe_t *fe;
     int16_t *tdm;               // one 20 ms read, PSRAM
@@ -214,6 +217,26 @@ static void process_frame(void) {
     }
 }
 
+// The microphones' open, tried again after a failure (yk_retry, YK_AUDIO_OPEN_TRIES).
+typedef struct {
+    esp_codec_dev_handle_t mic;
+    esp_codec_dev_sample_info_t *fs;
+    int tries;
+} open_try_t;
+
+static int open_attempt(void *ctx) {
+    open_try_t *o = ctx;
+    o->tries++;
+    esp_log_level_set("i2s_common", ESP_LOG_NONE);  // "channel not enabled" on reopen is harmless
+    const int r = esp_codec_dev_open(o->mic, o->fs);
+    esp_log_level_set("i2s_common", ESP_LOG_ERROR);
+    if (r != ESP_CODEC_DEV_OK) ESP_LOGW(TAG, "microphones did not open (try %d of %d)", o->tries, YK_AUDIO_OPEN_TRIES);
+    return r != ESP_CODEC_DEV_OK;
+}
+static void open_undo(void *ctx) { esp_codec_dev_close(((open_try_t *)ctx)->mic); }  // what the failed open set up
+static void open_pause(void *ctx, int ms) { (void)ctx, vTaskDelay(pdMS_TO_TICKS(ms)); }
+static bool open_wanted(void *ctx) { return (void)ctx, A.run; }  // the key went up meanwhile: not wanted any more
+
 static void capture_task(void *arg) {
     (void)arg;
     esp_codec_dev_handle_t mic = audio_mic();
@@ -228,13 +251,23 @@ static void capture_task(void *arg) {
                             ESP_CODEC_DEV_MAKE_CHANNEL_MASK(2) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(3),
             .bits_per_sample = 16,
         };
-        esp_log_level_set("i2s_common", ESP_LOG_NONE);  // "channel not enabled" on reopen is harmless
-        const bool open = esp_codec_dev_open(mic, &fs) == ESP_CODEC_DEV_OK;
-        esp_log_level_set("i2s_common", ESP_LOG_ERROR);
+        open_try_t ot = {.mic = mic, .fs = &fs};
+        const yk_retry_t retry = {open_attempt, open_undo, open_pause, open_wanted, &ot};
+        const bool open = yk_retry(&retry, YK_AUDIO_OPEN_TRIES, YK_AUDIO_OPEN_RETRY_MS, NULL) > 0;
         if (open) esp_codec_dev_set_in_gain(mic, A.cfg.mic_gain_db > 0 ? A.cfg.mic_gain_db : 30.0f);
         A.st.open_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+        A.st.open_tries = (uint8_t)ot.tries;
+        if (open && ot.tries > 1) A.open_retried++;
+        // Given up only when it was still wanted: the key that went up meanwhile is no failure of the microphones.
+        A.st.open_failed = !open && A.run;
+        if (A.st.open_failed) {
+            A.open_gave_up++;
+            ESP_LOGE(TAG, "microphones did not open (%d tries, %u ms)", ot.tries, (unsigned)A.st.open_ms);
+        } else if (open && ot.tries > 1) {
+            ESP_LOGW(TAG, "microphones opened on try %d (%u ms)", ot.tries, (unsigned)A.st.open_ms);
+        }
+        A.open_failed = A.st.open_failed;
         A.running = open;
-        if (!open) ESP_LOGE(TAG, "microphones did not open");
         int64_t last = esp_timer_get_time();
         while (open && A.run) {
             if (esp_codec_dev_read(mic, (uint8_t *)A.tdm, FRAME * SLOTS * sizeof(int16_t)) != ESP_CODEC_DEV_OK) {
@@ -315,6 +348,7 @@ esp_err_t yk_audio_start(const yk_audio_config_t *cfg) {
     A.st.ns_chunk = A.ns_chunk, A.st.vad_chunk = A.vad_chunk;
     A.fe_sum = A.ns_sum = A.vad_sum = A.fin_sum = 0;
     xSemaphoreTake(A.stopped, 0);
+    A.open_failed = false;
     A.run = true;
     xTaskNotifyGive(A.task);
     return ESP_OK;
@@ -327,6 +361,8 @@ void yk_audio_stop(void) {
 }
 
 bool yk_audio_running(void) { return A.running; }
+
+bool yk_audio_open_failed(void) { return A.open_failed; }
 
 size_t yk_audio_preroll(int16_t *out, size_t max_samples) {
     taskENTER_CRITICAL(&A.lock);
@@ -400,6 +436,8 @@ const uint8_t *yk_audio_rec_wav(size_t *len, float *seconds, bool *speech) {
 
 void yk_audio_stats(yk_audio_stats_t *out) {
     *out = A.st;
+    out->open_retried = A.open_retried;
+    out->open_gave_up = A.open_gave_up;
     const uint32_t f = A.st.frames ? A.st.frames : 1;
     out->fe_us = (uint32_t)(A.fe_sum / f);
     out->ns_us = (uint32_t)(A.ns_sum / f);
@@ -447,9 +485,11 @@ static void print_stats(const char *tag) {
     yk_audio_stats_t s;
     yk_audio_stats(&s);
     printf("AUDIO_STAT %s models=%d model_bytes=%u model_load_ms=%u ns_chunk=%u vad_chunk=%u frames=%u late=%u "
-           "open_ms=%u fe_us=%u ns_us=%u vad_us=%u finish_us=%u busy_max_us=%u cpu_pct=%.1f\n",
+           "open_ms=%u open_tries=%u open_failed=%d open_retried=%u open_gave_up=%u fe_us=%u ns_us=%u vad_us=%u finish_us=%u "
+           "busy_max_us=%u cpu_pct=%.1f\n",
            tag, s.models, (unsigned)s.models_bytes, (unsigned)s.models_load_ms, (unsigned)s.ns_chunk,
-           (unsigned)s.vad_chunk, (unsigned)s.frames, (unsigned)s.late, (unsigned)s.open_ms, (unsigned)s.fe_us,
+           (unsigned)s.vad_chunk, (unsigned)s.frames, (unsigned)s.late, (unsigned)s.open_ms, (unsigned)s.open_tries,
+           s.open_failed, (unsigned)s.open_retried, (unsigned)s.open_gave_up, (unsigned)s.fe_us,
            (unsigned)s.ns_us, (unsigned)s.vad_us, (unsigned)s.finish_us, (unsigned)s.busy_max_us,
            (s.fe_us + s.ns_us + s.vad_us + s.finish_us) / 200.0);  // per 20 ms of audio
 }

@@ -8,6 +8,9 @@
 // well, a tap followed at once by a hold sends only the hold (down up down hold up: no TAP), as the main firmware does.
 // By default yaykit_app takes DOUBLE: the app ring (P23; before API level 3, back to Yay). An app that takes it over
 // must offer another way home.
+// While the key is down its level is also read (every 25 ms, every 100 ms after HOLD): a release whose edge was lost
+// still ends the press, with UP once two readings 25 ms apart find the key up (an UP always follows a DOWN); read up when
+// HOLD comes due, it is a tap (released at hold_ms - 1), never a hold.
 // GPIO0 is also the download strapping pin: wait for it to be released (yk_key_wait_release) before any restart.
 #pragma once
 
@@ -30,7 +33,7 @@ esp_err_t yk_key_init(const yk_key_config_t *cfg);
 esp_err_t yk_key_subscribe(yk_key_cb_t cb, void *ctx);
 
 /** Every event goes to `cb` alone while it is set, none to the subscribers; NULL gives them back. yaykit_app takes
- *  the key this way while the app ring or 「回到 Yay 说？」 is up, so that a press closing them does nothing in the
+ *  the key this way while the app ring or 「回到主屏幕说？」 is up, so that a press closing them does nothing in the
  *  app. Takes effect from the next event (the one being given out still reaches the subscribers after the caller). */
 void yk_key_grab(yk_key_cb_t cb, void *ctx);
 
@@ -42,6 +45,11 @@ bool yk_key_wait_release(int timeout_ms);
 
 /** Development: a press of hold_ms as if the key were pressed now (used by `yay tap`, `yay double`, `yay say`). */
 esp_err_t yk_key_simulate(int hold_ms);
+
+/** Development (`yay noup`, CONFIG_YAY_DEV): a press like yk_key_simulate() whose release edge is lost, the pin left
+ *  alone. Its DOWN, then the key reads down for hold_ms (0: its DOWN only), then as the pin is, with no edge: only the
+ *  level readings can end it: UP 25 ms after that (a TAP at hold_ms - 1 and no HOLD when that is hold_ms). */
+esp_err_t yk_key_simulate_lost_up(int hold_ms);
 
 /** Name for logs: "down", "hold", "up", "tap", "double". */
 const char *yk_key_event_name(yk_key_event_type_t type);

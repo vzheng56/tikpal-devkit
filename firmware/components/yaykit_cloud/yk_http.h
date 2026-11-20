@@ -6,6 +6,10 @@
 
 #include "esp_err.h"
 #include "esp_http_client.h"
+#include "sdkconfig.h"
+
+/** A client's buffer of `n` bytes, or CONFIG_YK_CLOUD_HTTP_BUFFER_MIN when that is more. */
+#define YK_HTTP_BUFFER(n) ((n) > CONFIG_YK_CLOUD_HTTP_BUFFER_MIN ? (n) : CONFIG_YK_CLOUD_HTTP_BUFFER_MIN)
 
 typedef struct {
     int status;
@@ -18,7 +22,8 @@ typedef struct {
 esp_err_t yk_http_on_event(esp_http_client_event_t *event);
 /** App identity sent with every request (X-Yaykit-App / X-Yaykit-Firmware). */
 void yk_http_set_app(const char *app, const char *version);
-/** Bluetooth off (HTTPS needs its internal RAM) and Wi-Fi up. Sets *code to NO_WIFI on failure. */
+/** Bluetooth off (HTTPS needs its internal RAM) and Wi-Fi up. Sets *code to NO_WIFI on failure, or to LINK when Bluetooth
+ *  came on while it waited for Wi-Fi: nothing is sent then, and the link is left alone. */
 esp_err_t yk_http_prepare(const char **code);
 /** A client for origin + path with the common headers; NULL when out of memory. */
 esp_http_client_handle_t yk_http_client(const char *path, esp_http_client_method_t method, const char *bearer,

@@ -22,7 +22,7 @@ void chime_set_muted(bool muted);
 /* The owner's volume, 0..100 (0 = no sound). */
 void chime_set_volume(int percent);
 
-/* Which GPIO(s) enable the speaker amplifier (-1 = unused). */
+/* Which GPIO(s) enable the speaker amplifier (-1 = unused). GPIO46 is taken as -1: it is the vibration motor's. */
 void chime_set_pa_pins(int a, int b);
 
 /* Diagnostic: change the priority of the chime task at run time (A/B tests). */
@@ -37,7 +37,7 @@ void chime_play_tone(int freq_hz, int ms, int volume);
 /* Diagnostic: log the ES8311 register file (label shown in the log line). */
 void chime_dump_regs(const char *when);
 
-/* Diagnostic: four labelled beeps, each with a different amplifier pin. */
+/* Diagnostic: two labelled beeps, with the amplifier pin (GPIO43) and without. */
 void chime_soundtest(void);
 
 /* Returns true once chime_init() succeeded. */

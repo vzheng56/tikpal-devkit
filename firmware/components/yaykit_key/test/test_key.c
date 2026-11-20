@@ -17,6 +17,7 @@ static int failures, checks;
 // Collected events as a string like "down hold up" with held times where they matter: "up:120 tap:120".
 static char got[512];
 static yk_key_sm_t sm;
+static int pin;  // the key's level as the driver reads it: edge() moves it, level() moves it with no edge (a lost one)
 
 static const char *name(yk_key_event_type_t t) {
     switch (t) {
@@ -41,15 +42,25 @@ static void add(const yk_key_event_t *ev, int n) {
 }
 
 static void edge(int pressed, int64_t t) {
+    pin = pressed;
     yk_key_event_t ev[YK_KEY_SM_MAX_EVENTS];
     add(ev, yk_key_sm_edge(&sm, pressed, t, ev));
 }
 
-// Runs every tick the driver would run up to t (at each deadline), like the key task does.
+/** The key's level changes and its edge is lost: only the driver's readings can see it. */
+static void level(int pressed) { pin = pressed; }
+
+/** One reading of the level at t (a wake of the driver's, whatever the deadline). */
+static void read_at(int64_t t) {
+    yk_key_event_t ev[YK_KEY_SM_MAX_EVENTS];
+    add(ev, yk_key_sm_align(&sm, pin, t, ev));
+}
+
+// Runs every wake the driver would have up to t (at each deadline: it reads the level, then aligns), like the key task.
 static void until(int64_t t) {
     yk_key_event_t ev[YK_KEY_SM_MAX_EVENTS];
     for (int64_t d = yk_key_sm_deadline(&sm); d >= 0 && d <= t; d = yk_key_sm_deadline(&sm)) {
-        int n = yk_key_sm_tick(&sm, d, ev);
+        int n = yk_key_sm_align(&sm, pin, d, ev);
         add(ev, n);
         if (n == 0 && yk_key_sm_deadline(&sm) == d) break;  // nothing changed: avoid looping
     }
@@ -57,6 +68,7 @@ static void until(int64_t t) {
 
 static void start(const yk_key_config_t *cfg) {
     yk_key_sm_init(&sm, cfg);
+    pin = 0;
     got[0] = 0;
 }
 
@@ -200,6 +212,91 @@ static void test_custom_times_and_repeats(void) {
     CHECK(is("down@0 up:100 tap:100 down@301 up:49 tap:49 "));
 }
 
+static void test_lost_release(void) {
+    // Read every 25 ms while down: the deadline is never -1 then, and moves with each reading.
+    start(NULL);
+    edge(1, 0);
+    CHECK(yk_key_sm_deadline(&sm) == 25);
+    until(299);
+    CHECK(is("down@0 ") && yk_key_sm_deadline(&sm) == 300);
+
+    // No edge after the press, and at 300 ms (HOLD due) the key reads up already: no HOLD; read again 25 ms later,
+    // still up: released at 299, a tap.
+    level(0), until(310);
+    CHECK(is("down@0 ") && yk_key_sm_deadline(&sm) == 325);
+    until(325);
+    CHECK(is("down@0 up:299 tap:299 "));
+    CHECK(yk_key_sm_deadline(&sm) == 299 + 450 + 1);  // the double-click window, from 299
+    until(2000), edge(0, 2000);  // its edge after all: nothing more
+    CHECK(is("down@0 up:299 tap:299 "));
+
+    // The same with a driver that could not read in between (busy): its first reading, at 400, finds the key up.
+    start(NULL);
+    edge(1, 0), level(0), read_at(400);
+    CHECK(is("down@0 "));
+    read_at(410);  // too soon to count
+    CHECK(is("down@0 "));
+    read_at(425);
+    CHECK(is("down@0 up:299 tap:299 "));
+
+    // Up early, its edge lost: released at the second reading.
+    start(NULL);
+    edge(1, 0), until(110), level(0), until(1000);
+    CHECK(is("down@0 up:150 tap:150 "));
+
+    // After HOLD the level is read every 100 ms; read up twice, 25 ms apart: UP (at the second reading).
+    start(NULL);
+    edge(1, 0), until(1000);
+    CHECK(is("down@0 hold@300 ") && yk_key_sm_deadline(&sm) == 1100);
+    level(0), until(1100);
+    CHECK(is("down@0 hold@300 ") && yk_key_sm_deadline(&sm) == 1125);
+    until(1125);
+    CHECK(is("down@0 hold@300 up:1125 "));
+    CHECK(yk_key_sm_deadline(&sm) == -1);
+
+    // The main firmware's keys (11-01: down, hold, never an up): the same.
+    yk_key_config_t main_fw = {.delay_tap = true, .drop_tap_before_hold = true};
+    start(&main_fw);
+    edge(1, 0), until(5000), level(0), until(9000);
+    CHECK(is("down@0 hold@300 up:5125 "));  // read up at 5100, again at 5125
+
+    // Read up once, down again 25 ms later: a bounce, no UP; the press goes on to its own edge.
+    start(NULL);
+    edge(1, 0), until(1000), level(0), until(1100), level(1), until(2000);
+    CHECK(is("down@0 hold@300 "));
+    CHECK(yk_key_sm_deadline(&sm) == 2025);
+    edge(0, 2050);
+    CHECK(is("down@0 hold@300 up:2050 "));
+
+    // A bounce at the hold's time: HOLD waits for the second reading, then comes (at 300 all the same).
+    start(NULL);
+    edge(1, 0), until(299), level(0), until(300);
+    CHECK(is("down@0 "));
+    level(1), until(325);
+    CHECK(is("down@0 hold@300 "));
+
+    // Read up before HOLD, and then its edge comes late: still a tap, at 299.
+    start(NULL);
+    edge(1, 0), until(299), level(0), until(300), edge(0, 310);
+    CHECK(is("down@0 up:299 tap:299 "));
+
+    // The second press of a double click, its release lost: the double click at the second reading.
+    start(NULL);
+    edge(1, 0), edge(0, 90), until(299), edge(1, 300), level(0), until(1000);
+    CHECK(is("down@0 up:90 tap:90 down@300 up:50 double:50 "));
+
+    // Up here, read down: no press (presses come from edges only).
+    start(NULL);
+    level(1), read_at(1000), until(5000);
+    CHECK(is("") && yk_key_sm_deadline(&sm) == -1);
+
+    // Another hold time: up at its deadline, released at hold_ms - 1.
+    yk_key_config_t slow = {.hold_ms = 500};
+    start(&slow);
+    edge(1, 0), until(499), level(0), until(600);
+    CHECK(is("down@0 up:499 tap:499 "));
+}
+
 int main(void) {
     test_tap_and_hold();
     test_hold_without_tick();
@@ -208,6 +305,7 @@ int main(void) {
     test_delay_tap();
     test_drop_tap_before_hold();
     test_custom_times_and_repeats();
+    test_lost_release();
     printf("yaykit_key host tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
