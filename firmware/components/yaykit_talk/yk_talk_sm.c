@@ -3,8 +3,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "yk_proto.h"
+
 static const char *const STATE_NAMES[] = {"offline", "idle", "listening", "thinking", "replying"};
-static const char *const END_NAMES[] = {"done", "not_heard", "busy", "blocked", "no_credits", "stopped", "no_net"};
+static const char *const END_NAMES[] = {"done",    "not_heard", "busy",          "blocked", "no_credits",
+                                        "stopped", "no_net",    "voice_consent"};
 
 const char *yk_talk_state_name(yk_talk_state_t state) {
     return (unsigned)state < sizeof(STATE_NAMES) / sizeof(STATE_NAMES[0]) ? STATE_NAMES[state] : "?";
@@ -126,6 +129,11 @@ static bool on_error(yk_tsm_t *sm, const yk_tsm_input_t *in) {
     if (!strcmp(code, "NOT_UNDERSTOOD") || !strcmp(code, "AUDIO_TOO_SHORT") || !strcmp(code, "AUDIO_TOO_LONG"))
         return ended(sm, YK_TALK_NOT_HEARD);
     if (!strcmp(code, "CONTENT_BLOCKED")) return ended(sm, YK_TALK_BLOCKED);
+    // 两套部署 · 语音单独同意 V3: the account has not agreed to voice. Only on a turn of the device's own (the user held
+    // to talk): the platform holds the user's voice, never a turn it started itself (an opening), which ends BUSY as
+    // today. Nothing is sent again here. Without consent: BUSY, as today.
+    if (in->consent == YK_PROTO_CONSENT_VOICE && !strcmp(code, "OPERATION_NOT_ALLOWED") && !yk_tsm_server_turn(sm->turn))
+        return ended(sm, YK_TALK_VOICE_CONSENT);
     return ended(sm, YK_TALK_BUSY);  // VOICE_BUSY, SERVICE_BUSY, RATE_LIMITED, and any code this firmware does not know
 }
 

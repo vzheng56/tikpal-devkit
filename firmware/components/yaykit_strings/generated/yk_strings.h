@@ -162,6 +162,10 @@ typedef enum {
     YK_STR_YAYKIT_HOME_STILL_CONNECTING,
     /* yaykit.home.thinking: On the round screen (Tikpal Voice), Yay's home screen, the top line after the key is let go, before the answer. */
     YK_STR_YAYKIT_HOME_THINKING,
+    /* yaykit.home.voiceConsent: On the round screen (Tikpal Voice), Yay's home screen, the sentence under the top line Voice needs OK: where to agree to voice (the app's voice sheet, consent.agree), and that talking works after. The buddy says it, as we. 22 px, two lines in 620 px. */
+    YK_STR_YAYKIT_HOME_VOICE_CONSENT,
+    /* yaykit.home.voiceConsentTop: On the round screen (Tikpal Voice), Yay's home screen, the top line when holding to talk was refused because the account has not agreed to voice yet (两套部署·语音同意: the refusal's consent "voice"). 18 px, one line in 142 px. */
+    YK_STR_YAYKIT_HOME_VOICE_CONSENT_TOP,
     /* yaykit.install.ask: On the round screen (Tikpal Voice), installing an app from Yay, the question. app: the app's name. */
     YK_STR_YAYKIT_INSTALL_ASK,
     /* yaykit.install.backNextStart: On the round screen (Tikpal Voice), installing an app from Yay, it failed; the app it replaced goes back at the next start. app: its name. */
@@ -198,6 +202,14 @@ typedef enum {
     YK_STR_YAYKIT_INSTALL_QUICK,
     /* yaykit.install.reinstallOnWeb: On the round screen (Tikpal Voice), installing an app from Yay, under {app} is gone too, when only the web can. app: its name. */
     YK_STR_YAYKIT_INSTALL_REINSTALL_ON_WEB,
+    /* yaykit.install.replaceAsk: On the round screen (Tikpal Voice), an app tapped on the app ring or in the store would take an installed app's place: asked before anything is fetched or written. The question, large. app: the installed app's name. */
+    YK_STR_YAYKIT_INSTALL_REPLACE_ASK,
+    /* yaykit.install.replaceNo: On the round screen (Tikpal Voice), an app tapped on the app ring or in the store would take an installed app's place: asked before anything is fetched or written. The button that keeps the installed app and installs nothing. */
+    YK_STR_YAYKIT_INSTALL_REPLACE_NO,
+    /* yaykit.install.replaceWhy: On the round screen (Tikpal Voice), an app tapped on the app ring or in the store would take an installed app's place: asked before anything is fetched or written. Under the question, why. app: the new app's name. */
+    YK_STR_YAYKIT_INSTALL_REPLACE_WHY,
+    /* yaykit.install.replaceYes: On the round screen (Tikpal Voice), an app tapped on the app ring or in the store would take an installed app's place: asked before anything is fetched or written. The button that replaces it and installs the new app. */
+    YK_STR_YAYKIT_INSTALL_REPLACE_YES,
     /* yaykit.install.stillHere: On the round screen (Tikpal Voice), installing an app from Yay, after it was called off or failed: the app it would have replaced. app: its name. */
     YK_STR_YAYKIT_INSTALL_STILL_HERE,
     /* yaykit.install.swapsOut: On the round screen (Tikpal Voice), installing an app from Yay, under the progress: the app it replaces. app: its name, cut with … when long. */
@@ -244,48 +256,6 @@ typedef enum {
     YK_STR_YAYKIT_INSTALL_ERROR_TOO_LARGE,
     /* yaykit.installError.updating: On the round screen (Tikpal Voice), why an app did not install or open, Tikpal itself is updating. */
     YK_STR_YAYKIT_INSTALL_ERROR_UPDATING,
-    /* yaykit.minimal.almostFull: On the round screen (Tikpal Voice), minimal mode lit, no memory card: the line under the record button, in coral, when only a few more recordings fit. n: how many (1 to 5). */
-    YK_STR_YAYKIT_MINIMAL_ALMOST_FULL,
-    /* yaykit.minimal.back: On the round screen (Tikpal Voice), the home screen for 2 s as minimal mode ends because the network is back: what was recorded goes up to be sorted. The buddy says it, as I. No numbers in it. */
-    YK_STR_YAYKIT_MINIMAL_BACK,
-    /* yaykit.minimal.full: On the round screen (Tikpal Voice), minimal mode lit, no memory card: the line under the record button, in coral, when nothing more fits; the side key held does not record. */
-    YK_STR_YAYKIT_MINIMAL_FULL,
-    /* yaykit.minimal.inBattery: On the round screen (Tikpal Voice), minimal mode: its line on the way in, for 2 s, at 15 % battery. The buddy says it, as I. */
-    YK_STR_YAYKIT_MINIMAL_IN_BATTERY,
-    /* yaykit.minimal.inOffline: On the round screen (Tikpal Voice), minimal mode (a black screen that only records, 0.1.20): its line on the way in, for 2 s, after 10 minutes without a network. The buddy says it, as I. */
-    YK_STR_YAYKIT_MINIMAL_IN_OFFLINE,
-    /* yaykit.minimal.inUser: On the round screen (Tikpal Voice), minimal mode: its line on the way in, for 2 s, opened from the pull-down. The buddy says it, as I. */
-    YK_STR_YAYKIT_MINIMAL_IN_USER,
-    /* yaykit.minimal.rec.ask: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question when the cross is tapped after minutes of recording. n: whole minutes, 2 or more. */
-    YK_STR_YAYKIT_MINIMAL_REC_ASK,
-    /* yaykit.minimal.rec.askOne: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question when the cross is tapped after a minute of recording. */
-    YK_STR_YAYKIT_MINIMAL_REC_ASK_ONE,
-    /* yaykit.minimal.rec.cancelled: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the grey 「Undo」 capsule. */
-    YK_STR_YAYKIT_MINIMAL_REC_CANCELLED,
-    /* yaykit.minimal.rec.countdown: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): in the circle in the last minute of an hour's recording. n: seconds, 2 to 60. */
-    YK_STR_YAYKIT_MINIMAL_REC_COUNTDOWN,
-    /* yaykit.minimal.rec.countdownOne: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): in the circle in the last minute of an hour's recording. */
-    YK_STR_YAYKIT_MINIMAL_REC_COUNTDOWN_ONE,
-    /* yaykit.minimal.rec.discard: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question's button that discards the recording. */
-    YK_STR_YAYKIT_MINIMAL_REC_DISCARD,
-    /* yaykit.minimal.rec.extend: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the countdown: a tap of the side key records another hour. */
-    YK_STR_YAYKIT_MINIMAL_REC_EXTEND,
-    /* yaykit.minimal.rec.keep: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question's button that goes on recording. */
-    YK_STR_YAYKIT_MINIMAL_REC_KEEP,
-    /* yaykit.minimal.rec.notRecorded: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20): under the capsule, in coral, instead of "Saved" when nothing came from the microphones (they did not open), so nothing was kept; the user presses the side button again. */
-    YK_STR_YAYKIT_MINIMAL_REC_NOT_RECORDED,
-    /* yaykit.minimal.rec.release: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the circle while the side key is held to record. */
-    YK_STR_YAYKIT_MINIMAL_REC_RELEASE,
-    /* yaykit.minimal.rec.saved: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the capsule once a recording is kept. length: its length, as 0:42. */
-    YK_STR_YAYKIT_MINIMAL_REC_SAVED,
-    /* yaykit.minimal.rec.tooShort: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the capsule when a recording was under a second and not kept. */
-    YK_STR_YAYKIT_MINIMAL_REC_TOO_SHORT,
-    /* yaykit.minimal.rec.undo: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the grey capsule after a recording was discarded: a tap keeps it after all. */
-    YK_STR_YAYKIT_MINIMAL_REC_UNDO,
-    /* yaykit.minimal.rec.word: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the word on the record capsule. */
-    YK_STR_YAYKIT_MINIMAL_REC_WORD,
-    /* yaykit.minimal.status: On the round screen (Tikpal Voice), minimal mode lit by a touch: the line under the record button. percent: whole percent; n: how many recordings are kept on the device, not uploaded yet (1 or more). */
-    YK_STR_YAYKIT_MINIMAL_STATUS,
     /* yaykit.more.about20: On the round screen (Tikpal Voice), My apps (behind the ring's More), the line under an app's name, to download, its time not known. */
     YK_STR_YAYKIT_MORE_ABOUT20,
     /* yaykit.more.batteryOut: On the round screen (Tikpal Voice), On the round screen, in an app, the last page before it sleeps. The device says it, as me. */
@@ -326,6 +296,8 @@ typedef enum {
     YK_STR_YAYKIT_NOTICE_OFFLINE,
     /* yaykit.notice.sayAgain: On the round screen (Tikpal Voice), a notice in an app (over the app's own page), nothing was heard. */
     YK_STR_YAYKIT_NOTICE_SAY_AGAIN,
+    /* yaykit.notice.voiceConsent: On the round screen (Tikpal Voice), a notice in an app (over the app's own page), and the recording card's home line: a turn or an upload waits because the account has not agreed to voice yet (两套部署·语音同意). One line of 18 px; in Chinese at most 8 characters (YK_NOTICE_MAX_CHARS). */
+    YK_STR_YAYKIT_NOTICE_VOICE_CONSENT,
     /* yaykit.onboarding.allSet: First setup on the round screen (Tikpal Voice), step 8: the end of it. The buddy raises a hand; two seconds later the home screen. */
     YK_STR_YAYKIT_ONBOARDING_ALL_SET,
     /* yaykit.onboarding.askApp: First setup on the round screen (Tikpal Voice), step 3, before any QR code: the question at the top of the page, over two buttons one above the other. Does the phone have the Tikpal app already? */
@@ -448,40 +420,68 @@ typedef enum {
     YK_STR_YAYKIT_POWER_SLEEPING,
     /* yaykit.proactive.onPhone: Round screen (yaykit_strings, Yay 0.2). Under a line the buddy said by itself (设计 G2): the rest is on the phone. */
     YK_STR_YAYKIT_PROACTIVE_ON_PHONE,
-    /* yaykit.recent.hint: On the round screen (Tikpal Voice), Yay's settings, the last turns' hint. */
-    YK_STR_YAYKIT_RECENT_HINT,
-    /* yaykit.recent.none: On the round screen (Tikpal Voice), Yay's settings, the last turns: none yet. */
-    YK_STR_YAYKIT_RECENT_NONE,
-    /* yaykit.recent.title: On the round screen (Tikpal Voice), Yay's settings, the page of the last few turns, its title. */
-    YK_STR_YAYKIT_RECENT_TITLE,
-    /* yaykit.recent.you: On the round screen (Tikpal Voice), Yay's settings, the last turns: what you said. text: your words. */
-    YK_STR_YAYKIT_RECENT_YOU,
     /* yaykit.record.allSent: Round screen (yaykit_strings, Yay 0.2). Record page, the top line (设计第 3 节): everything is sent. */
     YK_STR_YAYKIT_RECORD_ALL_SENT,
+    /* yaykit.record.almostFull: On the round screen (Tikpal Voice), minimal mode lit, no memory card: the line under the record button, in coral, when only a few more recordings fit. n: how many (1 to 5). */
+    YK_STR_YAYKIT_RECORD_ALMOST_FULL,
+    /* yaykit.record.ask: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question when the cross is tapped after minutes of recording. n: whole minutes, 2 or more. */
+    YK_STR_YAYKIT_RECORD_ASK,
+    /* yaykit.record.askOne: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question when the cross is tapped after a minute of recording. */
+    YK_STR_YAYKIT_RECORD_ASK_ONE,
+    /* yaykit.record.back: On the round screen (Tikpal Voice), the home screen for 2 s as minimal mode ends because the network is back: what was recorded goes up to be sorted. The buddy says it, as I. No numbers in it. */
+    YK_STR_YAYKIT_RECORD_BACK,
     /* yaykit.record.batteryLine: Round screen (yaykit_strings, Yay 0.2). The dark record page, the line under the time (设计 C4) when the battery is low. percent: the battery. */
     YK_STR_YAYKIT_RECORD_BATTERY_LINE,
-    /* yaykit.record.childHint: Round screen (yaykit_strings, Yay 0.2). Record page on a child's account (设计 C8), under the capsule. */
+    /* yaykit.record.cancelled: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the grey 「Undo」 capsule. */
+    YK_STR_YAYKIT_RECORD_CANCELLED,
+    /* yaykit.record.childHint: Round screen (yaykit_strings, Yay 0.2). Record page on a child's account (设计 C8), under the capsule: two lines at most. */
     YK_STR_YAYKIT_RECORD_CHILD_HINT,
     /* yaykit.record.childOff: Round screen (yaykit_strings, Yay 0.2). Record page on a child's account (设计 C8): the grey capsule. */
     YK_STR_YAYKIT_RECORD_CHILD_OFF,
-    /* yaykit.record.missed: Round screen (yaykit_strings, Yay 0.2). Record page, the top line in coral for 5 s once saved (设计 G5): a reminder came while recording. time, title: the reminder's. */
+    /* yaykit.record.discard: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question's button that discards the recording. */
+    YK_STR_YAYKIT_RECORD_DISCARD,
+    /* yaykit.record.full: On the round screen (Tikpal Voice), minimal mode lit, no memory card: the line under the record button, in coral, when nothing more fits; the side key held does not record. */
+    YK_STR_YAYKIT_RECORD_FULL,
+    /* yaykit.record.inBattery: On the round screen (Tikpal Voice), minimal mode: its line on the way in, for 2 s, at 15 % battery. The buddy says it, as I. */
+    YK_STR_YAYKIT_RECORD_IN_BATTERY,
+    /* yaykit.record.inOffline: On the round screen (Tikpal Voice), minimal mode (a black screen that only records, 0.1.20): its line on the way in, for 2 s, after 10 minutes without a network. The buddy says it, as I. */
+    YK_STR_YAYKIT_RECORD_IN_OFFLINE,
+    /* yaykit.record.keep: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the question's button that goes on recording. */
+    YK_STR_YAYKIT_RECORD_KEEP,
+    /* yaykit.record.missed: Round screen (yaykit_strings, Yay 0.2). Record page, the top line in coral for 5 s once saved (设计 G5): a reminder came while recording. time, title: the reminder's; the firmware cuts the title with … to what the line has left, the rest of the line always whole. */
     YK_STR_YAYKIT_RECORD_MISSED,
+    /* yaykit.record.missedPrivate: Round screen (yaykit_strings, Yay 0.2). Record page, the top line in coral for 5 s once saved (设计 G5), when the reminder that came while recording is not for the screen (设计 A5: 吃药, 看病, money): its time only, never its title. time: the reminder's, formatted by the firmware. */
+    YK_STR_YAYKIT_RECORD_MISSED_PRIVATE,
+    /* yaykit.record.needsCard: Round screen (yaykit_strings, Yay 0.2). Record page, the top line, in coral: no memory card in, and the device's own space is not Yay's (an old recording card app is installed) or full, so a recording would only be kept until a restart. Tapping the record button does not start a long recording; holding the side key for a short note still works. */
+    YK_STR_YAYKIT_RECORD_NEEDS_CARD,
+    /* yaykit.record.notRecorded: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20): under the capsule, in coral, instead of "Saved" when nothing came from the microphones (they did not open), so nothing was kept; the user presses the side button again. */
+    YK_STR_YAYKIT_RECORD_NOT_RECORDED,
     /* yaykit.record.onDevice: Round screen (yaykit_strings, Yay 0.2). The dark record page, under the capsule (设计 C4). n: on the device. */
     YK_STR_YAYKIT_RECORD_ON_DEVICE,
     /* yaykit.record.openAfter: Round screen (yaykit_strings, Yay 0.2). Record page, for 1.5 s when double-pressed while recording (设计 D3): the app ring opens once it is saved. */
     YK_STR_YAYKIT_RECORD_OPEN_AFTER,
     /* yaykit.record.orHold: Round screen (yaykit_strings, Yay 0.2). Record page, under the capsule (设计 B1). */
     YK_STR_YAYKIT_RECORD_OR_HOLD,
+    /* yaykit.record.release: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the circle while the side key is held to record. */
+    YK_STR_YAYKIT_RECORD_RELEASE,
+    /* yaykit.record.saved: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the capsule once a recording is kept. length: its length, as 0:42. */
+    YK_STR_YAYKIT_RECORD_SAVED,
     /* yaykit.record.sending: Round screen (yaykit_strings, Yay 0.2). Record page, the top line (设计 C7) back online. n: how many are sending. */
     YK_STR_YAYKIT_RECORD_SENDING,
     /* yaykit.record.status: Round screen (yaykit_strings, Yay 0.2). Record page, the top line (设计 B1): recordings on the device and how many are sending. n, m: counts, formatted by the firmware. */
     YK_STR_YAYKIT_RECORD_STATUS,
+    /* yaykit.record.statusConsent: Round screen (yaykit_strings). Record page, the top line (设计 B1) while uploads wait because the account has not agreed to voice yet (两套部署·语音同意): nothing is deleted, they go once agreed. n: on the device. 16 px, two lines at most. */
+    YK_STR_YAYKIT_RECORD_STATUS_CONSENT,
     /* yaykit.record.statusOffline: Round screen (yaykit_strings, Yay 0.2). Record page, the top line (设计 B1) while offline. n: on the device. */
     YK_STR_YAYKIT_RECORD_STATUS_OFFLINE,
     /* yaykit.record.swipeHint: Round screen (yaykit_strings, Yay 0.2). Home, a small line under 「记下了，有网再说」 the first time held while offline (设计 C1, D4); never read out. */
     YK_STR_YAYKIT_RECORD_SWIPE_HINT,
     /* yaykit.record.tapToSave: Round screen (yaykit_strings, Yay 0.2). Record page, under the circle while recording (设计 B3). */
     YK_STR_YAYKIT_RECORD_TAP_TO_SAVE,
+    /* yaykit.record.tooShort: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): under the capsule when a recording was under a second and not kept. */
+    YK_STR_YAYKIT_RECORD_TOO_SHORT,
+    /* yaykit.record.undo: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the grey capsule after a recording was discarded: a tap keeps it after all. */
+    YK_STR_YAYKIT_RECORD_UNDO,
     /* yaykit.record.usbAsk: Round screen (yaykit_strings, Yay 0.2). Record page once saved, when plugged into a computer while recording (设计 B10). */
     YK_STR_YAYKIT_RECORD_USB_ASK,
     /* yaykit.record.usbNo: Round screen (yaykit_strings, Yay 0.2). Its other button (设计 B10). */
@@ -490,6 +490,8 @@ typedef enum {
     YK_STR_YAYKIT_RECORD_USB_YES,
     /* yaykit.record.wentOffline: Round screen (yaykit_strings, Yay 0.2). Record page, the line for 2 s when it comes by itself offline (设计 C2); also said in the buddy's stored voice. */
     YK_STR_YAYKIT_RECORD_WENT_OFFLINE,
+    /* yaykit.record.word: On the round screen (Tikpal Voice), minimal mode's recording (a black screen that only records, 0.1.20; the recording card's screens): the word on the record capsule. */
+    YK_STR_YAYKIT_RECORD_WORD,
     /* yaykit.recovery.apps: On the round screen (Tikpal Voice), the recovery (the page under Tikpal that installs and starts apps), the list's title. */
     YK_STR_YAYKIT_RECOVERY_APPS,
     /* yaykit.recovery.back: On the round screen (Tikpal Voice), the recovery (the page under Tikpal that installs and starts apps), the button back to the list. */
@@ -644,10 +646,6 @@ typedef enum {
     YK_STR_YAYKIT_SHEET_LEFT_TODAY,
     /* yaykit.sheet.lowCharging: On the round screen (Tikpal Voice), the system pull-down (every firmware's), the battery row's value: very low and charging. */
     YK_STR_YAYKIT_SHEET_LOW_CHARGING,
-    /* yaykit.sheet.minimal: On the round screen (Tikpal Voice), Yay's pull-down, the button under its rows: into minimal mode (a black screen that only records, 0.1.20). */
-    YK_STR_YAYKIT_SHEET_MINIMAL,
-    /* yaykit.sheet.minimalExit: On the round screen (Tikpal Voice), Yay's pull-down in minimal mode, the button under its rows: back to the usual home screen. */
-    YK_STR_YAYKIT_SHEET_MINIMAL_EXIT,
     /* yaykit.sheet.newNetwork: On the round screen (Tikpal Voice), the system pull-down (every firmware's), the button to the big pairing code. */
     YK_STR_YAYKIT_SHEET_NEW_NETWORK,
     /* yaykit.sheet.notConnected: On the round screen (Tikpal Voice), the system pull-down (every firmware's), its title with no network. */
@@ -686,7 +684,7 @@ typedef enum {
     YK_STR_YAYKIT_STATUS_VOLUME,
     /* yaykit.status.wifiOff: On the round screen (Tikpal Voice), the older status sheet some apps still pull down, Wi-Fi's state. */
     YK_STR_YAYKIT_STATUS_WIFI_OFF,
-    /* yaykit.today.item: Round screen (yaykit_strings, Yay 0.2). Home, under the buddy (设计 A1): the next thing. time: its time, formatted by the firmware (15:00); title: its title, cut by the platform. */
+    /* yaykit.today.item: Round screen (yaykit_strings, Yay 0.2). Home, under the buddy (设计 A1): the next thing. time: its time, formatted by the firmware (15:00); title: its title, cut by the platform, and cut again by the firmware with … to what the line has left (22 px, about 9 Chinese characters after the time). */
     YK_STR_YAYKIT_TODAY_ITEM,
     /* yaykit.today.more: Round screen (yaykit_strings, Yay 0.2). Home, the second line (设计 A1): more things today. n: how many, formatted by the firmware. */
     YK_STR_YAYKIT_TODAY_MORE,

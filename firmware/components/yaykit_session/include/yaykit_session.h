@@ -19,8 +19,16 @@
 extern "C" {
 #endif
 
+/** Global's voice session, the region table's row 0 (yaykit_cloud's yk_regions_gen.h; yaykit/tests/deployments.test.ts
+ *  holds the two equal). Kept for code built against it; from now on use yk_session_url(), which is this device's. */
 #define YK_SESSION_URL "wss://device.yaykit.io/device/v1/session"
 #define YK_SESSION_USB "usb"
+
+/** The production voice session this device uses (yk_session_url.c): YK_SESSION_URL with CONFIG_YK_REGIONS off; on,
+ *  this device's region's (yaykit_cloud's yk_region.h), global's still YK_SESSION_URL; a development build's test
+ *  deployment for the row (yaykit_cloud's yk_region_test.h, Yay's `region set`) is wss:// on its device host. A session
+ *  against anything else is a development server. Never NULL. */
+const char *yk_session_url(void);
 
 typedef enum {
     YK_SESSION_IDLE,        // not started, or waiting for the network
@@ -66,6 +74,14 @@ void yk_session_kick(void);
 void yk_session_forget_ticket(void);
 /** Close and reconnect (a new token after session.reauth is sent with `auth` instead; this is for 4001). */
 void yk_session_reconnect(void);
+/** The production session follows the device's region (两套部署: an activation stored another one, so yk_session_url()
+ *  is another address now): from the next connection on it goes to yk_session_url(), without a restart; a connection
+ *  up or being made now is dropped and the back-off cut short. ESP_OK and nothing done when it is there already. It
+ *  takes no address: only ever the device's own production session, never one from a message or an app. Call it only
+ *  for a session started on the production session (Yay checks it is not a development server's): a wss:// one; the USB
+ *  bridge, a ws:// one or no session at all is ESP_ERR_INVALID_STATE, nothing changed. The TLS ticket kept is the old
+ *  host's: none is offered to the new one. */
+esp_err_t yk_session_follow_region(void);
 /** Closes the connection as WebSocket closes it, then holds the session closed (as yk_session_hold(true)): a close
  *  frame (1000) after every frame sent before it, then the server's close waited for, `timeout_ms` in all. For leaving
  *  before a restart: the restart drops the connection without a word, and what TLS had not got out yet is lost with

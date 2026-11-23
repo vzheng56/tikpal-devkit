@@ -1,4 +1,5 @@
 // Host tests for yk_proto: every example in packages/contracts/fixtures/device.json, the platform's own.
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,7 +94,8 @@ static char *build(const cJSON *m) {
         const cJSON *practice = cJSON_GetObjectItemCaseSensitive(m, "practice");
         yk_proto_hello_t h = {.fw = str(m, "fw"), .board = str(m, "board"), .locale = str(m, "locale"),
                               .tz = str(m, "tz"), .mode = str(m, "mode"), .pair = str(m, "pair"),
-                              .practice_language = str(practice, "language"), .practice_level = str(practice, "level")};
+                              .practice_language = str(practice, "language"), .practice_level = str(practice, "level"),
+                              .region = str(m, "region")};
         const cJSON *battery = cJSON_GetObjectItemCaseSensitive(m, "battery"), *audio = cJSON_GetObjectItemCaseSensitive(m, "audio");
         h.battery_pct = (int)num(battery, "pct", -1);
         h.charging = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(battery, "charging"));
@@ -149,10 +151,18 @@ static char *build(const cJSON *m) {
         return yk_proto_listen_start_note_live(str(m, "turn"), (int)num(m, "preroll", -1), str(m, "recordedAt"), &c,
                                                str(m, "liveTurn"));
     }
+    const cJSON *record = cJSON_GetObjectItemCaseSensitive(m, "record");
+    if (!strcmp(type, "listen.start") && record) {  // held on the home (Yay 0.2 with the record cap): its room
+        if (cJSON_GetArraySize(record) != 1) return NULL;  // the firmware sends room alone
+        return yk_proto_listen_start_room(str(m, "turn"), (int)num(m, "preroll", -1), str(m, "side"),
+                                          cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m, "held")),
+                                          (int)num(record, "room", YK_PROTO_ROOM_NONE));
+    }
     if (!strcmp(type, "listen.start"))
         return yk_proto_listen_start_ex(str(m, "turn"), (int)num(m, "preroll", -1), str(m, "side"),
                                         cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m, "held")));
     if (!strcmp(type, "offline.digest.say")) return yk_proto_offline_digest_say(str(m, "id"));
+    if (!strcmp(type, "proactive.say")) return yk_proto_proactive_say(str(m, "id"));
     if (!strcmp(type, "onboarding.step")) {
         yk_proto_onb_report_t reports[YK_PROTO_ONB_REPORTS_MAX + 2] = {0};
         int n = 0;
@@ -263,6 +273,35 @@ static bool folder_is(const yk_proto_folder_t *f, const cJSON *g) {
            f->folders == bits && cJSON_IsNumber(rev) && f->rev == (uint32_t)rev->valuedouble;
 }
 
+static int64_t time_of(const cJSON *v) {
+    int64_t ms = -1;
+    if (cJSON_IsNull(v)) return 0;
+    if (!cJSON_IsString(v) || !yk_proto_time_ms(v->valuestring, &ms)) return -1;
+    return ms;
+}
+
+/** `today` as the firmware holds it says what the fixture's does (Yay 0.2). */
+static bool today_is(const yk_proto_today_t *t, const cJSON *m) {
+    static const char *const SKIES[] = {"clear", "cloudy", "rain", "snow"};
+    if (!t) return false;
+    const cJSON *w = cJSON_GetObjectItemCaseSensitive(m, "weather");
+    bool ok = t->weather == (!w ? -1 : cJSON_IsNull(w) ? 0 : 1);
+    if (t->weather == 1) {
+        ok = ok && !strcmp(SKIES[t->sky], str(w, "sky")) && t->night == cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(w, "night")) &&
+             t->temp_c == (int)num(w, "tempC", 99) && !strcmp(t->text, str(w, "text")) && !strcmp(t->place, str(w, "place")) &&
+             t->weather_at_ms == time_of(cJSON_GetObjectItemCaseSensitive(w, "at"));
+    }
+    const cJSON *next = cJSON_GetObjectItemCaseSensitive(m, "next");
+    ok = ok && t->next_count == cJSON_GetArraySize(next);
+    for (int i = 0; ok && i < t->next_count; i++) {
+        const cJSON *n = cJSON_GetArrayItem(next, i), *title = cJSON_GetObjectItemCaseSensitive(n, "title");
+        ok = !strcmp(t->next[i].id, str(n, "id")) && t->next[i].at_ms == time_of(cJSON_GetObjectItemCaseSensitive(n, "at")) &&
+             t->next[i].has_title == !cJSON_IsNull(title) && !strcmp(t->next[i].title, cJSON_IsString(title) ? title->valuestring : "");
+    }
+    const char *done = str(m, "done");
+    return ok && t->left == (int)num(m, "left", -1) && !strcmp(t->day, str(m, "day")) && !strcmp(t->done, done ? done : "");
+}
+
 static void test_server(const cJSON *cases, bool valid) {
     const cJSON *c;
     cJSON_ArrayForEach(c, cases) {
@@ -288,7 +327,21 @@ static void test_server(const cJSON *cases, bool valid) {
                    folder_hello = !valid && !strncmp(name, "folder: hello.ok", 16);
         // hello.ok's binding (0.1.20) that is not one: the hello.ok still, the binding left out (the check skipped).
         const bool binding_bad = !valid && !strncmp(name, "offline: a binding", 18);
-        if (lenient) {
+        // A sky the round screen has no icon for (Yay 0.2): the schema calls it invalid, the device reads the `today` and
+        // draws no weather (设计 A7), so that a newer platform's sky never costs the day's things.
+        const bool later_sky = !valid && !strcmp(name, "y02: today with a sky not listed");
+        // An older inbox kind with proactive's id and say (Yay 0.2): the schema calls it invalid, the device takes it as
+        // before and does not read them, so that a newer platform giving reminders an id never costs the reminder.
+        const bool kind_with_id = !valid && !strcmp(name, "y02: done with an id");
+        if (kind_with_id) {
+            CHECK_CASE(t == YK_SRV_INBOX && !strcmp(msg.inbox_kind, str(m, "kind")) && !msg.inbox_id[0] && !msg.inbox_say &&
+                           msg.text && !strcmp(msg.text, str(m, "text")),
+                       name);
+        } else if (later_sky) {
+            CHECK_CASE(t == YK_SRV_TODAY && msg.today && msg.today->weather == 0 && msg.today->sky == YK_SKY_OTHER &&
+                           msg.today->next_count == cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(m, "next")),
+                       name);
+        } else if (lenient) {
             CHECK_CASE(t == YK_SRV_ERROR && !strcmp(msg.code, "OOPS"), name);
         } else if (later_colour) {
             CHECK_CASE(t == YK_SRV_ACTION && msg.kind == YK_ACT_COLORWAY_SET && !strcmp(msg.colorway, str(m, "colorway")), name);
@@ -338,6 +391,20 @@ static void test_server(const cJSON *cases, bool valid) {
                 const char *binding = str(m, "binding");
                 CHECK_CASE(msg.offline_notes == (cJSON_IsBool(notes) ? cJSON_IsTrue(notes) : -1), name);
                 CHECK_CASE(!strcmp(msg.binding, binding ? binding : ""), name);
+            }
+            if (t == YK_SRV_TODAY) CHECK_CASE(today_is(msg.today, m), name);  // Yay 0.2: every field as the fixture's
+            if (t != YK_SRV_TODAY) CHECK_CASE(!msg.today, name);
+            // 两套部署 · 语音单独同意 (#2740): voice only with OPERATION_NOT_ALLOWED and "voice" itself; none otherwise
+            const char *consent = str(m, "consent");
+            const bool voice = t == YK_SRV_ERROR && !strcmp(str(m, "code"), "OPERATION_NOT_ALLOWED") && consent &&
+                               !strcmp(consent, "voice");
+            CHECK_CASE(msg.consent == (voice ? YK_PROTO_CONSENT_VOICE : YK_PROTO_CONSENT_NONE), name);
+            if (t == YK_SRV_ACTION && !strcmp(str(m, "kind"), "record.start")) CHECK_CASE(msg.kind == YK_ACT_RECORD_START, name);
+            if (t == YK_SRV_INBOX) {  // proactive (0.2): its id and say; the other kinds have neither
+                const char *id = str(m, "id");
+                CHECK_CASE(!strcmp(msg.inbox_kind, str(m, "kind")) && !strcmp(msg.inbox_id, id ? id : ""), name);
+                CHECK_CASE(msg.inbox_say == cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m, "say")), name);
+                CHECK_CASE(!strcmp(msg.text, str(m, "text")), name);
             }
             if (t == YK_SRV_OFFLINE_DIGEST) {  // 0.1.20: its id, what it made, its line
                 const cJSON *counts = cJSON_GetObjectItemCaseSensitive(m, "counts");
@@ -871,6 +938,227 @@ static void test_follow(void) {
     cJSON_free(json);
 }
 
+/** 两套部署 (device.ts helloMessage.region): the contract's own hello with `region` (fixtures/deployments.json `hello`)
+ *  built as the firmware builds it; without a region not a byte more than before (every firmware with CONFIG_YK_REGIONS
+ *  off); a name the schema would refuse refused here. */
+static void test_region(const char *deployments) {
+    char *text = deployments ? read_file(deployments) : NULL;
+    cJSON *doc = text ? cJSON_Parse(text) : NULL;
+    const cJSON *hello = cJSON_GetObjectItemCaseSensitive(doc, "hello");
+    if (!hello) {
+        printf("yaykit_session: the deployments' hello left out (no fixtures/deployments.json)\n");
+    } else {
+        CHECK(str(hello, "region") && !strcmp(str(hello, "region"), "cn"));
+        char *built = build(hello);
+        cJSON *want = cJSON_Duplicate(hello, 1), *got = built ? cJSON_Parse(built) : NULL;
+        normalize(want);
+        CHECK(got && cJSON_Compare(got, want, 1));
+        if (got && !cJSON_Compare(got, want, 1)) printf("  got %s\n", built);
+        cJSON_Delete(want);
+        cJSON_Delete(got);
+        cJSON_free(built);
+    }
+    cJSON_Delete(doc);
+    free(text);
+
+    static const char *const caps[] = {"buddy", "locale"};
+    yk_proto_hello_t h = {.fw = "yay/0.2.0", .board = "tikpal-r1", .locale = "zh", .tz = "Asia/Shanghai", .battery_pct = 50,
+                          .rssi = -50, .out_rate = 16000, .caps = caps, .cap_count = 2};
+    char *before = yk_proto_hello(&h);  // no region: as every hello before it
+    CHECK(before && !strstr(before, "region"));
+    static const char *const good[] = {"global", "cn", "eu-west", "ab", "a0123456789abcde"};
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        h.region = good[i];
+        char *json = yk_proto_hello(&h), want[64];
+        snprintf(want, sizeof(want), ",\"region\":\"%s\"}", good[i]);
+        // The same hello with the one field at its end
+        CHECK(json && before && strlen(json) == strlen(before) + strlen(want) - 1 && !strncmp(json, before, strlen(before) - 1) &&
+              !strcmp(json + strlen(before) - 1, want));
+        CHECK(yk_proto_region_ok(good[i]));
+        cJSON_free(json);
+    }
+    static const char *const bad[] = {"", "c", "CN", "Cn", "1cn", "-cn", "cn_x", "cn!", "a0123456789abcdef", " cn"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        h.region = bad[i];
+        CHECK(!yk_proto_hello(&h) && !yk_proto_region_ok(bad[i]));
+    }
+    CHECK(!yk_proto_region_ok(NULL));
+    cJSON_free(before);
+}
+
+/** Two parsed `error`s are the same but for `consent`: every other field, byte for byte (an error owns only `text`). */
+static bool same_but_consent(const yk_srv_msg_t *a, const yk_srv_msg_t *b) {
+    if (!a->text || !b->text || strcmp(a->text, b->text)) return false;
+    yk_srv_msg_t x, y;
+    memcpy(&x, a, sizeof(x));
+    memcpy(&y, b, sizeof(y));
+    x.text = y.text = NULL;
+    x.consent = y.consent = YK_PROTO_CONSENT_NONE;
+    return !memcmp(&x, &y, sizeof(x));
+}
+
+/** Parses `m` as it is and with `consent` set to `value` (NULL: left out); true when both are errors alike but for it,
+ *  the second's reason in *got. */
+static bool parse_with_consent(const cJSON *m, const cJSON *value, yk_proto_consent_t *got) {
+    cJSON *plain = cJSON_Duplicate(m, 1), *with = cJSON_Duplicate(m, 1);
+    cJSON_DeleteItemFromObjectCaseSensitive(plain, "consent");
+    cJSON_DeleteItemFromObjectCaseSensitive(with, "consent");
+    if (value) cJSON_AddItemToObject(with, "consent", cJSON_Duplicate(value, 1));
+    char *a = cJSON_PrintUnformatted(plain), *b = cJSON_PrintUnformatted(with);
+    yk_srv_msg_t ma, mb;
+    const yk_srv_type_t ta = yk_proto_parse(a, strlen(a), &ma), tb = yk_proto_parse(b, strlen(b), &mb);
+    const bool ok = ta == YK_SRV_ERROR && tb == YK_SRV_ERROR && ma.consent == YK_PROTO_CONSENT_NONE && same_but_consent(&ma, &mb);
+    *got = (yk_proto_consent_t)mb.consent;
+    yk_proto_free(&ma);
+    yk_proto_free(&mb);
+    cJSON_free(a);
+    cJSON_free(b);
+    cJSON_Delete(plain);
+    cJSON_Delete(with);
+    return ok;
+}
+
+/** 两套部署 · 语音单独同意, V1 (device.ts error.consent, consent.ts VOICE_CONSENT_GATES, #2740): the contract's turn held
+ *  for want of voice consent reads as voice; without the field, every error parses as before, field for field; a value
+ *  not exactly "voice", or "voice" with another code, is as none and never costs the message (the turn still ends). */
+static void test_consent(const cJSON *valid) {
+    CHECK(offsetof(yk_srv_msg_t, consent) >= offsetof(yk_srv_msg_t, retry_after) + sizeof(int));  // only added, at the end
+    const cJSON *c, *held = NULL;
+    int errors = 0;
+    cJSON *voice = cJSON_CreateString("voice");
+    cJSON_ArrayForEach(c, valid) {
+        const cJSON *m = cJSON_GetObjectItemCaseSensitive(c, "message");
+        if (strcmp(str(c, "from"), "server") || strcmp(str(m, "type"), "error")) continue;
+        const char *name = str(c, "name") ? str(c, "name") : str(m, "code");
+        if (str(c, "name") && !strcmp(str(c, "name"), "a turn held for want of voice consent")) held = m;
+        errors++;
+        // Every one of the contract's errors: left out, as today; with "voice", voice only for OPERATION_NOT_ALLOWED
+        yk_proto_consent_t got;
+        CHECK_CASE(parse_with_consent(m, NULL, &got) && got == YK_PROTO_CONSENT_NONE, name);
+        const bool refusal = !strcmp(str(m, "code"), "OPERATION_NOT_ALLOWED");
+        CHECK_CASE(parse_with_consent(m, voice, &got) && got == (refusal ? YK_PROTO_CONSENT_VOICE : YK_PROTO_CONSENT_NONE), name);
+    }
+    CHECK(errors >= 4);  // the contract's: CREDITS_EXHAUSTED, SESSION_REPLACED, SERVICE_BUSY with credits, the held one
+    CHECK(held != NULL);  // the contract's own example (fixtures/device.json)
+    if (held) {
+        char *json = cJSON_PrintUnformatted(held);
+        yk_srv_msg_t m;
+        CHECK(yk_proto_parse(json, strlen(json), &m) == YK_SRV_ERROR);
+        CHECK(m.consent == YK_PROTO_CONSENT_VOICE && !strcmp(m.code, "OPERATION_NOT_ALLOWED") && !strcmp(m.turn, str(held, "turn")));
+        CHECK(m.retry_after == 0 && !m.has_credits && !m.reset_at[0] && m.text && !m.text[0]);
+        yk_proto_free(&m);
+        cJSON_free(json);
+        // Not "voice" itself: as none, the message read as without it
+        static const char *const not_voice[] = {"Voice", "VOICE", "voice ", " voice", "voic", "voices", "", "apns", "apple",
+                                                "operation"};
+        for (size_t i = 0; i < sizeof(not_voice) / sizeof(not_voice[0]); i++) {
+            cJSON *v = cJSON_CreateString(not_voice[i]);
+            yk_proto_consent_t got;
+            CHECK_CASE(parse_with_consent(held, v, &got) && got == YK_PROTO_CONSENT_NONE, not_voice[i]);
+            cJSON_Delete(v);
+        }
+        static const char *const not_strings[] = {"1", "true", "false", "null", "[\"voice\"]", "{\"kind\":\"voice\"}"};
+        for (size_t i = 0; i < sizeof(not_strings) / sizeof(not_strings[0]); i++) {
+            cJSON *v = cJSON_Parse(not_strings[i]);
+            yk_proto_consent_t got;
+            CHECK_CASE(v && parse_with_consent(held, v, &got) && got == YK_PROTO_CONSENT_NONE, not_strings[i]);
+            cJSON_Delete(v);
+        }
+        // "voice" with another code (or one only like it): as none
+        static const char *const codes[] = {"SERVICE_BUSY", "CREDITS_EXHAUSTED", "RATE_LIMITED", "DEVICE_NOT_ACTIVATED",
+                                            "CONSENT_ON_USE_REQUIRED", "operation_not_allowed", "OPERATION_NOT_ALLOWED_X",
+                                            "OPERATION_NOT_ALLOWE", "OOPS"};
+        for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+            cJSON *m2 = cJSON_Duplicate(held, 1);
+            cJSON_ReplaceItemInObjectCaseSensitive(m2, "code", cJSON_CreateString(codes[i]));
+            yk_proto_consent_t got;
+            CHECK_CASE(parse_with_consent(m2, voice, &got) && got == YK_PROTO_CONSENT_NONE, codes[i]);
+            cJSON_Delete(m2);
+        }
+        // With the other fields an error may carry, and with no turn: still voice, the rest as without it
+        cJSON *more = cJSON_Duplicate(held, 1);
+        cJSON_AddNumberToObject(more, "retryAfter", 30);
+        cJSON_AddStringToObject(more, "resetAt", "2026-10-18T16:00:00.000Z");
+        cJSON *credits = cJSON_AddObjectToObject(more, "credits");
+        cJSON_AddNumberToObject(credits, "used", 3.2);
+        cJSON_AddNumberToObject(credits, "remaining", 843);
+        yk_proto_consent_t got;
+        CHECK(parse_with_consent(more, voice, &got) && got == YK_PROTO_CONSENT_VOICE);
+        cJSON_DeleteItemFromObjectCaseSensitive(more, "turn");
+        CHECK(parse_with_consent(more, voice, &got) && got == YK_PROTO_CONSENT_VOICE);
+        cJSON_Delete(more);
+        // The key as it is written, nothing like it
+        CHECK(parse("{\"type\":\"error\",\"turn\":\"t7f3a9c21d0e4b55\",\"code\":\"OPERATION_NOT_ALLOWED\",\"Consent\":\"voice\"}",
+                    &m) == YK_SRV_ERROR);
+        CHECK(m.consent == YK_PROTO_CONSENT_NONE);
+        yk_proto_free(&m);
+        // A message that breaks the schema otherwise is still not one, consent or not
+        CHECK(parse("{\"type\":\"error\",\"turn\":\"t7f3a9c21d0e4b55\",\"code\":\"\",\"consent\":\"voice\"}", &m) == YK_SRV_INVALID);
+        CHECK(m.consent == YK_PROTO_CONSENT_NONE);
+        // Another message's consent is not read
+        CHECK(parse("{\"type\":\"session.reauth\",\"consent\":\"voice\"}", &m) == YK_SRV_REAUTH);
+        CHECK(m.consent == YK_PROTO_CONSENT_NONE);
+        yk_proto_free(&m);
+    }
+    cJSON_Delete(voice);
+}
+
+/** One of the contract's reader cases: `msg` read as an error, its consent what `expect` says (readRefusalConsent:
+ *  "voice", or null; a later value this firmware does not know yet is as none), the rest as without it. */
+static void consent_case(const cJSON *msg, const cJSON *expect, const char *why, int *voice, int *none) {
+    const char *want = str(expect, "consent");
+    const bool is_voice = want && !strcmp(want, "voice");
+    const cJSON *given = cJSON_GetObjectItemCaseSensitive(msg, "consent");
+    yk_proto_consent_t got;
+    CHECK_CASE(parse_with_consent(msg, given, &got), why);
+    CHECK_CASE(got == (is_voice ? YK_PROTO_CONSENT_VOICE : YK_PROTO_CONSENT_NONE), why);
+    if (is_voice) (*voice)++;
+    else if (!want) (*none)++;
+}
+
+/** The contract's reader answers (#2778: fixtures/deployments.json voiceConsentSession and voiceConsentHttp, device-api.ts
+ *  readRefusalConsent): voice only with OPERATION_NOT_ALLOWED and "voice" itself, none otherwise. Every one is still
+ *  read as an error, those the platform never sends too (expect.valid false): the turn ends as with any other. An HTTP
+ *  body says its code in `error` (yaykit_cloud reads those, V4); here the same rule on the session's error, its `error`
+ *  as `code`. */
+static void test_consent_cases(const char *deployments) {
+    char *text = deployments ? read_file(deployments) : NULL;
+    cJSON *doc = text ? cJSON_Parse(text) : NULL;
+    const cJSON *session = cJSON_GetObjectItemCaseSensitive(doc, "voiceConsentSession"),
+                *http = cJSON_GetObjectItemCaseSensitive(doc, "voiceConsentHttp"),
+                *kinds = cJSON_GetObjectItemCaseSensitive(doc, "REFUSAL_CONSENTS"), *c, *k;
+    if (!session || !http) {
+        printf("yaykit_session: the voice consent cases left out (no fixtures/deployments.json)\n");
+    } else {
+        bool listed = false;  // the value this firmware reads is one the contract has
+        cJSON_ArrayForEach(k, kinds) listed = listed || (cJSON_IsString(k) && !strcmp(k->valuestring, "voice"));
+        CHECK(listed);
+        int voice = 0, none = 0;
+        const char *turn = NULL;
+        cJSON_ArrayForEach(c, session) {
+            const cJSON *m = cJSON_GetObjectItemCaseSensitive(c, "message");
+            CHECK_CASE(!strcmp(str(m, "type"), "error"), str(c, "why"));
+            if (!turn) turn = str(m, "turn");
+            consent_case(m, cJSON_GetObjectItemCaseSensitive(c, "expect"), str(c, "why"), &voice, &none);
+        }
+        CHECK(voice >= 1 && none >= 3);
+        voice = none = 0;
+        cJSON_ArrayForEach(c, http) {
+            const cJSON *body = cJSON_GetObjectItemCaseSensitive(c, "body");
+            cJSON *m = cJSON_Duplicate(body, 1);
+            cJSON_DeleteItemFromObjectCaseSensitive(m, "error");
+            cJSON_AddStringToObject(m, "type", "error");
+            if (turn) cJSON_AddStringToObject(m, "turn", turn);
+            cJSON_AddStringToObject(m, "code", str(body, "error"));
+            consent_case(m, cJSON_GetObjectItemCaseSensitive(c, "expect"), str(c, "why"), &voice, &none);
+            cJSON_Delete(m);
+        }
+        CHECK(voice >= 1 && none >= 4);
+    }
+    cJSON_Delete(doc);
+    free(text);
+}
+
 /** Beyond the fixtures: a step no firmware has yet is left out of the bits, and a hello without it says nothing. */
 static void test_onboarding(void) {
     yk_srv_msg_t m;
@@ -1052,6 +1340,133 @@ static void test_time_offset(void) {
     CHECK(yk_proto_offline_digest_say("not-a-uuid") == NULL);
 }
 
+/** Yay 0.2 (0.2 开发文档 3.2): the numbers as the contract has them, the times, and what the fixtures do not show. */
+static void test_y02(const cJSON *y02, const cJSON *today_json) {
+    // PROACTIVE_SAY and TODAY as the contract writes them out (device.json y02, today.json)
+    const cJSON *say = cJSON_GetObjectItemCaseSensitive(y02, "proactiveSay");
+    CHECK(say != NULL);
+    CHECK(num(say, "minutes", -1) == YK_PROTO_PROACTIVE_MINUTES && num(say, "keepMinutes", -1) == YK_PROTO_PROACTIVE_KEEP_MINUTES);
+    CHECK(num(say, "recordingHours", -1) == YK_PROTO_PROACTIVE_RECORDING_HOURS && num(say, "missedMax", -1) == YK_PROTO_PROACTIVE_MISSED_MAX);
+    const cJSON *limits = cJSON_GetObjectItemCaseSensitive(today_json, "limits"), *skies = cJSON_GetObjectItemCaseSensitive(today_json, "skies");
+    CHECK(limits != NULL && skies != NULL);
+    CHECK(num(limits, "screenItems", -1) == YK_PROTO_TODAY_NEXT_MAX && num(limits, "titleChars", -1) == YK_PROTO_TODAY_TITLE_CHARS);
+    CHECK(num(limits, "textChars", -1) == YK_PROTO_TODAY_TEXT_CHARS && num(limits, "placeChars", -1) == YK_PROTO_TODAY_PLACE_CHARS);
+    CHECK(num(limits, "soonMinutes", -1) == YK_PROTO_TODAY_SOON_MINUTES && num(limits, "weatherStaleMinutes", -1) == YK_PROTO_TODAY_STALE_MINUTES);
+    static const char *const SKIES[] = {"clear", "cloudy", "rain", "snow"};  // in yk_sky_t's order
+    CHECK(cJSON_GetArraySize(skies) == YK_SKY_OTHER);
+    for (int i = 0; i < YK_SKY_OTHER; i++) CHECK(!strcmp(cJSON_GetStringValue(cJSON_GetArrayItem(skies, i)), SKIES[i]));
+
+    // Times both ways, offsets and fractions; not one z.iso.datetime({offset: true}) takes: false
+    int64_t ms = 0;
+    CHECK(yk_proto_time_ms("2026-11-18T15:00:00.000+08:00", &ms) && ms == 1794985200000LL);
+    CHECK(yk_proto_time_ms("2026-11-18T07:00:00Z", &ms) && ms == 1794985200000LL);
+    CHECK(yk_proto_time_ms("2026-11-18T02:00:00.5-05:00", &ms) && ms == 1794985200500LL);
+    CHECK(yk_proto_time_ms("2027-01-01T05:45:00.0009+05:45", &ms) && ms == 1798761600000LL);
+    CHECK(yk_proto_time_ms("2028-02-29T23:59:59.999-05:00", &ms) && ms == 1835499599999LL);
+    for (int64_t t = 1795000000123LL; t < 1795000000123LL + 400LL * 86400000; t += 86400000LL * 7 + 3600123) {
+        char out[32];
+        int64_t back = 0;
+        CHECK(yk_proto_time_ms(yk_proto_time_offset(t, 480, out), &back) && back == t);
+        CHECK(yk_proto_time_ms(yk_proto_time_offset(t, -210, out), &back) && back == t);
+    }
+    static const char *const bad[] = {"2026-11-18T15:00:00", "2026-11-18 15:00:00Z", "2026-13-18T15:00:00Z",
+                                      "2026-11-18T24:00:00Z", "2026-11-18T15:00:00+08", "2026-11-18T15:00:00.Z", "", NULL};
+    for (int i = 0; bad[i]; i++) CHECK_CASE(!yk_proto_time_ms(bad[i], &ms), bad[i]);
+    CHECK(!yk_proto_time_ms(NULL, &ms));
+
+    // today: fields a later version adds are passed over, in the weather and the things too; the weather left out is -1
+    yk_srv_msg_t m;
+    const char *later = "{\"type\":\"today\",\"weather\":{\"sky\":\"rain\",\"night\":true,\"tempC\":-3,\"text\":\"小雨\","
+                        "\"place\":\"朝阳区\",\"at\":\"2026-11-18T21:30:00+08:00\",\"wind\":3},\"next\":[{\"id\":\"s:a1\","
+                        "\"at\":\"2026-11-18T22:00:00+08:00\",\"title\":\"吃药\",\"icon\":\"pill\"}],\"left\":0,"
+                        "\"day\":\"2026-11-18\",\"hourly\":[]}";
+    CHECK(yk_proto_parse(later, strlen(later), &m) == YK_SRV_TODAY && m.today && m.today->weather == 1 &&
+          m.today->sky == YK_SKY_RAIN && m.today->night && m.today->temp_c == -3 && m.today->next_count == 1 &&
+          m.today->next[0].has_title && !strcmp(m.today->next[0].title, "吃药") && m.today->weather_at_ms == 1795008600000LL);
+    CHECK(m.text && !m.text[0]);
+    yk_proto_free(&m);
+    CHECK(!m.today);
+    const char *bare = "{\"type\":\"today\",\"next\":[],\"left\":0,\"day\":\"2026-11-18\"}";
+    CHECK(yk_proto_parse(bare, strlen(bare), &m) == YK_SRV_TODAY && m.today->weather == -1 && !m.today->next_count && !m.today->done[0]);
+    yk_proto_free(&m);
+    // ... but a thing without its at or title, a weather without its place, `next` not a list: not a today
+    static const char *const broken[] = {
+        "{\"type\":\"today\",\"next\":[{\"id\":\"s:a1\",\"title\":\"x\"}],\"left\":0,\"day\":\"2026-11-18\"}",
+        "{\"type\":\"today\",\"next\":[{\"id\":\"s:a1\",\"at\":null}],\"left\":0,\"day\":\"2026-11-18\"}",
+        "{\"type\":\"today\",\"weather\":{\"sky\":\"clear\",\"night\":false,\"tempC\":1,\"text\":\"晴\",\"at\":\"2026-11-18T09:30:00Z\"},"
+        "\"next\":[],\"left\":0,\"day\":\"2026-11-18\"}",
+        "{\"type\":\"today\",\"next\":{},\"left\":0,\"day\":\"2026-11-18\"}",
+        "{\"type\":\"today\",\"next\":[],\"left\":100,\"day\":\"2026-11-18\"}",
+        "{\"type\":\"today\",\"next\":[],\"left\":0,\"day\":\"2026-11-18\",\"done\":\"q:1\"}",
+        NULL};
+    for (int i = 0; broken[i]; i++) {
+        CHECK_CASE(yk_proto_parse(broken[i], strlen(broken[i]), &m) == YK_SRV_INVALID && !m.today, broken[i]);
+        yk_proto_free(&m);
+    }
+
+    // record.start; proactive.say; listen.start's room at its ends, and left out
+    const char *rec = "{\"type\":\"action\",\"id\":\"a-rec-1\",\"kind\":\"record.start\",\"later\":1}";
+    CHECK(yk_proto_parse(rec, strlen(rec), &m) == YK_SRV_ACTION && m.kind == YK_ACT_RECORD_START && !strcmp(m.action_id, "a-rec-1"));
+    yk_proto_free(&m);
+    char *out = yk_proto_proactive_say("7d2e4a9c-13f6-4b5c-8a48-f00000000010");
+    CHECK(out && !strcmp(out, "{\"type\":\"proactive.say\",\"id\":\"7d2e4a9c-13f6-4b5c-8a48-f00000000010\"}"));
+    cJSON_free(out);
+    CHECK(yk_proto_proactive_say(NULL) == NULL && yk_proto_proactive_say("") == NULL);
+    out = yk_proto_listen_start_room("t8a4b0d32e1f5c66", 300, NULL, false, YK_PROTO_ROOM_MAX);
+    CHECK(out && strstr(out, "\"record\":{\"room\":1000}"));
+    cJSON_free(out);
+    out = yk_proto_listen_start_room("t8a4b0d32e1f5c66", 300, NULL, true, -1);
+    CHECK(out && strstr(out, "\"held\":true") && strstr(out, "\"record\":{\"room\":-1}"));
+    cJSON_free(out);
+    out = yk_proto_listen_start_room("t8a4b0d32e1f5c66", 300, NULL, false, YK_PROTO_ROOM_NONE);
+    char *as_before = yk_proto_listen_start("t8a4b0d32e1f5c66", 300, NULL);
+    CHECK(out && as_before && !strcmp(out, as_before) && !strstr(out, "record"));
+    cJSON_free(out);
+    cJSON_free(as_before);
+    CHECK(yk_proto_listen_start_room("t8a4b0d32e1f5c66", 300, NULL, false, YK_PROTO_ROOM_MAX + 1) == NULL);
+    CHECK(yk_proto_listen_start_room("t8a4b0d32e1f5c66", 300, NULL, false, -3) == NULL);
+
+    // inbox: proactive keeps its id and say; an older kind is read as before, with neither
+    const char *line = "{\"type\":\"inbox\",\"kind\":\"proactive\",\"text\":\"三点了\",\"taskId\":null,"
+                       "\"id\":\"7d2e4a9c-13f6-4b5c-8a48-f00000000011\",\"say\":false}";
+    CHECK(yk_proto_parse(line, strlen(line), &m) == YK_SRV_INBOX && !strcmp(m.inbox_kind, "proactive") && !m.inbox_say &&
+          !strcmp(m.inbox_id, "7d2e4a9c-13f6-4b5c-8a48-f00000000011") && !strcmp(m.text, "三点了"));
+    yk_proto_free(&m);
+    const char *done = "{\"type\":\"inbox\",\"kind\":\"done\",\"text\":\"做好了\",\"taskId\":\"t1\"}";
+    CHECK(yk_proto_parse(done, strlen(done), &m) == YK_SRV_INBOX && !m.inbox_id[0] && !m.inbox_say);
+    yk_proto_free(&m);
+    // a reminder from a later platform with an id and say: received as before, neither read
+    const char *later_reminder = "{\"type\":\"inbox\",\"kind\":\"reminder\",\"text\":\"三点了\",\"taskId\":null,"
+                                 "\"id\":\"7d2e4a9c-13f6-4b5c-8a48-f00000000012\",\"say\":true}";
+    CHECK(yk_proto_parse(later_reminder, strlen(later_reminder), &m) == YK_SRV_INBOX &&
+          !strcmp(m.inbox_kind, "reminder") && !m.inbox_id[0] && !m.inbox_say && !strcmp(m.text, "三点了"));
+    yk_proto_free(&m);
+    // the same with ones that are no id or say at all: still the reminder
+    const char *odd = "{\"type\":\"inbox\",\"kind\":\"dot\",\"text\":\"x\",\"taskId\":null,\"id\":7,\"say\":\"yes\"}";
+    CHECK(yk_proto_parse(odd, strlen(odd), &m) == YK_SRV_INBOX && !m.inbox_id[0] && !m.inbox_say);
+    yk_proto_free(&m);
+    // proactive is still held to them: an id that is no UUID, or say that is no boolean, drops it
+    const char *bad_id = "{\"type\":\"inbox\",\"kind\":\"proactive\",\"text\":\"x\",\"taskId\":null,\"id\":\"7\",\"say\":true}";
+    CHECK(yk_proto_parse(bad_id, strlen(bad_id), &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    const char *bad_say = "{\"type\":\"inbox\",\"kind\":\"proactive\",\"text\":\"x\",\"taskId\":null,"
+                          "\"id\":\"7d2e4a9c-13f6-4b5c-8a48-f00000000013\",\"say\":1}";
+    CHECK(yk_proto_parse(bad_say, strlen(bad_say), &m) == YK_SRV_INVALID);
+    yk_proto_free(&m);
+    const char *newer = "{\"type\":\"inbox\",\"kind\":\"nudge\",\"text\":\"x\",\"taskId\":null}";
+    CHECK(yk_proto_parse(newer, strlen(newer), &m) == YK_SRV_INVALID);  // a kind not known: dropped, as before
+    yk_proto_free(&m);
+
+    // Yay's three caps go into a hello as any other
+    const char *caps[] = {"offline", YK_PROTO_CAP_TODAY, YK_PROTO_CAP_RECORD, YK_PROTO_CAP_PROACTIVE};
+    yk_proto_hello_t h = {.fw = "yay/0.2.0", .board = "tikpal-r1", .locale = "zh", .tz = "Asia/Shanghai", .battery_pct = 72,
+                          .rssi = -55, .out_rate = 16000, .caps = caps, .cap_count = 4};
+    out = yk_proto_hello(&h);
+    CHECK(out && strstr(out, "\"caps\":[\"offline\",\"today\",\"record\",\"proactive\"]"));
+    cJSON_free(out);
+    CHECK(!strcmp(yk_proto_type_name(YK_SRV_TODAY), "today"));
+}
+
 int main(int argc, char **argv) {
     char *text = argc > 1 ? read_file(argv[1]) : NULL;
     cJSON *fixtures = text ? cJSON_Parse(text) : NULL;
@@ -1064,6 +1479,7 @@ int main(int argc, char **argv) {
         test_frames(cJSON_GetObjectItemCaseSensitive(fixtures, "frames"));
         test_time_offset();
         test_practice_parts(cJSON_GetObjectItemCaseSensitive(fixtures, "valid"));
+        test_consent(cJSON_GetObjectItemCaseSensitive(fixtures, "valid"));
         // The screensaver's own (docs/design/screensaver.md): Yay's hello and prefs with it, its actions, the answers.
         const cJSON *saver = cJSON_GetObjectItemCaseSensitive(fixtures, "screensaver");
         CHECK(saver != NULL);
@@ -1115,6 +1531,25 @@ int main(int argc, char **argv) {
             test_device(cJSON_GetObjectItemCaseSensitive(live, "valid"), true);
             test_device(cJSON_GetObjectItemCaseSensitive(live, "invalid"), false);
         }
+        // Yay 0.2's group (today, record.start, listen.start's record, inbox proactive, proactive.say), and today.json
+        // beside it for TODAY's numbers.
+        const cJSON *y02 = cJSON_GetObjectItemCaseSensitive(fixtures, "y02");
+        CHECK(y02 != NULL);
+        if (y02) {
+            test_device(cJSON_GetObjectItemCaseSensitive(y02, "valid"), true);
+            test_device(cJSON_GetObjectItemCaseSensitive(y02, "invalid"), false);
+            test_server(cJSON_GetObjectItemCaseSensitive(y02, "valid"), true);
+            test_server(cJSON_GetObjectItemCaseSensitive(y02, "invalid"), false);
+            char path[1024];
+            const char *slash = strrchr(argv[1], '/');
+            snprintf(path, sizeof(path), "%.*stoday.json", slash ? (int)(slash - argv[1] + 1) : 0, argv[1]);
+            char *today_text = read_file(path);
+            cJSON *today_json = today_text ? cJSON_Parse(today_text) : NULL;
+            CHECK(today_json != NULL);
+            test_y02(y02, today_json);
+            cJSON_Delete(today_json);
+            free(today_text);
+        }
         // Yay 0.1.19's follow group (locale.set, colorway.set, owner.colorway): once the contract has it (#1845).
         const cJSON *follow = cJSON_GetObjectItemCaseSensitive(fixtures, "follow");
         if (follow) {
@@ -1129,6 +1564,8 @@ int main(int argc, char **argv) {
     test_folders();
     test_find();
     test_onboarding();
+    test_region(argc > 2 ? argv[2] : NULL);
+    test_consent_cases(argc > 2 ? argv[2] : NULL);
     test_follow();
     test_saver();
     test_buddy();

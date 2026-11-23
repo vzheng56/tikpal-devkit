@@ -33,6 +33,11 @@ static bool in(yk_tsm_input_type_t type, const char *turn, const char *text, con
     return yk_tsm_feed(&sm, &i);
 }
 static bool feed(yk_tsm_input_type_t type) { return in(type, NULL, NULL, NULL); }
+/** An error on `turn` with a refusal's consent (yk_srv_msg_t.consent, 两套部署 · 语音单独同意 V3). */
+static bool refused(const char *turn, const char *code, uint8_t consent) {
+    const yk_tsm_input_t i = {.type = YK_TSM_ERROR, .now_ms = t, .turn = turn, .code = code, .consent = consent};
+    return yk_tsm_feed(&sm, &i);
+}
 static bool has(yk_tsm_fx_type_t type) {
     for (int i = 0; i < sm.fx_count; i++)
         if (sm.fx[i].type == type) return true;
@@ -217,7 +222,8 @@ static void test_ends(void) {
         yk_talk_end_t end;
     } codes[] = {{"CREDITS_EXHAUSTED", YK_TALK_NO_CREDITS}, {"NOT_UNDERSTOOD", YK_TALK_NOT_HEARD},
                  {"AUDIO_TOO_SHORT", YK_TALK_NOT_HEARD},    {"CONTENT_BLOCKED", YK_TALK_BLOCKED},
-                 {"VOICE_BUSY", YK_TALK_BUSY},              {"SOMETHING_NEW_123", YK_TALK_BUSY}};
+                 {"VOICE_BUSY", YK_TALK_BUSY},              {"SOMETHING_NEW_123", YK_TALK_BUSY},
+                 {"OPERATION_NOT_ALLOWED", YK_TALK_BUSY}};  // without consent (a frozen account): as before V3
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
         start();
         char turn[17];
@@ -278,6 +284,149 @@ static void test_ends(void) {
     t += YK_TALK_REPLY_STALL_MS;
     feed(YK_TSM_TICK);
     CHECK(ended_with(YK_TALK_DONE) && has(YK_TSM_SPEAK_STOP) && sm.state == YK_TALK_IDLE);
+}
+
+/** 两套部署 · 语音单独同意 V3: an OPERATION_NOT_ALLOWED with consent "voice" on a turn the user held ends
+ *  YK_TALK_VOICE_CONSENT and nothing is sent again; without it, or on a turn the server started (an opening), the end
+ *  is the one it was before (BUSY), so the language buddy's one retry of an opening stays as it is. */
+static void test_voice_consent(void) {
+    // Refused while still held (the platform holds the voice at listen.start): the microphones close, nothing more.
+    start();
+    char turn[17];
+    snprintf(turn, sizeof(turn), "%s", hold());
+    CHECK(refused(turn, "OPERATION_NOT_ALLOWED", YK_PROTO_CONSENT_VOICE) && ended_with(YK_TALK_VOICE_CONSENT));
+    CHECK(has(YK_TSM_MIC_DISCARD) && sm.fx_count == 2 && sm.state == YK_TALK_IDLE && !sm.turn_open);
+    CHECK(!strcmp(yk_talk_end_name(YK_TALK_VOICE_CONSENT), "voice_consent"));
+    // Let go: no listen.stop, no cue; ticks long after: nothing is tried again by itself.
+    t += 1000;
+    feed(YK_TSM_KEY_UP);
+    CHECK(sm.fx_count == 0 && sm.state == YK_TALK_IDLE);
+    for (int i = 0; i < 4; i++) {
+        t += YK_TALK_REPLY_STALL_MS;
+        feed(YK_TSM_TICK);
+        CHECK(sm.fx_count == 0);
+    }
+    // The next hold asks again (a turn of its own); refused again after the release: the same end, nothing else.
+    char again[17];
+    snprintf(again, sizeof(again), "%s", hold());
+    CHECK(has(YK_TSM_LISTEN_START) && strcmp(again, turn) != 0);
+    feed(YK_TSM_KEY_UP);
+    CHECK(refused(again, "OPERATION_NOT_ALLOWED", YK_PROTO_CONSENT_VOICE) && ended_with(YK_TALK_VOICE_CONSENT));
+    CHECK(sm.fx_count == 1 && sm.state == YK_TALK_IDLE);
+    // Agreed in the app since: the next hold is heard and answered as any other.
+    snprintf(again, sizeof(again), "%s", hold());
+    feed(YK_TSM_KEY_UP);
+    in(YK_TSM_STT_FINAL, again, "Hello", NULL);
+    CHECK(has(YK_TSM_HEARD) && sm.state == YK_TALK_THINKING);
+    in(YK_TSM_REPLY_END, again, NULL, NULL);
+    CHECK(ended_with(YK_TALK_DONE));
+
+    // Consent beside any other code changes nothing, held or released: the state machine and its effects byte for byte
+    // as without it (yaykit_session reads consent only with OPERATION_NOT_ALLOWED, #2778; this asks for both).
+    const char *codes[] = {"CREDITS_EXHAUSTED", "NOT_UNDERSTOOD", "AUDIO_TOO_SHORT", "CONTENT_BLOCKED", "SERVICE_BUSY",
+                           "VOICE_BUSY",        "RATE_LIMITED",   "SOMETHING_NEW_123"};
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+        for (int held = 0; held < 2; held++) {
+            yk_tsm_t without;
+            start();
+            snprintf(turn, sizeof(turn), "%s", hold());
+            if (!held) feed(YK_TSM_KEY_UP);
+            refused(turn, codes[i], 0);
+            memcpy(&without, &sm, sizeof(sm));
+            start();
+            snprintf(turn, sizeof(turn), "%s", hold());
+            if (!held) feed(YK_TSM_KEY_UP);
+            refused(turn, codes[i], YK_PROTO_CONSENT_VOICE);
+            CHECK(!memcmp(&without, &sm, sizeof(sm)));
+            CHECK(has(YK_TSM_ENDED) && !ended_with(YK_TALK_VOICE_CONSENT));
+        }
+    }
+    // OPERATION_NOT_ALLOWED without consent (a frozen account, an older server, overseas), or with a value this
+    // firmware does not know: BUSY (等一下再试), as before V3.
+    const uint8_t not_voice[] = {YK_PROTO_CONSENT_NONE, 7};
+    for (size_t c = 0; c < sizeof(not_voice); c++) {
+        start();
+        snprintf(turn, sizeof(turn), "%s", hold());
+        feed(YK_TSM_KEY_UP);
+        CHECK(refused(turn, "OPERATION_NOT_ALLOWED", not_voice[c]) && ended_with(YK_TALK_BUSY) && sm.fx_count == 1);
+    }
+
+    // A turn the server started (the language buddy's opening, another topic): the platform never holds it for consent
+    // (it holds the user's voice). Whatever it is refused for ends as before V3, consent or not: BUSY (the language
+    // buddy then asks once more, lb_ui.c turn_ended), CREDITS_EXHAUSTED NO_CREDITS (it does not).
+    const uint8_t consents[] = {YK_PROTO_CONSENT_NONE, YK_PROTO_CONSENT_VOICE};
+    const char *opening = "s-k2m8q4w9z1x7c3";
+    for (size_t c = 0; c < sizeof(consents); c++) {
+        start();
+        in(YK_TSM_REPLY_LINE, opening, "Let's talk about travel.", NULL);
+        CHECK(refused(opening, "OPERATION_NOT_ALLOWED", consents[c]) && ended_with(YK_TALK_BUSY));
+        CHECK(!strcmp(get(YK_TSM_ENDED)->turn, opening) && has(YK_TSM_SPEAK_STOP) && sm.state == YK_TALK_IDLE);
+        start();
+        in(YK_TSM_REPLY_LINE, opening, "Let's talk about travel.", NULL);
+        CHECK(refused(opening, "SERVICE_BUSY", consents[c]) && ended_with(YK_TALK_BUSY));
+        start();
+        in(YK_TSM_REPLY_LINE, opening, "Let's talk about travel.", NULL);
+        CHECK(refused(opening, "CREDITS_EXHAUSTED", consents[c]) && ended_with(YK_TALK_NO_CREDITS));
+        // Refused before its first line (not taken): nothing, as before (the language buddy's own wait asks again).
+        start();
+        CHECK(!refused(opening, "OPERATION_NOT_ALLOWED", consents[c]) && sm.fx_count == 0 && sm.state == YK_TALK_IDLE);
+    }
+}
+
+/** The contract's own refusals (fixtures/deployments.json voiceConsentSession, #2778), read by yaykit_session as the
+ *  session reads them, on a turn the user held (and released): VOICE_CONSENT only where the contract expects consent
+ *  "voice"; every other one ends as its code does without consent. */
+static void test_voice_consent_cases(const char *deployments) {
+    cJSON *doc = NULL;
+    FILE *f = deployments ? fopen(deployments, "rb") : NULL;
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        const long n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *text = malloc((size_t)n + 1);
+        if (text && fread(text, 1, (size_t)n, f) == (size_t)n) {
+            text[n] = 0;
+            doc = cJSON_Parse(text);
+        }
+        free(text);
+        fclose(f);
+    }
+    const cJSON *cases = cJSON_GetObjectItemCaseSensitive(doc, "voiceConsentSession"), *c;
+    CHECK(cases != NULL);
+    int voice = 0, none = 0;
+    cJSON_ArrayForEach(c, cases) {
+        cJSON *m = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(c, "message"), 1);
+        const cJSON *want = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(c, "expect"), "consent");
+        const bool is_voice = cJSON_IsString(want) && !strcmp(want->valuestring, "voice");
+        const char *code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m, "code"));
+        for (int held = 0; held < 2; held++) {
+            start();
+            char turn[17];
+            snprintf(turn, sizeof(turn), "%s", hold());
+            if (!held) feed(YK_TSM_KEY_UP);
+            cJSON_ReplaceItemInObjectCaseSensitive(m, "turn", cJSON_CreateString(turn));
+            char *json = cJSON_PrintUnformatted(m);
+            yk_srv_msg_t msg;
+            CHECK(json && yk_proto_parse(json, strlen(json), &msg) == YK_SRV_ERROR);
+            CHECK(refused(msg.turn, msg.code, msg.consent));
+            CHECK(has(YK_TSM_ENDED) && ended_with(YK_TALK_VOICE_CONSENT) == is_voice);
+            if (has(YK_TSM_ENDED) && !is_voice) {
+                const yk_talk_end_t was = get(YK_TSM_ENDED)->end;
+                start();
+                snprintf(turn, sizeof(turn), "%s", hold());
+                if (!held) feed(YK_TSM_KEY_UP);
+                refused(turn, code, YK_PROTO_CONSENT_NONE);
+                CHECK(ended_with(was));
+            }
+            yk_proto_free(&msg);
+            cJSON_free(json);
+        }
+        if (is_voice) voice++;
+        else none++;
+        cJSON_Delete(m);
+    }
+    CHECK(voice >= 1 && none >= 3);
+    cJSON_Delete(doc);
 }
 
 static void test_network(void) {
@@ -496,6 +645,12 @@ static void test_hello(const cJSON *cases) {
         const cJSON *caps = item(got, "caps");
         CHECK(cJSON_GetArraySize(caps) == 6);
         CHECK(!strcmp(cJSON_GetStringValue(cJSON_GetArrayItem(caps, 5)), "app.home"));
+        // Yay 0.2's three are Yay's alone: an extension gets no today, record.start nor proactive line.
+        const cJSON *cap;
+        cJSON_ArrayForEach(cap, caps) {
+            CHECK(strcmp(cJSON_GetStringValue(cap), YK_PROTO_CAP_TODAY) && strcmp(cJSON_GetStringValue(cap), YK_PROTO_CAP_RECORD) &&
+                  strcmp(cJSON_GetStringValue(cap), YK_PROTO_CAP_PROACTIVE));
+        }
         CHECK(!strcmp(cJSON_GetStringValue(item(got, "fw")), "language-buddy/0.1.0"));
         CHECK(cJSON_GetNumberValue(item(item(got, "audio"), "outRate")) == 16000);
     }
@@ -512,9 +667,22 @@ static void test_hello(const cJSON *cases) {
         CHECK(cJSON_GetNumberValue(item(item(got, "battery"), "pct")) == 100);                // not read: 100
         CHECK(cJSON_GetNumberValue(item(item(got, "wifi"), "rssi")) == -127);                 // not connected
         CHECK(cJSON_GetNumberValue(item(item(got, "prefs"), "screenOff")) == 0);
+        CHECK(!item(got, "region"));  // 两套部署: none given (CONFIG_YK_REGIONS off), none said, as before
     }
     cJSON_Delete(got);
     cJSON_free(json);
+    // With CONFIG_YK_REGIONS the device's region (yk_region_name()), global's too: said as given
+    h.region = "cn";
+    json = yk_talk_hello(&h);
+    got = json ? cJSON_Parse(json) : NULL;
+    CHECK(got && !strcmp(cJSON_GetStringValue(item(got, "region")), "cn"));
+    cJSON_Delete(got);
+    cJSON_free(json);
+    h.region = "global";
+    json = yk_talk_hello(&h);
+    CHECK(json && strstr(json, "\"region\":\"global\""));
+    cJSON_free(json);
+    h.region = NULL;
     // A mode without its setup is refused here, before the platform closes the session for it.
     h.pair = NULL;
     CHECK(yk_talk_hello(&h) == NULL);
@@ -703,6 +871,8 @@ int main(int argc, char **argv) {
     test_flush();
     test_close();
     test_setup();
+    test_voice_consent();
+    test_voice_consent_cases(argc > 2 ? argv[2] : NULL);  // fixtures/deployments.json (两套部署 · 语音单独同意 V3)
     cJSON *cases = NULL;
     if (argc > 1) {
         FILE *f = fopen(argv[1], "rb");

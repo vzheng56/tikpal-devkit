@@ -65,6 +65,10 @@ yk_yay_pose_t yk_yay_get_pose(const yk_yay_t *yay);
 /** Changes the size (keeps the centre). */
 void yk_yay_size(yk_yay_t *yay, int size);
 void yk_yay_move(yk_yay_t *yay, int cx, int cy);
+/** Yay on another `paper` from now on (Yay 0.2's home at night: black, 22:00–7:00): the pose drawn again over it, and
+ *  what the cache made over the old one that no Yay shows any more goes (PSRAM, as every picture). Nothing for the
+ *  same paper, or from or to YK_YAY_TRANSPARENT (a transparent Yay stays one). Not called: as before, byte for byte. */
+void yk_yay_paper(yk_yay_t *yay, uint32_t paper);
 
 /** Blinks by itself every 4..6 s (on by default; off while a pose has its eyes shut). */
 void yk_yay_auto_blink(yk_yay_t *yay, bool on);

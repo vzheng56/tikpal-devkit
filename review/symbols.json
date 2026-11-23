@@ -251,7 +251,9 @@
         "yk_claim_valid",
         "yk_activation_message",
         "yk_release_message",
-        "yk_send_again"
+        "yk_send_again",
+        "yk_region_store",
+        "yk_region_test_*"
       ],
       "why": {
         "zh": "这是 `yaykit_cloud` 组件里面的函数：设备密钥、签名、令牌和对服务的请求归组件自己，应用只用公开头文件里的接口。",
@@ -260,6 +262,29 @@
       "fix": {
         "zh": "用 `yaykit_cloud.h` 的 `yk_cloud_*`（对话、识别、朗读、数据、文件这些）和 `yaykit_account.h` 的 `yk_account_*`（要令牌就用 `yk_account_token()`），见 docs/app-guide.md。",
         "en": "Use `yk_cloud_*` in `yaykit_cloud.h` (chat, recognition, speech, data, files and the rest) and `yk_account_*` in `yaykit_account.h` (for a token, `yk_account_token()`); see docs/app-guide.md."
+      }
+    },
+    {
+      "match": [
+        "yk_account_command",
+        "yk_account_register_console",
+        "yk_account_recover",
+        "yk_account_release",
+        "yk_account_release_mark",
+        "yk_account_release_pending",
+        "yk_account_binding_stored",
+        "yk_account_unbound_by_server",
+        "yk_account_owner_seen",
+        "yk_account_locale_seen"
+      ],
+      "everyKit": true,
+      "why": {
+        "zh": "这些是 Tikpal 主固件自己的账号函数：接手机发来的 `account.activate`、`account.forget`（加设备、换绑定、清绑定），控制台的 `account claim`、`account forget`，恢复出厂时让设备离开账号（`yk_account_release_mark()`、`yk_account_release()`），开机找回断电丢了回答的绑定，服务说设备没加时忘掉绑定，记下主人的昵称和语言。绑定、地区和主人归系统，整台设备所有应用共用一份：应用调一次，就能把设备从主人的账号里清掉、换到别人名下，或者改掉所有应用看到的主人和语言。函数虽然在 `yaykit_account.h` 里，应用不能调。",
+        "en": "These are the Tikpal main firmware's own account functions: answering the phone's `account.activate` and `account.forget` (adding the device, binding it to another account, forgetting the binding), the console's `account claim` and `account forget`, leaving the account on a factory reset (`yk_account_release_mark()`, `yk_account_release()`), recovering a binding whose answer a power cut took, forgetting the binding when the service says the device is not added, and keeping the owner's nickname and language. The binding, the region and the owner are the system's, one for the whole device and every app on it: an app calling one of them once could take the device off its owner's account, put it under someone else's, or change the owner and the language every app sees. Though `yaykit_account.h` declares them, an app may not call them."
+      },
+      "fix": {
+        "zh": "什么都不用做：加设备、解绑、恢复出厂归 Tikpal 主固件和 App。要看加没加用 `yk_account_state()`，昵称、语言用 `yk_account_nickname()`、`yk_app_english()`（要语言代码用 `yk_app_locale()`），令牌用 `yk_account_token()`，服务说令牌过期了调 `yk_account_token_expired()`；服务说设备没加，组件下次取令牌时自己处理。`yk cmd` 只接你自己的命令和 `yk_app_command()` 的，不接 `account.*`。",
+        "en": "Nothing to do: adding the device, unbinding it and the factory reset are the Tikpal main firmware's and the App's. To see whether it is added, use `yk_account_state()`; for the nickname and the language, `yk_account_nickname()` and `yk_app_english()` (for the language's code, `yk_app_locale()`); for a token, `yk_account_token()`, and `yk_account_token_expired()` when the service says it expired. When the service says the device is not added, the component sees to it at the next token. `yk cmd` takes your own commands and `yk_app_command()`'s, never `account.*`."
       }
     },
     {

@@ -74,6 +74,53 @@ const char *yk_sheet_clock_text(int64_t utc_s, int offset_min, char *buf, size_t
     return buf;
 }
 
+const char *yk_sheet_wifi_value(int wifi, const char *ssid, int rssi, int reach, bool english, bool *problem,
+                                yk_sheet_icon_t *icon, char *buf, size_t size) {
+    yk_sheet_icon_t none = {0};
+    if (wifi == WIFI_CONNECTED && reach != REACH_FAILED) {
+        if (problem) *problem = false;
+        if (icon) *icon = (yk_sheet_icon_t){.kind = YK_SHEET_ICON_WIFI, .level = rssi > -60 ? 3 : rssi > -72 ? 2 : 1};
+        if (size) snprintf(buf, size, "%s", ssid ? ssid : "");
+        return buf;
+    }
+    if (icon) *icon = none;
+    return yk_sheet_wifi_text(wifi, ssid, rssi, reach, english, problem, buf, size);
+}
+
+const char *yk_sheet_battery_value(const yk_sheet_battery_t *b, bool english, yk_sheet_icon_t *icon, char *buf,
+                                   size_t size) {
+    yk_sheet_icon_t none = {0};
+    // The words alone: not read, very low and charging (it would read 0 % for a long while), a fault.
+    if (b->percent < 0 || (b->usb && (b->fault || b->low))) {
+        if (icon) *icon = none;
+        return yk_sheet_battery_text(b, false, english, buf, size);
+    }
+    const int pct = b->percent > 100 ? 100 : b->percent;
+    const bool full = b->usb && b->full, stopped = b->usb && b->stopped;
+    const bool charging = b->charging && !full && !stopped;
+    if (icon)
+        *icon = (yk_sheet_icon_t){.kind = YK_SHEET_ICON_BATTERY, .level = (uint8_t)pct, .charging = charging,
+                                  .low = !charging && pct <= YK_SHEET_BATTERY_LOW};
+    if (!size) return buf;
+    if (stopped) return yk_sheet_battery_text(b, false, english, buf, size);  // 「76% · 没在充」: worth reading
+    char n[12];
+    yk_wordf_in(english, buf, size, YK_STR_YAYKIT_SHEET_PERCENT, yk_words_num(n, pct));
+    return buf;
+}
+
+const char *yk_sheet_phone_value(int account, const char *nickname, bool english, bool *problem, yk_sheet_icon_t *icon,
+                                 char *buf, size_t size) {
+    yk_sheet_icon_t none = {0};
+    if (account == ACCOUNT_BOUND) {
+        if (problem) *problem = false;
+        if (icon) *icon = (yk_sheet_icon_t){.kind = YK_SHEET_ICON_CHECK};
+        if (size) snprintf(buf, size, "%s", nickname ? nickname : "");
+        return buf;
+    }
+    if (icon) *icon = none;
+    return yk_sheet_phone_text(account, nickname, english, problem, buf, size);
+}
+
 const char *yk_sheet_phone_text(int account, const char *nickname, bool english, bool *problem, char *buf, size_t size) {
     if (problem) *problem = account != ACCOUNT_BOUND && account != ACCOUNT_ACTIVATING;
     if (!size) return buf;

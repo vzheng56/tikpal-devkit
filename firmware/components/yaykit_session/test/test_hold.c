@@ -81,8 +81,14 @@ int64_t esp_timer_get_time(void) { return 0; }
 uint32_t esp_random(void) { return 0; }
 const char *esp_err_to_name(esp_err_t err) { return err == ESP_OK ? "ESP_OK" : "ERR"; }
 
+static char s_uri[96];  // the last connection's address
+// The production session by the device's region (yk_session_url.c, not built here): as the test sets it
+static const char GLOBAL_SESSION[] = "wss://device.yaykit.io/device/v1/session";
+static const char CN_SESSION[] = "wss://device.tikpal.com.cn/device/v1/session";
+static const char *s_region_url = GLOBAL_SESSION;
+const char *yk_session_url(void) { return s_region_url; }
 esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_client_config_t *config) {
-    (void)config;
+    snprintf(s_uri, sizeof(s_uri), "%s", config->uri ? config->uri : "");
     s_ws_inits++;
     return (esp_websocket_client_handle_t)&s_mutex;
 }
@@ -138,6 +144,7 @@ static void run(bool hold_at_token, bool token_fails) {
 
 int main(void) {
     const yk_session_config_t cfg = {.url = "ws://device.test/session", .firmware = "0.1.17", .token = token, .hello = hello};
+    CHECK(yk_session_follow_region() == ESP_ERR_INVALID_STATE);  // no session yet
     CHECK(yk_session_start(&cfg) == ESP_OK);
 
     // Nothing in the way: the token, then the WebSocket
@@ -178,6 +185,36 @@ int main(void) {
     s_bits = 0;
     if (!setjmp(s_parked)) session_task(NULL);
     CHECK(s_tokens == 0 && s_ws_inits == 0);
+
+    // 两套部署: an activation stored another region, so the production session is another address
+    // (yk_session_follow_region(), which takes none: yk_session_url()'s only). A ws:// session (a development server's,
+    // as this one started) never moves.
+    s_bits = 0;
+    s_region_url = CN_SESSION;
+    CHECK(yk_session_follow_region() == ESP_ERR_INVALID_STATE && !s_bits && !strcmp(S.cfg.url, "ws://device.test/session"));
+    // A production session (wss://, global's), and the region global still: nothing dropped
+    S.cfg.url = GLOBAL_SESSION;
+    S.wss = true;
+    s_region_url = GLOBAL_SESSION;
+    run(false, false);
+    CHECK(s_ws_inits == 1 && !strcmp(s_uri, GLOBAL_SESSION));
+    s_bits = 0;
+    CHECK(yk_session_follow_region() == ESP_OK && !s_bits && S.cfg.url == GLOBAL_SESSION);
+    // Now cn: the connection dropped and the back-off cut short, the next made there, no restart; read as each begins
+    s_region_url = CN_SESSION;
+    CHECK(yk_session_follow_region() == ESP_OK);
+    CHECK((s_bits & BIT_DOWN) && (s_bits & BIT_KICK) && S.cfg.url == CN_SESSION);
+    run(false, false);
+    CHECK(s_ws_inits == 1 && !strcmp(s_uri, CN_SESSION));
+    run(false, false);
+    CHECK(!strcmp(s_uri, CN_SESSION));  // and stays there
+    s_bits = 0;
+    CHECK(yk_session_follow_region() == ESP_OK && !s_bits);  // there already
+    // The USB bridge never moves
+    S.usb = true;
+    s_region_url = GLOBAL_SESSION;
+    CHECK(yk_session_follow_region() == ESP_ERR_INVALID_STATE && !s_bits && S.cfg.url == CN_SESSION);
+    S.usb = false;
 
     printf("yaykit_session hold host tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

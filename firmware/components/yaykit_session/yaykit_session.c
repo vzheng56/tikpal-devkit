@@ -755,6 +755,17 @@ void yk_session_reconnect(void) {
     if (S.events) xEventGroupSetBits(S.events, BIT_DOWN);
 }
 
+esp_err_t yk_session_follow_region(void) {
+    if (!S.events || S.usb || !S.wss) return ESP_ERR_INVALID_STATE;
+    const char *url = yk_session_url();  // a constant: the region table's, or YK_SESSION_URL
+    if (!strcmp(url, S.cfg.url)) return ESP_OK;
+    // One pointer, read by the session's task as each connection begins (ws_connect, the ticket's host): either whole.
+    S.cfg.url = url;
+    printf("YAY_NET server=%s (the region's, from the next connection)\n", url);
+    xEventGroupSetBits(S.events, BIT_DOWN | BIT_KICK);
+    return ESP_OK;
+}
+
 bool yk_session_hold(bool hold) {
     if (!S.events || S.usb) return false;
     if (S.hold == hold) return true;

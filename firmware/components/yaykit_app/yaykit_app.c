@@ -842,14 +842,14 @@ static int app_cmd(int argc, char **argv) {
 
 // ---------------------------------------------------------------- development commands
 
-// Yay's development build registers 37 (11-09: at 30 its last one, `yay dump`, was left out; 11-13 `yay folders` the
-// 36th, `yay library` the 37th); other builds register none of Yay's, so only development builds get the bigger table (12 bytes of internal
-// RAM each), with room for a few more.
+// Development builds keep `yay <name>` in yk_app_dev.c: PSRAM, as many as are registered (Yay's 42, 11-21; 40 here left
+// two out). Other builds register none of Yay's: the table of 30 below (internal RAM), each line where it was (the
+// debug info goes into the ELF's hash in the image's header: release images stay byte for byte as they were).
 #if CONFIG_YAY_DEV
-#define DEV_MAX 40
+#include "yk_app_dev.h"
+static yk_app_say_fn s_say;
 #else
 #define DEV_MAX 30
-#endif
 static struct {
     const char *name, *help;
     yk_app_dev_fn fn;
@@ -865,7 +865,7 @@ esp_err_t yk_app_dev_register(const char *name, const char *help, yk_app_dev_fn 
     ESP_LOGE(TAG, "no room for `yay %s` (DEV_MAX %d)", name, DEV_MAX);
     return ESP_ERR_NO_MEM;
 }
-
+#endif
 void yk_app_dev_on_say(yk_app_say_fn fn) { s_say = fn; }
 
 #if CONFIG_YAY_DEV
@@ -959,14 +959,14 @@ static int yay_cmd(int argc, char **argv) {
         board_unlock();
         return r;
     }
-    for (int i = 0; i < DEV_MAX; i++)
-        if (s_dev[i].name && !strcmp(s_dev[i].name, sub)) return s_dev[i].fn(argc - 1, argv + 1);
+    const yk_app_dev_fn dev = yk_app_dev_find(sub);  // what was registered (yk_app_dev.c)
+    if (dev) return dev(argc - 1, argv + 1);
     printf("yay tap | double | hold <ms> | say <s> [text] | records [drop <seq>] | noup [ms] | ring <slug>|yay|paper"
            " | finger <x0> <y0> [<x1> <y1> [ms]] | launch <slug> [json] | crash [boots] | record <kind> [json]");
     if (yk_app_is_extension())
         printf(" | power [<pct> [usb]|off|next <pct> [usb]|look <s>|sleep] | sheet [open|close|edge <px>|pull <px>]");
-    for (int i = 0; i < DEV_MAX; i++)
-        if (s_dev[i].name) printf(" | %s", s_dev[i].help ? s_dev[i].help : s_dev[i].name);
+    // Then what was registered, in that order.
+    yk_app_dev_help(stdout);
 #else
     printf("yay tap | double | hold <ms> | say <s> | records [drop <seq>]");
 #endif

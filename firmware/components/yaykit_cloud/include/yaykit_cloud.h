@@ -19,7 +19,10 @@
 /** One server-sent event of a streaming call: "heard", "answer", "done" or "error", with its parsed JSON. */
 typedef void (*yk_cloud_event_fn)(const char *event, const cJSON *data, void *ctx);
 
-/** CONFIG_YK_CLOUD_ORIGIN, e.g. https://device.yaykit.io */
+/** The device API this device uses, e.g. https://device.yaykit.io: every request's (yk_region.c). CONFIG_YK_CLOUD_ORIGIN
+ *  with CONFIG_YK_REGIONS off; on, this device's region's (yk_region.h), global's still CONFIG_YK_CLOUD_ORIGIN. A
+ *  development build with them on may have a test deployment stand in for a row (yaykit_cloud's yk_region_test.h,
+ *  Yay's `region set`): then that row's is its origin. */
 const char *yk_cloud_origin(void);
 
 /** GET /device/v1/me: credits and owner. The owner's nickname and locale are kept (yaykit_account), as at activation. */
@@ -45,6 +48,13 @@ void yk_cloud_hanzi_cool(void);
  *  characters), no recognition, the same events; for words someone already said (Homework Buddy opened by Yay with
  *  the child's question). */
 esp_err_t yk_cloud_hanzi_text(const char *text, yk_cloud_event_fn on_event, void *ctx, const char **code);
+/** 两套部署 · 语音单独同意 V5: what the last yk_cloud_hanzi_lookup() or yk_cloud_hanzi_text() refusal said it was held for
+ *  want of (yk_api_error_consent on the answer's body, before any event): YK_CLOUD_CONSENT_VOICE when it was 403
+ *  OPERATION_NOT_ALLOWED with consent "voice" (the account has not agreed to voice there; the device service asks
+ *  only for a recording, never a typed question: consent.ts VOICE_CONSENT_GATES.device), NONE for anything else: a
+ *  success, no answer, another refusal, one without it. Each call's *code is as before (nothing tried again for it);
+ *  this only adds why. From the task that makes the calls, right after one. */
+yk_cloud_consent_t yk_cloud_hanzi_consent(void);
 
 // ---- Level 2: the device API v1 ----
 

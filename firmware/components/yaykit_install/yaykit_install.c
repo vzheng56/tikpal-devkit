@@ -7,6 +7,7 @@
 #include "bootloader_common.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_app_desc.h"
+#include "esp_attr.h"
 #include "esp_console.h"
 #include "esp_crt_bundle.h"
 #include "esp_flash_partitions.h"
@@ -65,7 +66,9 @@ static volatile bool s_writing;  // ③, or an app being put back: not cancelled
 static volatile int s_fail_downloads;  // `pkg fail <n>`: download attempts that fail as if the network were gone
 #endif
 
-static yk_cache_index_t s_cache;
+// 1.8 KB: in PSRAM where the firmware lets .bss go there (Yay 0.2: CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY; elsewhere
+// internal, as before). Decoded from and encoded to NVS by tasks, under s_lock; never read with the cache off.
+EXT_RAM_BSS_ATTR static yk_cache_index_t s_cache;
 static const esp_partition_t *s_cache_part;
 static bool s_cache_loaded;
 

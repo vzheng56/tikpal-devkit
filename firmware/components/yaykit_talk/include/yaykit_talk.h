@@ -37,7 +37,9 @@ typedef enum {
     YK_TALK_EV_PARTIAL,  // `text`: the draft while held (stt.partial)
     YK_TALK_EV_HEARD,    // `text`, `lang`: what was heard (stt.final; "" = not heard)
     YK_TALK_EV_LINE,     // `line`, `text`, `lang`, `fix`: a sentence of the reply (its speech plays by itself)
-    YK_TALK_EV_END,      // `end`, `muted`, `credits`: the turn is over
+    YK_TALK_EV_END,      // `end`, `muted`, `credits`: the turn is over. YK_TALK_VOICE_CONSENT (两套部署 · 语音单独同意 V3):
+                         // the user's turn held for want of the account's voice consent: show YK_NOTICE_VOICE_CONSENT,
+                         // try nothing again; a HEARD of the user's turn after it says the account has agreed since
     YK_TALK_EV_SETTING,  // `kind` ("volume", "brightness", "screen_off"), `value`: set by voice or from the phone, done
                          // already (a volume set at rest has had its cue); the rim's ticks are the app's to show
     YK_TALK_EV_MESSAGE,  // `msg`: hello.ok; practice.turn, only its open turn's (not one stopped or cancelled), after
@@ -72,8 +74,10 @@ typedef struct {
     const char *locale;           // the owner's language; NULL: yaykit_account's (production), else "zh"
     int max_hold_s;               // the manifest's voice.session.maxHoldSeconds; 0: 30
     bool no_chimes;               // the app plays its own cues
-    // NULL: wss://device.yaykit.io/device/v1/session, with the app's token (call yk_account_init() with its slug
-    // first). Development builds only (CONFIG_YAY_DEV): another server (ws://<Mac>:8787/device/v1/session for
+    // NULL: the production session, yk_session_url() (wss://device.yaykit.io/device/v1/session, or with
+    // CONFIG_YK_REGIONS this device's region's), with the app's token (call yk_account_init() with its slug
+    // first), only for a device added to an account (YK_TALK_ERR_NOT_ADDED). Development builds only
+    // (CONFIG_YAY_DEV): another server (ws://<Mac>:8787/device/v1/session for
     // yaykit/scripts/mock-voice-server.ts) or "usb" (tools/yay_dev.py bridge): no token is asked for, nothing
     // touches the production cloud. Release builds always use the production session.
     const char *url;
@@ -81,9 +85,19 @@ typedef struct {
     void *ctx;
 } yk_talk_config_t;
 
+/** yk_talk_start's answer for the production session on a device not added to an account (yk_account_state() not
+ *  YK_ACCOUNT_BOUND; 两套部署 E, with CONFIG_YK_REGIONS on or off): nothing started, nothing sent (`YK_TALK not
+ *  added`). Show YK_NOTICE_NOT_ADDED (「先在 Tikpal App 里添加」), as for yk_talk_not_added(). */
+#define YK_TALK_ERR_NOT_ADDED ESP_ERR_NOT_ALLOWED
+
 /** Once, after yk_wifi_start(), yk_audio_init() and yk_speak_init(): connects and keeps connected (yaykit_session's
- *  back-off). The strings are copied. */
+ *  back-off). The strings are copied. YK_TALK_ERR_NOT_ADDED: the production session and the device not added. */
 esp_err_t yk_talk_start(const yk_talk_config_t *cfg);
+/** The production session and the device not added to an account: yk_talk_start() said YK_TALK_ERR_NOT_ADDED, or it
+ *  is not added any more (the cloud no longer knew it, and yaykit_account forgot the binding: the session is held from
+ *  then on, no connection is made without a token, `YK_TALK not added … at=session`). The app shows
+ *  YK_NOTICE_NOT_ADDED instead of the network's notices. Never for a development server. Any task. */
+bool yk_talk_not_added(void);
 /** Holds the session closed (true: whatever goes on stops, as a network drop) and lets it reconnect (false), around
  *  the app's own HTTPS or the phone link (one TLS at a time). Holding waits up to 3 s for the TLS to close: true once
  *  it is (then the app's own connection may start); false when it is not held (the USB bridge, not started) or was

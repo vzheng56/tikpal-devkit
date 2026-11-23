@@ -397,7 +397,23 @@ char *yk_proto_hello(const yk_proto_hello_t *h) {
             cJSON_AddItemToArray(caps, cJSON_CreateString(h->caps[i]));
         }
     }
+    if (h->region) {
+        if (!yk_proto_region_ok(h->region)) {
+            cJSON_Delete(o);
+            return NULL;
+        }
+        cJSON_AddStringToObject(o, "region", h->region);
+    }
     return finish(o);
+}
+
+bool yk_proto_region_ok(const char *region) {
+    const size_t n = region ? strlen(region) : 0;
+    if (n < 2 || n > 16 || region[0] < 'a' || region[0] > 'z') return false;
+    for (size_t i = 1; i < n; i++)
+        if (!((region[i] >= 'a' && region[i] <= 'z') || (region[i] >= '0' && region[i] <= '9') || region[i] == '-'))
+            return false;
+    return true;
 }
 
 char *yk_proto_listen_start(const char *turn, int preroll_ms, const char *side) {
@@ -405,14 +421,21 @@ char *yk_proto_listen_start(const char *turn, int preroll_ms, const char *side) 
 }
 
 char *yk_proto_listen_start_ex(const char *turn, int preroll_ms, const char *side, bool held) {
+    return yk_proto_listen_start_room(turn, preroll_ms, side, held, YK_PROTO_ROOM_NONE);
+}
+
+char *yk_proto_listen_start_room(const char *turn, int preroll_ms, const char *side, bool held, int room) {
     static const char *const sides[] = {"mine", "theirs", NULL};
-    if (!yk_proto_turn_ok(turn) || preroll_ms < 0 || preroll_ms > 1000 || (side && !one_of(side, sides))) return NULL;
+    if (!yk_proto_turn_ok(turn) || preroll_ms < 0 || preroll_ms > 1000 || (side && !one_of(side, sides)) ||
+        (room != YK_PROTO_ROOM_NONE && (room < -1 || room > YK_PROTO_ROOM_MAX)))
+        return NULL;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "type", "listen.start");
     cJSON_AddStringToObject(o, "turn", turn);
     cJSON_AddNumberToObject(o, "preroll", preroll_ms);
     if (side) cJSON_AddStringToObject(o, "side", side);
     if (held) cJSON_AddTrueToObject(o, "held");
+    if (room != YK_PROTO_ROOM_NONE) cJSON_AddNumberToObject(cJSON_AddObjectToObject(o, "record"), "room", room);
     return finish(o);
 }
 
@@ -474,6 +497,54 @@ const char *yk_proto_time_offset(int64_t unix_ms, int offset_min, char out[32]) 
              off / 60, off % 60);
     snprintf(out, 32, "%.31s", buf);
     return out;
+}
+
+/** Days since 1970-01-01 of a civil date (Howard Hinnant's, as yk_proto_time_offset the other way). */
+static int64_t days_from_civil(int64_t y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+static int digits(const char *s, int n) {
+    int v = 0;
+    for (int i = 0; i < n; i++) v = v * 10 + (s[i] - '0');
+    return v;
+}
+
+bool yk_proto_time_ms(const char *iso, int64_t *unix_ms) {
+    if (!datetime_offset_ok(iso)) return false;
+    const unsigned month = (unsigned)digits(iso + 5, 2), day = (unsigned)digits(iso + 8, 2);
+    const int hour = digits(iso + 11, 2), minute = digits(iso + 14, 2), second = digits(iso + 17, 2);
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return false;
+    const char *s = iso + 19;
+    int ms = 0;
+    if (*s == '.') {
+        int n = 0;
+        for (s++; *s >= '0' && *s <= '9'; s++, n++)
+            if (n < 3) ms = ms * 10 + (*s - '0');
+        for (; n < 3; n++) ms *= 10;
+    }
+    int offset_min = 0;
+    if (*s == '+' || *s == '-') {
+        const int h = digits(s + 1, 2), m = digits(s + 4, 2);
+        if (h > 23 || m > 59) return false;
+        offset_min = (h * 60 + m) * (*s == '-' ? -1 : 1);
+    }
+    const int64_t days = days_from_civil(digits(iso, 4), month, day);
+    *unix_ms = ((days * 24 + hour) * 60 + minute - offset_min) * 60000 + (int64_t)second * 1000 + ms;
+    return true;
+}
+
+char *yk_proto_proactive_say(const char *id) {
+    if (!uuid_ok(id)) return NULL;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "type", "proactive.say");
+    cJSON_AddStringToObject(o, "id", id);
+    return finish(o);
 }
 
 char *yk_proto_offline_digest_say(const char *id) {
@@ -984,6 +1055,10 @@ static bool parse_action(const cJSON *o, yk_srv_msg_t *m) {
         m->kind = YK_ACT_FOLDER_SET;
         return true;
     }
+    if (!strcmp(k, "record.start")) {  // 「帮我录」 (Yay 0.2 with the record cap): no fields
+        m->kind = YK_ACT_RECORD_START;
+        return true;
+    }
     m->kind = YK_ACT_UNKNOWN;  // a newer kind: the id is enough to say no
     return true;
 }
@@ -997,6 +1072,86 @@ static bool locale_ok(const char *s) {
         const bool letter = (s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z');
         if (!letter && (i == 0 || !((s[i] >= '0' && s[i] <= '9') || s[i] == '-'))) return false;
     }
+    return true;
+}
+
+/** today.ts todayItemId: ^[snp]:[A-Za-z0-9._-]{1,62}$ */
+static bool today_id_ok(const char *s) {
+    const size_t n = s ? strlen(s) : 0;
+    if (n < 3 || n > 64 || (s[0] != 's' && s[0] != 'n' && s[0] != 'p') || s[1] != ':') return false;
+    for (size_t i = 2; i < n; i++)
+        if (!(alnum(s[i]) || s[i] == '.' || s[i] == '_' || s[i] == '-')) return false;
+    return true;
+}
+
+/** A time or null (today: no time): at_ms 0 for null. */
+static bool nullable_time(const cJSON *v, int64_t *ms) {
+    if (cJSON_IsNull(v)) {
+        *ms = 0;
+        return true;
+    }
+    return cJSON_IsString(v) && yk_proto_time_ms(v->valuestring, ms);
+}
+
+/** todayScreenWeather: sky, night, tempC, text, place, at. A sky this firmware does not know is read (YK_SKY_OTHER) and
+ *  the weather taken as none to show; a field it does not know is passed over. */
+static bool today_weather(const cJSON *w, yk_proto_today_t *t) {
+    static const char *const SKIES[] = {"clear", "cloudy", "rain", "snow", NULL};
+    const cJSON *sky = get(w, "sky"), *night = get(w, "night"), *temp = get(w, "tempC"), *text = get(w, "text"),
+                *place = get(w, "place"), *at = get(w, "at");
+    if (!cJSON_IsObject(w) || !cJSON_IsString(sky) || !cJSON_IsBool(night) || !is_int(temp, -60, 60) ||
+        !str_in(text, 1, YK_PROTO_TODAY_TEXT_CHARS) || !str_in(place, 1, YK_PROTO_TODAY_PLACE_CHARS) ||
+        !cJSON_IsString(at) || !yk_proto_time_ms(at->valuestring, &t->weather_at_ms))
+        return false;
+    // A newer platform's sky (an icon this firmware has none for): lower-case letters, as the contract's are
+    const char *k = sky->valuestring;
+    if (!colorway_ok(k)) return false;
+    t->sky = YK_SKY_OTHER;
+    for (int i = 0; SKIES[i]; i++)
+        if (!strcmp(k, SKIES[i])) t->sky = (uint8_t)i;
+    t->weather = t->sky == YK_SKY_OTHER ? 0 : 1;
+    t->night = cJSON_IsTrue(night);
+    t->temp_c = (int8_t)temp->valuedouble;
+    copy(t->text, sizeof(t->text), text);
+    copy(t->place, sizeof(t->place), place);
+    return true;
+}
+
+/** today (today.ts todayMessage): weather left out, null or given; next (5 at most), left, day, done. */
+static bool parse_today(const cJSON *o, yk_srv_msg_t *m) {
+    const cJSON *weather = get(o, "weather"), *next = get(o, "next"), *left = get(o, "left"), *day = get(o, "day"),
+                *done = get(o, "done");
+    if (!cJSON_IsArray(next) || cJSON_GetArraySize(next) > YK_PROTO_TODAY_NEXT_MAX || !is_int(left, 0, 99) ||
+        !cJSON_IsString(day) || (done && (!cJSON_IsString(done) || !today_id_ok(done->valuestring))))
+        return false;
+    static const char shape[] = "dddd-dd-dd";
+    const char *d = day->valuestring;
+    if (strlen(d) != sizeof(shape) - 1) return false;
+    for (int i = 0; shape[i]; i++)
+        if (shape[i] == 'd' ? !(d[i] >= '0' && d[i] <= '9') : d[i] != shape[i]) return false;
+    yk_proto_today_t *t = folders_alloc(sizeof(*t));  // PSRAM: the websocket task's stack stays as it was
+    if (!t) return false;
+    m->today = t;
+    t->weather = -1;
+    if (cJSON_IsNull(weather)) t->weather = 0;
+    else if (weather && !today_weather(weather, t)) return false;
+    const cJSON *item;
+    cJSON_ArrayForEach(item, next) {
+        yk_proto_today_item_t *n = &t->next[t->next_count];
+        const cJSON *id = get(item, "id"), *at = get(item, "at"), *title = get(item, "title");
+        if (!cJSON_IsObject(item) || !cJSON_IsString(id) || !today_id_ok(id->valuestring) || !at ||
+            !nullable_time(at, &n->at_ms) || !title ||
+            !(cJSON_IsNull(title) || str_in(title, 1, YK_PROTO_TODAY_TITLE_CHARS)))
+            return false;
+        copy(n->id, sizeof(n->id), id);
+        n->has_title = !cJSON_IsNull(title);
+        if (n->has_title) copy(n->title, sizeof(n->title), title);
+        t->next_count++;
+    }
+    t->left = (int)left->valuedouble;
+    copy(t->day, sizeof(t->day), day);
+    if (done) copy(t->done, sizeof(t->done), done);
+    m->type = YK_SRV_TODAY;
     return true;
 }
 
@@ -1150,16 +1305,27 @@ static bool parse_into(const cJSON *o, yk_srv_msg_t *m) {
         return true;
     }
     if (!strcmp(t, "inbox")) {
-        static const char *const kinds[] = {"dot", "approval", "reminder", "done", NULL};
-        const cJSON *kind = get(o, "kind"), *text = get(o, "text"), *task = get(o, "taskId");
+        static const char *const kinds[] = {"dot", "approval", "reminder", "done", "proactive", NULL};
+        const cJSON *kind = get(o, "kind"), *text = get(o, "text"), *task = get(o, "taskId"), *id = get(o, "id"),
+                    *say = get(o, "say");
         if (!enum_str(kind, kinds) || !str_in(text, 0, 120) || !task ||
             !nullable_str(task, 64, m->task_id, sizeof(m->task_id)))
             return false;
+        // proactive (Yay 0.2) must have its id and say. The other kinds have neither today; one that comes with them
+        // (a later platform's) is taken as before and they are not read: never the whole message dropped for a
+        // field this version does not know.
+        const bool proactive = !strcmp(kind->valuestring, "proactive");
+        if (proactive && (!cJSON_IsString(id) || !uuid_ok(id->valuestring) || !cJSON_IsBool(say))) return false;
         m->type = YK_SRV_INBOX;
         copy(m->inbox_kind, sizeof(m->inbox_kind), kind);
+        if (proactive) {
+            copy(m->inbox_id, sizeof(m->inbox_id), id);
+            m->inbox_say = cJSON_IsTrue(say);
+        }
         m->text = dup(text);
         return m->text != NULL;
     }
+    if (!strcmp(t, "today")) return parse_today(o, m);
     if (!strcmp(t, "session.reauth")) {
         m->type = YK_SRV_REAUTH;
         return true;
@@ -1175,6 +1341,12 @@ static bool parse_into(const cJSON *o, yk_srv_msg_t *m) {
         copy(m->code, sizeof(m->code), code);
         if (retry) m->retry_after = (int)retry->valuedouble;
         if (reset) copy(m->reset_at, sizeof(m->reset_at), reset);
+        // 两套部署 · 语音单独同意 (#2740): "voice" itself with OPERATION_NOT_ALLOWED, nothing else; any other value, type
+        // or code is as none and never makes the message invalid (a firmware before it did not read the field at all).
+        const cJSON *consent = get(o, "consent");
+        if (!strcmp(code->valuestring, "OPERATION_NOT_ALLOWED") && cJSON_IsString(consent) && consent->valuestring &&
+            !strcmp(consent->valuestring, "voice"))
+            m->consent = YK_PROTO_CONSENT_VOICE;
         return true;
     }
     return false;
@@ -1219,6 +1391,7 @@ void yk_proto_free(yk_srv_msg_t *m) {
     if (!m) return;
     free(m->folders);
     m->folders = NULL;
+    free(m->today);
     free(m->text);
     cJSON_free(m->params);
     free(m->url);
@@ -1269,7 +1442,7 @@ bool yk_proto_practice_merge(yk_srv_msg_t *into, yk_srv_msg_t *more) {
 const char *yk_proto_type_name(yk_srv_type_t type) {
     static const char *const names[] = {"invalid", "hello.ok", "stt.partial", "stt.final", "reply.line", "reply.end",
                                         "ui.state", "action", "inbox", "session.reauth", "error", "practice.turn",
-                                        "app.records.ok", "offline.digest"};
+                                        "app.records.ok", "offline.digest", "today"};
     return (unsigned)type < sizeof(names) / sizeof(names[0]) ? names[type] : "?";
 }
 

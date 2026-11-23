@@ -173,6 +173,45 @@ static bool badge_round(const yk_figure_t *f, int steps) {
 }
 
 
+// Another paper (yk_yay_paper, Yay 0.2's home at night): the pose drawn again over it, a figure's patches too; what
+// was made over the old paper goes unless another Yay shows it; the same paper, or a transparent one, nothing.
+static void test_paper(void) {
+    const yk_figure_t bloom = pack("bloom");
+    yk_yay_t *h = home();
+    CHECK(h && yk_yay_figure(h, &bloom) && draws_pack(h));
+    const held_t day = held(slot_of(h));
+    yk_yay_paper(h, YK_PAPER);  // the same: nothing made again
+    CHECK(same(day, held(slot_of(h))));
+    yk_yay_paper(h, YK_NIGHT);
+    CHECK(h->paper == YK_NIGHT && draws_pack(h) && s_cache[slot_of(h)].paper == YK_NIGHT);
+    CHECK(s_cache[slot_of(h)].key == day.key && held(slot_of(h)).sum != day.sum);  // the same picture, other pixels
+    for (int i = 0; i < SLOTS; i++) CHECK(!(s_cache[i].key == day.key && s_cache[i].paper == YK_PAPER));  // gone
+    uint16_t rgb[256];
+    uint8_t alpha[256];
+    yk_yay_palette(figure_of(h)->pic.palette, YK_NIGHT, rgb, alpha);
+    CHECK(!memcmp(rgb, figure_of(h)->rgb, sizeof(rgb)));  // the patches' colours over black
+    // As one made on black from the start: the same slot, the same pixels.
+    yk_yay_t *b = yk_yay_create(NULL, 264, 233, 202, YK_NIGHT);
+    CHECK(b && yk_yay_figure(b, &bloom) && slot_of(b) == slot_of(h));
+    // Back at 7:00: the day's made again; the black one stays while the other Yay shows it.
+    const int night_slot = slot_of(h);
+    yk_yay_paper(h, YK_PAPER);
+    CHECK(h->paper == YK_PAPER && draws_pack(h) && s_cache[slot_of(h)].paper == YK_PAPER);
+    CHECK(held(slot_of(h)).sum == day.sum);  // the day's pixels as they were
+    CHECK(slot_of(b) == night_slot && s_cache[night_slot].paper == YK_NIGHT && draws_pack(b));
+    yk_yay_delete(b);
+    // Never from or to transparent.
+    yk_yay_paper(h, YK_YAY_TRANSPARENT);
+    CHECK(h->paper == YK_PAPER && draws_pack(h));
+    yk_yay_t *t = yk_yay_create(NULL, 132, 233, 233, YK_YAY_TRANSPARENT);
+    yk_yay_paper(t, YK_NIGHT);
+    CHECK(t && t->paper == YK_YAY_TRANSPARENT);
+    yk_yay_delete(t);
+    yk_yay_paper(NULL, YK_NIGHT);  // nothing to do
+    yk_yay_delete(h);
+    free((void *)bloom.data);
+}
+
 // Pre-scaled copies (yk_yay_prescale, Yay 0.1.21's badge): made once, from the pose's largest picture, bilinear with the
 // pixel centres lined up; any Yay at that size draws the copy as it is; a drop keeps the one some Yay draws.
 static void test_prescale(void) {
@@ -412,6 +451,7 @@ int main(void) {
     free((void *)bloom.data);
     free((void *)mote.data);
     test_prescale();
+    test_paper();
     printf("yk_yay host tests: %d checks, %d failures\n", s_checks, s_failures);
     return s_failures ? 1 : 0;
 }

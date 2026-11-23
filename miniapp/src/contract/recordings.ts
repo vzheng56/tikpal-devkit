@@ -49,8 +49,13 @@ const milliseconds = z.number().int().nonnegative();
  * what it has); transcribing; done; failed, `failure` saying why.
  */
 export const recordingStates = ["uploading", "transcribing", "done", "failed"] as const;
-/** 没转成: 点数不够 (credits), 太长 (too_long), 其他 (other). */
-export const recordingFailures = ["credits", "too_long", "other"] as const;
+/**
+ * 没转成: 点数不够 (credits), 太长 (too_long), 其他 (other).
+ * consent（只加不改，两套部署 G 步，consent.ts VOICE_CONSENT_GATES `queued`）：等语音同意。这一边问语音、账号还没同意或撤回了，
+ * 还没转的不再转，录音留着；App 照「用语音」的弹层问，同意以后平台自己重新排进去，不用点「再转一次」。几个原因都有时它排
+ * 第一。只在问语音的一边出现（今天只有 cn），海外从来不出。
+ */
+export const recordingFailures = ["credits", "too_long", "other", "consent"] as const;
 
 /** One recording in the list. */
 export const recording = z
@@ -75,7 +80,10 @@ export const recording = z
     /** The audio is still kept (joined, under 30 days, not cleared for space): it plays, and can be transcribed again. */
     audio: z.boolean(),
     audioExpiresAt: at.nullable(),
-    /** 再转一次: failed, and the audio still kept. */
+    /**
+     * 再转一次: failed, and the audio still kept. False for `failure: "consent"`: agreeing to voice puts it back by itself
+     * (POST …/transcribe meanwhile answers 403 CONSENT_ON_USE_REQUIRED, details.kind voice).
+     */
     retry: z.boolean(),
     /** The points its transcription cost, all files together; null until charged. */
     charged: z.number().int().nonnegative().nullable(),

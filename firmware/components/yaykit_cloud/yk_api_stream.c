@@ -15,6 +15,26 @@ static void mono(cJSON *o, const yk_cloud_mono_t *m) {
     cJSON_AddNumberToObject(o, "monoMs", (double)m->mono_ms);
 }
 
+/** `body` (printed, ending in '}') with ,"peaks":[…] put in before its end, in one block of its own: an hour's 3,600
+ *  levels as cJSON numbers would be 3,600 small blocks, each kept in internal RAM (Yay's malloc keeps those of 4 KB or
+ *  less there); this one, about 14 KB, goes to PSRAM. The levels over 100 are said as 100. NULL when there is no room. */
+static char *with_peaks(char *body, const uint8_t *peaks, int n) {
+    if (n > YK_CLOUD_STREAM_PEAKS_MAX) n = YK_CLOUD_STREAM_PEAKS_MAX;
+    const size_t len = strlen(body);
+    char *out = cJSON_malloc(len + (size_t)n * 4 + 16);  // ",\"peaks\":[" and "]}": 13; "100," the longest level
+    if (!out) {
+        cJSON_free(body);
+        return NULL;
+    }
+    size_t at = len - 1;  // its '}'
+    memcpy(out, body, at);
+    cJSON_free(body);
+    at += (size_t)sprintf(out + at, ",\"peaks\":[");
+    for (int k = 0; k < n; k++) at += (size_t)sprintf(out + at, k ? ",%u" : "%u", peaks[k] > 100 ? 100u : peaks[k]);
+    memcpy(out + at, "]}", 3);
+    return out;
+}
+
 char *yk_api_stream_body(const yk_cloud_stream_t *file) {
     cJSON *body = cJSON_CreateObject();
     cJSON_AddStringToObject(body, "kind", "recording");
@@ -48,8 +68,12 @@ char *yk_api_stream_body(const yk_cloud_stream_t *file) {
         cJSON_AddNumberToObject(b, "index", file->batch->index);
         cJSON_AddNumberToObject(b, "count", file->batch->count);
     }
+    // Yay 0.2's.
+    if (file->offline == 1 || file->offline == 2) cJSON_AddBoolToObject(body, "offline", file->offline == 1);
+    if (file->expected_bytes) cJSON_AddNumberToObject(body, "expectedBytes", (double)file->expected_bytes);
     char *out = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
+    if (out && file->peaks && file->npeaks > 0) out = with_peaks(out, file->peaks, file->npeaks);
     return out;
 }
 
@@ -78,6 +102,16 @@ int yk_api_stream_complete_ms(int64_t duration_ms) {
     return ms > 130000 ? 130000 : (int)ms;
 }
 
+int yk_api_stream_complete_stoppable_ms(int64_t duration_ms) {
+    const int ms = yk_api_stream_complete_ms(duration_ms);
+    return ms > YK_CLOUD_STREAM_COMPLETE_STOPPABLE_MS ? YK_CLOUD_STREAM_COMPLETE_STOPPABLE_MS : ms;
+}
+
+yk_api_wait_t yk_api_stream_wait(int64_t waited_ms, int total_ms, bool stop) {
+    if (stop) return YK_API_WAIT_STOP;
+    return waited_ms >= total_ms ? YK_API_WAIT_TIMEOUT : YK_API_WAIT_ON;
+}
+
 char *yk_api_stream_end_body(const yk_cloud_stream_end_t *end) {
     cJSON *body = cJSON_CreateObject();
     cJSON_AddNumberToObject(body, "lastSeq", end->last_seq);
@@ -94,7 +128,7 @@ const char *yk_api_stream_code(int status, const char *json) {
     // The contract's stream codes, and the device API's that rc_up acts on but yk_api_code does not know.
     static const char *const stream[] = {"CHUNK_SHA256_MISMATCH", "CHUNK_CONFLICT",  "FILE_COMPLETE",
                                          "FILE_INCOMPLETE",       "CHUNK_TOO_LARGE", "STORAGE_LIMIT",
-                                         "APP_NOT_ENABLED"};
+                                         "APP_NOT_ENABLED",       "FILE_BUSY"};
     cJSON *refusal = cJSON_Parse(json ? json : "");
     const cJSON *error = cJSON_GetObjectItemCaseSensitive(refusal, "error");
     const char *code = NULL;

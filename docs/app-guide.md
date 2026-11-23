@@ -50,7 +50,7 @@
 | 侧键（GPIO0） | `yaykit_key`、`yaykit_app` | 订阅事件（`yk_app_on_key`），不轮询 GPIO0 |
 | Wi-Fi | `yaykit_wifi` | `yk_wifi_start()` 用已有的网络，不配网 |
 | 蓝牙 | `yaykit_link` | 平时关着；配对、安装、对话不同时进行（内部 RAM 不够）。例外：不配对的蓝牙口（1.11 起，要申请，暂未开放，第 9 节「1.11」）在你的应用开着时一直开，回 Tikpal 就断；它和联网也不同时开：有网时先取钥匙，再开蓝牙 |
-| 账号、令牌 | `yaykit_cloud` | 只用 `yk_account_token()`，不读别人的 NVS |
+| 账号、令牌 | `yaykit_cloud` | 只用 `yk_account_token()`，不读别人的 NVS。`yaykit_account.h` 里管绑定的那几个（`yk_account_command()`、`yk_account_register_console()`、`yk_account_recover()`、`yk_account_release*()`、`yk_account_binding_stored()`、`yk_account_unbound_by_server()`、`yk_account_owner_seen()`、`yk_account_locale_seen()`）只有系统用，应用调了审核不过，哪一版开发包编的都一样 |
 | 启动分区 | `yaykit_app` | 回主固件用 `yk_return_home()`，不直接调 `esp_ota_set_boot_partition` |
 | 姿态（QMI8658） | `yaykit_motion` | 取事件（`yk_motion_take` 或 `on_event`）、读状态（`yk_motion_state`），不自己读传感器；`permissions.device` 写 `motion`。见下面「姿态」 |
 | 振动马达（GPIO46） | `yaykit_haptic`（1.11 起） | `yk_haptic_play()` 放五种振法，多强由用户的设置定；不自己用 `gpio_*`、LEDC 碰 GPIO46；`permissions.device` 写 `vibration`。见下面「振动」 |

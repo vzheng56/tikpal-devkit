@@ -14,6 +14,17 @@
 //   BATTERY_LOW   at 15 % and again at 10 %, once each a discharge: one amber flash of the rim, not while charging.
 //                 The spec's row has no text: an app that shows the line (round-screen spec 9 since P25) passes it as
 //                 the override, 「电量 15%，记得充电」 (the main firmware draws the same on its own rim)
+//   VOICE_CONSENT Yay waits: "先在 App 里同意用语音 / Agree to voice in the app" (yaykit.notice.voiceConsent; 两套部署 ·
+//                 语音单独同意 V3): a turn the user held to talk was refused because the account has not agreed to
+//                 voice yet (yaykit_talk's YK_TALK_VOICE_CONSENT: an OPERATION_NOT_ALLOWED with consent "voice"). A
+//                 turn's notice like NOT_HEARD: not retried, shown again if the next hold is refused again, gone once a
+//                 turn of the user's is heard (stt.final). Only a side that asks voice sends it (not overseas)
+//
+// Which one, when more than one applies (delivery doc 2026-11-22 语音同意 5.5): NOT_ADDED (no session at all), then the
+// network's (CONNECTING, OFFLINE: no session), then VOICE_CONSENT (the platform holds a turn's voice first), then
+// NO_CREDITS (asked after the consent), then NOT_HEARD, BUSY, BLOCKED. One at a time on the line: the later replaces
+// the one before, as the apps do today (a turn ends for one reason only; the network's and NOT_ADDED are the app's own
+// net_notice over a turn's).
 //
 // Wording may change for the audience, not the meaning (Homework Buddy says 「今天问够啦」 to a child): pass it as
 // the override. Call under board_lock().
@@ -40,6 +51,7 @@ typedef enum {
     YK_NOTICE_BUSY,
     YK_NOTICE_BLOCKED,
     YK_NOTICE_BATTERY_LOW,
+    YK_NOTICE_VOICE_CONSENT,  // 两套部署 · 语音单独同意 V3: only added to, after the ones before
     YK_NOTICE_COUNT,
 } yk_notice_t;
 

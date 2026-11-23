@@ -55,7 +55,7 @@ esp_err_t yk_http_prepare(const char **code) {
 esp_http_client_handle_t yk_http_client(const char *path, esp_http_client_method_t method, const char *bearer,
                                         const char *content_type, int timeout_ms) {
     char url[512];
-    snprintf(url, sizeof(url), "%s%s", CONFIG_YK_CLOUD_ORIGIN, path);
+    snprintf(url, sizeof(url), "%s%s", yk_cloud_origin(), path);
     esp_http_client_config_t cfg = {
         .url = url,
         .method = method,

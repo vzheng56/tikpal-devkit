@@ -89,7 +89,14 @@ typedef struct {
     // Yay with the onboarding cap (docs/delivery/2026-11-06-登录与开箱.md 5.3): where its first setup is, 1..255; 0: left out.
     int onboarding_step;
     bool onboarding_finished;
+    // 两套部署 (device.ts helloMessage.region): the deployment the device was activated with, yk_region_name(), global's
+    // too; NULL left out, as every firmware with CONFIG_YK_REGIONS off. The platform closes a session of another
+    // region with 1008 "other region".
+    const char *region;
 } yk_proto_hello_t;
+
+/** ^[a-z][a-z0-9-]{1,15}$: a region's name as hello carries it (device.ts helloMessage.region). */
+bool yk_proto_region_ok(const char *region);
 
 /** "zh", "en", "ja", "es": what the practice and translate modes speak. */
 bool yk_proto_talk_language_ok(const char *lang);
@@ -127,6 +134,36 @@ char *yk_proto_listen_start_note_live(const char *turn, int preroll_ms, const ch
                                       const yk_proto_clock_t *clock, const char *live_turn);
 /** "2026-11-14T10:58:03.000+08:00": Unix ms at `offset_min` east of UTC (what z.iso.datetime({offset: true}) takes). */
 const char *yk_proto_time_offset(int64_t unix_ms, int offset_min, char out[32]);
+/** The other way: Unix ms of "2026-11-18T15:00:00.000+08:00" (or Z; fractions to the ms, more digits cut). False when it
+ *  is not one z.iso.datetime({offset: true}) takes. */
+bool yk_proto_time_ms(const char *iso, int64_t *unix_ms);
+
+// ---------------------------------------------------------------- Yay 0.2 (0.2 开发文档 3.2; device.ts DEVICE_CAPS)
+// Three caps Yay lists in its hello and extensions never do: `today` (the home's weather and next things come down as
+// `today`), `record` (「帮我录」: action record.start, listen.start's record.room) and `proactive` (inbox `proactive` with
+// id and say, proactive.say up). A firmware lists each only once it does what it says.
+#define YK_PROTO_CAP_TODAY "today"
+#define YK_PROTO_CAP_RECORD "record"
+#define YK_PROTO_CAP_PROACTIVE "proactive"
+
+/** listen.start's record.room (Yay with the record cap): recordings that still fit on the device now, 0 full (the
+ *  platform then answers 「存满了，有网腾出来再录」 rather than send record.start), -1 a card in. The builder takes
+ *  -1..YK_PROTO_ROOM_MAX: the caller sends a card as -1 and more room than that as YK_PROTO_ROOM_MAX.
+ *  YK_PROTO_ROOM_NONE leaves it out (as yk_proto_listen_start_ex). */
+#define YK_PROTO_ROOM_MAX 1000
+#define YK_PROTO_ROOM_NONE (-2)
+char *yk_proto_listen_start_room(const char *turn, int preroll_ms, const char *side, bool held, int room);
+/** proactive.say {id} (Yay with the proactive cap): the round screen can say inbox `proactive` `id` now (on, nothing
+ *  being said, heard, recorded or installed, not a USB drive); the platform speaks its line. Never for one sent with
+ *  say false. NULL when `id` is not a UUID. */
+char *yk_proto_proactive_say(const char *id);
+/** device.ts PROACTIVE_SAY (估的): proactive.say later than YK_PROTO_PROACTIVE_MINUTES is not said; one missed while
+ *  recording is sent once it is saved, YK_PROTO_PROACTIVE_MISSED_MAX at most, and said within
+ *  YK_PROTO_PROACTIVE_RECORDING_HOURS; one with say false waits for the screen YK_PROTO_PROACTIVE_KEEP_MINUTES. */
+#define YK_PROTO_PROACTIVE_MINUTES 10
+#define YK_PROTO_PROACTIVE_RECORDING_HOURS 2
+#define YK_PROTO_PROACTIVE_MISSED_MAX 3
+#define YK_PROTO_PROACTIVE_KEEP_MINUTES 10
 /** offline.digest.say {id} (0.1.20 开发文档 2.3): the screen on, nothing said or heard; `id` offline.digest's (a UUID). */
 char *yk_proto_offline_digest_say(const char *id);
 /** listen.stop, listen.cancel or playback.stop. */
@@ -202,7 +239,43 @@ typedef enum {
     YK_SRV_PRACTICE_TURN,
     YK_SRV_APP_RECORDS_OK,
     YK_SRV_OFFLINE_DIGEST,  // Yay with the offline cap (0.1.20): digest_id, digest_*, its line in `text`
+    YK_SRV_TODAY,           // Yay with the today cap (0.2): `today` (owned)
 } yk_srv_type_t;
+
+// `today` (Yay 0.2 with the today cap; today.ts todayMessage, TODAY): the home's weather and the day's next things.
+#define YK_PROTO_TODAY_NEXT_MAX 5            // TODAY.screenItems
+#define YK_PROTO_TODAY_TITLE_CHARS 16        // TODAY.titleChars
+#define YK_PROTO_TODAY_TEXT_CHARS 8          // TODAY.textChars
+#define YK_PROTO_TODAY_PLACE_CHARS 12        // TODAY.placeChars
+#define YK_PROTO_TODAY_SOON_MINUTES 30       // TODAY.soonMinutes: the next thing goes coral this long before
+#define YK_PROTO_TODAY_STALE_MINUTES 120     // TODAY.weatherStaleMinutes: weather older than this is not drawn
+/** The sky as the round screen draws it (today.ts todaySkies, only added to). OTHER: one this firmware has no icon for
+ *  (a newer platform's): read, and the weather taken as none to show (设计 A7), so that a later sky never costs the
+ *  day's things. */
+typedef enum { YK_SKY_CLEAR = 0, YK_SKY_CLOUDY, YK_SKY_RAIN, YK_SKY_SNOW, YK_SKY_OTHER } yk_sky_t;
+typedef struct {
+    char id[65];         // "s:…" a reminder, "n:…" a plan, "p:…" a to-do (todayItemId)
+    int64_t at_ms;       // when it is due, Unix ms; 0: today, no time
+    bool has_title;      // false: not for the screen, drawn 「15:00 有一件事」 (设计 A5)
+    char title[65];      // UTF-8, YK_PROTO_TODAY_TITLE_CHARS at most; "" without one
+} yk_proto_today_item_t;
+/** Plain data, no pointers: kept in NVS as it is. */
+typedef struct {
+    // -1 left out: keep the weather shown (a `today` sent because the day's things changed); 0 none to show (null, or
+    // a sky this firmware does not draw: 设计 A7); 1 given, below.
+    int8_t weather;
+    uint8_t sky;         // yk_sky_t
+    bool night;          // after sunset where it is (设计 A6); the home's own night look is the firmware's 22:00–7:00
+    int8_t temp_c;       // -60..60
+    char text[33];       // the sky in words (晴), YK_PROTO_TODAY_TEXT_CHARS at most: for the buddy, not drawn
+    char place[49];      // the line under the temperature (朝阳区), YK_PROTO_TODAY_PLACE_CHARS at most
+    int64_t weather_at_ms;  // when the weather service said it (YK_PROTO_TODAY_STALE_MINUTES goes by it)
+    int next_count;      // 0..YK_PROTO_TODAY_NEXT_MAX
+    yk_proto_today_item_t next[YK_PROTO_TODAY_NEXT_MAX];
+    int left;            // how many more today besides those in next, 0..99 (「还有 2 件」)
+    char day[11];        // the day it is for, "2026-11-18": not today on the device's clock, only the weather is drawn
+    char done[65];       // the id just said to be done (TODAY_DONE): struck out before it moves on (设计 A4); "" none
+} yk_proto_today_t;
 
 /** One app's grant to read the shared folders (Yay 0.1.19, 方案 A; device-api.ts folderGrant): hello.ok's folders and
  *  folder.set's grant. */
@@ -234,7 +307,16 @@ typedef enum {
     YK_ACT_LOCALE_SET,     // locale.set (Yay with the locale cap, 0.1.19): locale, the account's language now
     YK_ACT_COLORWAY_SET,   // colorway.set (Yay with the colorway cap, 0.1.19): colorway, the account's colour now
     YK_ACT_FOLDER_SET,     // folder.set (Yay with the folder cap, 0.1.19): folder, one app's grant after the App's switch
+    // record.start (Yay with the record cap, 0.2 「帮我录」): once the buddy's line is said (SPEAK_DONE), up to the record
+    // page and a long recording. No fields.
+    YK_ACT_RECORD_START,
 } yk_act_kind_t;
+
+/** What an `error` held the turn for want of, when the platform says (device.ts error.consent; 两套部署 · 语音单独同意,
+ *  consent.ts VOICE_CONSENT_GATES, #2740; read as device-api.ts readRefusalConsent reads it, #2778). Only added to. NONE:
+ *  not said, a value this firmware does not know, or with a code but OPERATION_NOT_ALLOWED: all as none. Only a side that
+ *  asks voice ever sends it. */
+typedef enum { YK_PROTO_CONSENT_NONE = 0, YK_PROTO_CONSENT_VOICE } yk_proto_consent_t;
 
 typedef struct {
     yk_srv_type_t type;
@@ -335,16 +417,27 @@ typedef struct {
     char colorway[12];
     yk_proto_folder_t folder;          // folder.set (0.1.19): the app's grant as the App left it
     // inbox
-    char inbox_kind[12];               // "dot", "approval", "reminder", "done"
+    char inbox_kind[12];               // "dot", "approval", "reminder", "done"; "proactive" (Yay with the proactive cap,
+                                       // 0.2: the buddy's own line, by itself, in `text`)
+    char inbox_id[37];                 // proactive: what proactive.say names (a UUID); "" for the other kinds
+    bool inbox_say;                    // proactive: true, ask to say it when it can (proactive.say); false, show it only
+                                       // (quiet hours, not the round screen used last, the platform's points gone)
+    // today (Yay with the today cap, 0.2): in PSRAM, owned; NULL for any other message
+    yk_proto_today_t *today;
     // error
     char code[32];
     int retry_after;                   // seconds, 0 when none
+    // error consent (#2740): YK_PROTO_CONSENT_VOICE when an OPERATION_NOT_ALLOWED says the account has not agreed to
+    // voice (consent exactly "voice"); YK_PROTO_CONSENT_NONE otherwise, and in every other message. Read only, V1: the
+    // turn still ends as before (Yay 「有点忙」, extensions 「等一下再试」); the screens of its own are V2 and V3.
+    uint8_t consent;                   // yk_proto_consent_t
 } yk_srv_msg_t;
 
 /** Reads one text frame. Returns its type, YK_SRV_INVALID when it is not a valid server message (out is then
  *  empty). Always call yk_proto_free() afterwards. What a newer server may add is taken, not dropped (§13.3): an
  *  error code this firmware does not know (the turn still ends), a new `muted` value (read as "speech"), an
- *  action of an unknown kind (YK_ACT_UNKNOWN, to be answered UNSUPPORTED). */
+ *  action of an unknown kind (YK_ACT_UNKNOWN, to be answered UNSUPPORTED), an error's `consent` it does not know (as
+ *  none). */
 yk_srv_type_t yk_proto_parse(const char *json, size_t len, yk_srv_msg_t *out);
 void yk_proto_free(yk_srv_msg_t *m);
 const char *yk_proto_type_name(yk_srv_type_t type);

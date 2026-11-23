@@ -18,6 +18,7 @@ typedef struct {
     const char *mode;              // "practice", "translate"; NULL: chat (Yay's own)
     const char *language, *level;  // practice
     const char *pair;              // translate: "zh-ja"
+    const char *region;            // 两套部署: yk_region_name() with CONFIG_YK_REGIONS; NULL (off) left out, as before
 } yk_talk_hello_in_t;
 
 /** The JSON (cJSON_free), or NULL when the mode's fields break the schema (no language for practice…). Slots are

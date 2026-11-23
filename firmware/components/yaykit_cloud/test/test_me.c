@@ -1,6 +1,7 @@
 // Host test: yk_cloud_me() keeps the owner it reads, yk_cloud_me_ex(…, false) leaves it as it is (Yay's daily check
 // reads /me for its time zone; its language comes only with hello.ok). yaykit_cloud.c built against test/stub, with
-// the HTTPS helpers and the account answered here.
+// the HTTPS helpers and the account answered here. Also 问字's refusal held for want of voice consent (两套部署 · 语音
+// 单独同意 V5: yk_cloud_hanzi_consent), against fixtures/deployments.json's voiceConsentHttp (the first argument).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,18 +72,35 @@ void yk_http_free(yk_http_response_t *response) {
 const char *yk_http_error_code(const yk_http_response_t *response) {
     if (response->body && strstr(response->body, "TOKEN_EXPIRED")) return "TOKEN_EXPIRED";
     if (response->body && strstr(response->body, "DEVICE_NOT_ACTIVATED")) return "DEVICE_NOT_ACTIVATED";
+    if (response->body && strstr(response->body, "\"OPERATION_NOT_ALLOWED\"")) return "OPERATION_NOT_ALLOWED";
     return "SERVER";
 }
+// 问字's streamed POST (yk_cloud_hanzi_lookup, yk_cloud_hanzi_text) on a client of its own: in turn, each request's
+// answer, an HTTP status (0: none, the connection never opened) and its body, a refusal's (yk_http_read_body) or the
+// events of a 200 (esp_http_client_read). Off, nothing is reached (yk_http_client: NULL, as for /me).
+static struct {
+    bool on;
+    int status[2];
+    const char *body[2];
+    int posts;   // requests opened
+    size_t at;   // of the events read
+    char type[32];
+} H;
+static const char *h_body(void) { return H.posts > 0 && H.posts <= 2 && H.body[H.posts - 1] ? H.body[H.posts - 1] : ""; }
+
 static bool s_prepare_ok;
 esp_err_t yk_http_prepare(const char **code) {
     if (s_prepare_ok) return ESP_OK;
     *code = "NO_WIFI";
     return ESP_FAIL;
 }
+static int s_handle;
 esp_http_client_handle_t yk_http_client(const char *path, esp_http_client_method_t method, const char *bearer,
                                         const char *content_type, int timeout_ms) {
-    (void)path, (void)method, (void)bearer, (void)content_type, (void)timeout_ms;
-    return NULL;
+    (void)method, (void)bearer, (void)timeout_ms;
+    if (!H.on || strcmp(path, "/device/v1/hanzi/lookup")) return NULL;
+    snprintf(H.type, sizeof(H.type), "%s", content_type ? content_type : "");
+    return (esp_http_client_handle_t)&s_handle;
 }
 esp_err_t yk_http_send(esp_http_client_method_t method, const char *path, const char *bearer, const char *content_type,
                        const uint8_t *body, size_t body_len, int timeout_ms, yk_http_response_t *out) {
@@ -97,6 +115,9 @@ esp_err_t yk_http_on_event(esp_http_client_event_t *event) {
 void yk_http_read_body(esp_http_client_handle_t client, yk_http_response_t *out) {
     (void)client;
     memset(out, 0, sizeof(*out));
+    if (!H.on) return;
+    out->body = strdup(h_body());
+    out->len = strlen(out->body);
 }
 
 // ---- yaykit_account
@@ -129,8 +150,6 @@ static struct {
     void *user_data;
     int opened;
 } F;
-static int s_handle;
-
 static int s_rx, s_tx;
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config) {
     s_rx = config->buffer_size, s_tx = config->buffer_size_tx;
@@ -141,11 +160,16 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
 }
 esp_err_t esp_http_client_open(esp_http_client_handle_t c, int n) {
     (void)c, (void)n;
+    if (H.on) {
+        H.at = 0;
+        return ++H.posts <= 2 && H.status[H.posts - 1] ? ESP_OK : ESP_FAIL;
+    }
     if (F.on) F.opened++;
     return F.on ? ESP_OK : ESP_FAIL;
 }
-int esp_http_client_write(esp_http_client_handle_t c, const char *b, int n) { (void)c, (void)b, (void)n; return -1; }
+int esp_http_client_write(esp_http_client_handle_t c, const char *b, int n) { (void)c, (void)b; return H.on ? n : -1; }
 int esp_http_client_fetch_headers(esp_http_client_handle_t c) {
+    if (H.on) return 0;
     if (!F.on) return -1;
     char type_key[] = "Content-Type", type_value[] = "application/octet-stream", range_key[] = "content-range";
     esp_http_client_event_t e = {.event_id = HTTP_EVENT_ON_HEADER, .client = c, .user_data = F.user_data,
@@ -160,9 +184,20 @@ int esp_http_client_fetch_headers(esp_http_client_handle_t c) {
     }
     return (int)(F.len - F.at);
 }
-int esp_http_client_get_status_code(esp_http_client_handle_t c) { (void)c; return F.on ? F.status : 0; }
+int esp_http_client_get_status_code(esp_http_client_handle_t c) {
+    (void)c;
+    if (H.on) return H.posts > 0 && H.posts <= 2 ? H.status[H.posts - 1] : 0;
+    return F.on ? F.status : 0;
+}
 int esp_http_client_read(esp_http_client_handle_t c, char *b, int n) {
     (void)c;
+    if (H.on) {  // a 200's events, then the end
+        const char *body = h_body();
+        size_t k = strlen(body) - H.at < (size_t)n ? strlen(body) - H.at : (size_t)n;
+        memcpy(b, body + H.at, k);
+        H.at += k;
+        return (int)k;
+    }
     if (!F.on) return -1;
     if (F.cut_at && F.at >= F.cut_at) return -1;
     size_t k = F.len - F.at < (size_t)n ? F.len - F.at : (size_t)n;
@@ -296,7 +331,130 @@ static void pieces(void) {
     CHECK(yk_cloud_library("en", &json, &code) == ESP_FAIL && !strcmp(code, "NOT_FOUND") && !json);
 }
 
-int main(void) {
+// ---------------------------------------------------------------- 问字: a refusal's consent (两套部署 · 语音单独同意 V5)
+
+static char *slurp(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)n + 1);
+    if (buf && fread(buf, 1, (size_t)n, f) != (size_t)n) n = 0;
+    if (buf) buf[n] = 0;
+    fclose(f);
+    return buf;
+}
+
+static int s_events;
+static bool s_no_wifi;  // the next lookup finds no Wi-Fi (yk_http_prepare)
+static void on_hanzi(const char *event, const cJSON *data, void *ctx) {
+    (void)event, (void)data, (void)ctx;
+    s_events++;
+}
+
+static const char VOICE[] = "{\"error\":\"OPERATION_NOT_ALLOWED\",\"consent\":\"voice\"}";
+static const char ANSWER[] = "event: heard\ndata: {\"text\":\"老鹰的鹰\"}\n\n"
+                             "event: answer\ndata: {\"found\":true,\"char\":\"鹰\",\"pinyin\":\"yīng\"}\n\n";
+
+/** One lookup, a recording (`text` NULL) or a typed question, answered `status` with `body`, and after a new token
+ *  `then_status` with `then_body`. Its code in *code. */
+static esp_err_t hanzi(const char *text, int status, const char *body, int then_status, const char *then_body,
+                       const char **code) {
+    memset(&H, 0, sizeof(H));
+    H.on = true;
+    H.status[0] = status, H.body[0] = body, H.status[1] = then_status, H.body[1] = then_body;
+    s_events = 0;
+    s_prepare_ok = !s_no_wifi;
+    static const uint8_t wav[64];
+    *code = NULL;
+    const esp_err_t err = text ? yk_cloud_hanzi_text(text, on_hanzi, NULL, code)
+                               : yk_cloud_hanzi_lookup(wav, sizeof(wav), on_hanzi, NULL, code);
+    H.on = false;
+    return err;
+}
+
+/** A refusal's body (an object) as it is, or without its consent. */
+static char *printed(const cJSON *body, bool without) {
+    cJSON *b = cJSON_Duplicate(body, 1);
+    if (without) cJSON_DeleteItemFromObjectCaseSensitive(b, "consent");
+    char *out = cJSON_PrintUnformatted(b);
+    cJSON_Delete(b);
+    return out;
+}
+
+/** `with` and `plain` (the same refusal without its consent) at 403, to a recording and to a typed question: `want`
+ *  with it, none without; the code the same either way; asked once (nothing tried again for it), no event. */
+static void refused_as(const char *with, const char *plain, yk_cloud_consent_t want) {
+    for (int typed = 0; typed < 2; typed++) {
+        const char *text = typed ? "鹰" : NULL, *code = NULL, *plain_code = NULL;
+        CHECK(hanzi(text, 403, plain, 0, NULL, &plain_code) == ESP_FAIL);
+        CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);
+        CHECK(hanzi(text, 403, with, 0, NULL, &code) == ESP_FAIL);
+        CHECK(yk_cloud_hanzi_consent() == want);
+        CHECK(code && plain_code && !strcmp(code, plain_code));
+        CHECK(H.posts == 1 && !s_events);
+        CHECK(!strcmp(H.type, typed ? "application/json" : "audio/wav"));
+    }
+}
+
+/** yk_cloud_hanzi_consent() (consent.ts VOICE_CONSENT_GATES.device: 403 before the stream, a recording's lookup), as
+ *  device-api.ts readRefusalConsent reads it (yk_api_error_consent): the contract's own cases, then what comes after. */
+static void hanzi_consent(const char *deployments) {
+    const char *code = NULL;
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);  // before any lookup
+    char *text = deployments ? slurp(deployments) : NULL;
+    cJSON *doc = text ? cJSON_Parse(text) : NULL;
+    const cJSON *http = cJSON_GetObjectItemCaseSensitive(doc, "voiceConsentHttp"), *c;
+    if (!http) printf("yaykit_cloud me: the voiceConsentHttp cases left out (no fixtures/deployments.json)\n");
+    int voice = 0, none = 0;
+    cJSON_ArrayForEach(c, http) {
+        const cJSON *body = cJSON_GetObjectItemCaseSensitive(c, "body");
+        const cJSON *want = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(c, "expect"), "consent");
+        CHECK(cJSON_IsObject(body) && want);
+        if (!cJSON_IsObject(body)) continue;
+        const bool is_voice = cJSON_IsString(want) && !strcmp(want->valuestring, "voice");
+        char *with = printed(body, false), *plain = printed(body, true);
+        refused_as(with, plain, is_voice ? YK_CLOUD_CONSENT_VOICE : YK_CLOUD_CONSENT_NONE);
+        cJSON_free(with);
+        cJSON_free(plain);
+        if (is_voice) voice++;
+        else none++;
+    }
+    if (http) CHECK(voice >= 1 && none >= 4);
+    cJSON_Delete(doc);
+    free(text);
+    // The device service's (VOICE_CONSENT_GATES.device); without it (a frozen account, an app not allowed): as today.
+    refused_as(VOICE, "{\"error\":\"OPERATION_NOT_ALLOWED\"}", YK_CLOUD_CONSENT_VOICE);
+    CHECK(hanzi(NULL, 403, VOICE, 0, NULL, &code) == ESP_FAIL && !strcmp(code, "OPERATION_NOT_ALLOWED"));
+    // Held, then the next lookup gets through: none (the notice goes); so after no answer, or another refusal.
+    CHECK(hanzi(NULL, 200, ANSWER, 0, NULL, &code) == ESP_OK && s_events == 2);
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);
+    CHECK(hanzi(NULL, 403, VOICE, 0, NULL, &code) == ESP_FAIL && yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_VOICE);
+    CHECK(hanzi(NULL, 0, NULL, 0, NULL, &code) == ESP_FAIL && !strcmp(code, "NETWORK"));
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);
+    CHECK(hanzi(NULL, 403, VOICE, 0, NULL, &code) == ESP_FAIL && yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_VOICE);
+    CHECK(hanzi(NULL, 429, "{\"error\":\"RATE_LIMITED\"}", 0, NULL, &code) == ESP_FAIL);
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);
+    CHECK(hanzi(NULL, 403, VOICE, 0, NULL, &code) == ESP_FAIL && yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_VOICE);
+    s_no_wifi = true;  // nothing sent at all
+    CHECK(hanzi(NULL, 403, VOICE, 0, NULL, &code) == ESP_FAIL && !strcmp(code, "NO_WIFI") && !H.posts);
+    s_no_wifi = false;
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);
+    CHECK(hanzi("鹰", 403, VOICE, 0, NULL, &code) == ESP_FAIL && yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_VOICE);
+    CHECK(hanzi("鹰", 200, ANSWER, 0, NULL, &code) == ESP_OK && yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);
+    // A new token first, then held: the second answer's, asked twice in all. Held first: asked once.
+    CHECK(hanzi(NULL, 401, "{\"error\":\"TOKEN_EXPIRED\"}", 403, VOICE, &code) == ESP_FAIL && H.posts == 2);
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_VOICE && !strcmp(code, "OPERATION_NOT_ALLOWED"));
+    CHECK(hanzi(NULL, 403, VOICE, 200, ANSWER, &code) == ESP_FAIL && H.posts == 1 && !s_events);
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_VOICE);
+    // An error among a 200's events is the stream's, not a refusal before it: not read, none.
+    CHECK(hanzi(NULL, 200, "event: error\ndata: {\"error\":\"OPERATION_NOT_ALLOWED\",\"consent\":\"voice\"}\n\n", 0, NULL,
+                &code) == ESP_OK && s_events == 1);
+    CHECK(yk_cloud_hanzi_consent() == YK_CLOUD_CONSENT_NONE);
+}
+
+int main(int argc, char **argv) {
     yk_cloud_me_t me;
     const char *code = NULL;
 
@@ -347,6 +505,7 @@ int main(void) {
 #endif
 
     pieces();
+    hanzi_consent(argc > 1 ? argv[1] : NULL);
 
     printf("yaykit_cloud me host tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

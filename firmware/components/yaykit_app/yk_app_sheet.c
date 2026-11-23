@@ -87,8 +87,10 @@ static void fill(void) {
         int rssi = 0;
         bool problem;
         const int state = yk_wifi_status(ssid, sizeof(ssid), &rssi);
-        yk_sheet_wifi_text(state, ssid, rssi, yk_cloud_reach ? yk_cloud_reach() : -1, en, &problem, wifi, sizeof(wifi));
-        v.row[k++] = (yk_sheet_row_t){.name = "Wi-Fi", .value = wifi, .problem = problem};
+        yk_sheet_icon_t icon;  // 0.2: a state that is fine as its picture (yk_sheet_*_value)
+        yk_sheet_wifi_value(state, ssid, rssi, yk_cloud_reach ? yk_cloud_reach() : -1, en, &problem, &icon, wifi,
+                            sizeof(wifi));
+        v.row[k++] = (yk_sheet_row_t){.name = "Wi-Fi", .value = wifi, .problem = problem, .icon = icon};
     }
     board_battery_t b = {.percent = -1};
     const esp_err_t err = board_battery(&b);
@@ -102,13 +104,17 @@ static void fill(void) {
         .low = known && b.low,
         .fault = b.fault != BOARD_BATTERY_FAULT_NONE,
     };
-    yk_sheet_battery_text(&batt, false, en, battery, sizeof(battery));
-    v.row[k++] = (yk_sheet_row_t){.name = yk_word_in(en, YK_STR_YAYKIT_SHEET_BATTERY), .value = battery};
+    yk_sheet_icon_t battery_icon;
+    yk_sheet_battery_value(&batt, en, &battery_icon, battery, sizeof(battery));
+    v.row[k++] = (yk_sheet_row_t){.name = yk_word_in(en, YK_STR_YAYKIT_SHEET_BATTERY), .value = battery,
+                                  .icon = battery_icon};
     if (yk_account_status) {
         bool problem;
         const int account = yk_account_status(nickname, sizeof(nickname));
-        yk_sheet_phone_text(account, nickname, en, &problem, phone, sizeof(phone));
-        v.row[k++] = (yk_sheet_row_t){.name = yk_word_in(en, YK_STR_YAYKIT_SHEET_PHONE), .value = phone, .problem = problem};
+        yk_sheet_icon_t icon;
+        yk_sheet_phone_value(account, nickname, en, &problem, &icon, phone, sizeof(phone));
+        v.row[k++] = (yk_sheet_row_t){.name = yk_word_in(en, YK_STR_YAYKIT_SHEET_PHONE), .value = phone, .problem = problem,
+                                      .icon = icon};
     }
     char volume[8];
     if (yk_speak_get_volume && k < YK_SHEET_ROWS) {  // the speaker: 「音量」, a tap opens the dial (F-1077)

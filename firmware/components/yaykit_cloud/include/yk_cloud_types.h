@@ -13,6 +13,14 @@
 /** 1: activation, /me, hanzi lookup. 2: the device API v1 (capabilities, asr, chat, files, data, records, inbox). */
 #define YK_CLOUD_API_LEVEL 2
 
+/** What a refusal was held for want of, when the platform says (两套部署 · 语音单独同意 V4: device-api.ts deviceError
+ *  `consent`, consent.ts VOICE_CONSENT_GATES, #2740), read as device-api.ts readRefusalConsent reads it (#2778): an HTTP
+ *  403 {"error":"OPERATION_NOT_ALLOWED","consent":"voice"} is VOICE, the account has not agreed to voice there. NONE:
+ *  not said (a frozen account, an app not allowed it; overseas never says it), a value this firmware does not know, or
+ *  beside any code but OPERATION_NOT_ALLOWED: the refusal as before. Only added to. (The voice session's own is
+ *  yaykit_session's yk_proto_consent_t.) */
+typedef enum { YK_CLOUD_CONSENT_NONE = 0, YK_CLOUD_CONSENT_VOICE } yk_cloud_consent_t;
+
 typedef struct {
     int remaining;        // credits left today plus bonus credits
     int daily_limit;

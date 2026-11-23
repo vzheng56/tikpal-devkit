@@ -36,7 +36,10 @@ OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 cc -std=c11 -Wall -Wextra -Werror -O1 -I.. -I"$CJSON" -o "$OUT/test_session" test_session.c ../yk_proto.c \
   "$CJSON/cJSON.c" -lm
-"$OUT/test_session" ../../../../../packages/contracts/fixtures/device.json
+# ... and the deployments' hello with its region (两套部署), when the contract is here (not in a kit)
+DEPLOYMENTS=../../../../../packages/contracts/fixtures/deployments.json
+[ -f "$DEPLOYMENTS" ] || DEPLOYMENTS=
+"$OUT/test_session" ../../../../../packages/contracts/fixtures/device.json ${DEPLOYMENTS:+"$DEPLOYMENTS"}
 # A hold against a connection being made: yaykit_session.c itself, on test/stub
 cc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -I stub -I.. -I../include -I"$CJSON" -o "$OUT/test_hold" test_hold.c \
   ../yk_proto.c ../yk_conn_timing.c ../yk_ticket.c ../yk_conn_drop.c "$CJSON/cJSON.c" -lm

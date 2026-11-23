@@ -17,6 +17,12 @@ bool yk_api_stream_state(const char *json, yk_cloud_stream_state_t *out);
  *  A request that long without an answer lets go and is tried again later (yk_rs_up): an upload whose network went
  *  mid-request held the recordings' flash task 51 s (新四号机 11-18, a 4 s note's completion). */
 int yk_api_stream_complete_ms(int64_t duration_ms);
+/** The same with a step that can be stopped (yk_cloud_stream_set_stop): at most YK_CLOUD_STREAM_COMPLETE_STOPPABLE_MS. */
+int yk_api_stream_complete_stoppable_ms(int64_t duration_ms);
+/** While an answer is awaited in pieces (a step that can be stopped): what to do after `waited_ms` of `total_ms`. */
+typedef enum { YK_API_WAIT_ON, YK_API_WAIT_STOP, YK_API_WAIT_TIMEOUT } yk_api_wait_t;
+#define YK_API_WAIT_PIECE_MS 500  // the answer is read this long at most at a time, the stop asked between
+yk_api_wait_t yk_api_stream_wait(int64_t waited_ms, int total_ms, bool stop);
 /** The body of POST /files/:id/stream/complete (free with cJSON_free). */
 char *yk_api_stream_end_body(const yk_cloud_stream_end_t *end);
 /** A refusal (HTTP `status`, body {"error": CODE}): the contract's stream codes as they are, else as yk_api_code says;

@@ -378,6 +378,7 @@ static const yk_notice_spec_t NOTICES[YK_NOTICE_COUNT] = {
     [YK_NOTICE_BUSY] = {YK_YAY_HELP, YK_RIM_OFF, "等一下再试", "Try again soon", true},
     [YK_NOTICE_BLOCKED] = {YK_YAY_HELP, YK_RIM_OFF, "换个话题吧", "Let's try something else", false},
     [YK_NOTICE_BATTERY_LOW] = {YK_YAY_READY, YK_RIM_ALERT, NULL, NULL, false},
+    [YK_NOTICE_VOICE_CONSENT] = {YK_YAY_READY, YK_RIM_OFF, "先在 App 里同意用语音", "Agree to voice in the app", false},
 };
 
 const yk_notice_spec_t *yk_notice_spec(yk_notice_t notice) {
@@ -395,6 +396,7 @@ static const yk_str_t NOTICE_WORDS[YK_NOTICE_COUNT] = {
     [YK_NOTICE_BUSY] = YK_STR_YAYKIT_NOTICE_BUSY,
     [YK_NOTICE_BLOCKED] = YK_STR_YAYKIT_NOTICE_BLOCKED,
     [YK_NOTICE_BATTERY_LOW] = YK_STR_COUNT,
+    [YK_NOTICE_VOICE_CONSENT] = YK_STR_YAYKIT_NOTICE_VOICE_CONSENT,
 };
 
 const char *yk_notice_text(yk_notice_t notice, bool english) {

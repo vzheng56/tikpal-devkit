@@ -112,12 +112,99 @@ static void test_taps(void) {
     CHECK(yk_tap_release(&t, 0, 233, 262, 1100));
 }
 
+/** 0.2 (user 11-20): a state that is fine as its picture and the least words; one to read stays the words, no picture.
+ *  The bars as 信号好 / 一般 / 弱 are; a battery filled to its percent, a bolt charging, coral low; a tick when added. */
+static void test_icons(void) {
+    char b[64];
+    bool p = true;
+    yk_sheet_icon_t ic;
+    // Wi-Fi: connected and through, the name and the bars (their thresholds the words'); else the words alone.
+    CHECK(!strcmp(yk_sheet_wifi_value(3, "Home-5G", -50, 1, false, &p, &ic, b, sizeof(b)), "Home-5G") && !p);
+    CHECK(ic.kind == YK_SHEET_ICON_WIFI && ic.level == 3);
+    CHECK(!strcmp(yk_sheet_wifi_value(3, "Home-5G", -60, -1, true, &p, &ic, b, sizeof(b)), "Home-5G") && ic.level == 2);
+    CHECK(yk_sheet_wifi_value(3, "Home-5G", -72, 0, false, &p, &ic, b, sizeof(b)) && ic.level == 1);
+    CHECK(yk_sheet_wifi_value(3, "Home-5G", -95, 1, false, &p, &ic, b, sizeof(b)) && ic.level == 1);
+    CHECK(!strcmp(yk_sheet_wifi_value(3, "", -50, 1, false, &p, &ic, b, sizeof(b)), "") && ic.kind == YK_SHEET_ICON_WIFI);
+    CHECK(!strcmp(yk_sheet_wifi_value(3, NULL, -50, 1, false, &p, &ic, b, sizeof(b)), ""));
+    for (int rssi = -100; rssi <= -30; rssi++) {  // the bars always the words' strength
+        char words[64];
+        yk_sheet_wifi_text(3, "", rssi, 1, false, NULL, words, sizeof(words));
+        yk_sheet_wifi_value(3, "", rssi, 1, false, NULL, &ic, b, sizeof(b));
+        CHECK(ic.level == (!strcmp(words, "信号好") ? 3 : !strcmp(words, "信号一般") ? 2 : 1));
+    }
+    const struct {
+        int wifi, reach;
+        const char *words;
+        bool problem;
+    } wifi_words[] = {{3, 2, "连不上服务器", true}, {2, 0, "正在连接", false}, {0, -1, "不用时关着", false},
+                      {1, -1, "没连上", true}, {4, 1, "没连上", true}};
+    for (size_t i = 0; i < sizeof(wifi_words) / sizeof(wifi_words[0]); i++) {
+        ic.kind = YK_SHEET_ICON_CHECK;
+        CHECK(!strcmp(yk_sheet_wifi_value(wifi_words[i].wifi, "Home-5G", -50, wifi_words[i].reach, false, &p, &ic, b,
+                                          sizeof(b)),
+                      wifi_words[i].words));
+        CHECK(ic.kind == YK_SHEET_ICON_NONE && p == wifi_words[i].problem);
+    }
+    // The battery: a number and its picture; the words alone where a number would mislead.
+    yk_sheet_battery_t s = {.percent = 76};
+    CHECK(!strcmp(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)), "76%"));
+    CHECK(ic.kind == YK_SHEET_ICON_BATTERY && ic.level == 76 && !ic.charging && !ic.low);
+    s.usb = s.charging = true;
+    CHECK(!strcmp(yk_sheet_battery_value(&s, true, &ic, b, sizeof(b)), "76%") && ic.charging && !ic.low);
+    s.percent = 9;  // charging at 9 %: the bolt, not coral
+    CHECK(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)) && ic.charging && !ic.low && ic.level == 9);
+    s.usb = s.charging = false;
+    s.percent = YK_SHEET_BATTERY_LOW;  // 15 % and under, not charging: coral
+    CHECK(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)) && ic.low);
+    s.percent = YK_SHEET_BATTERY_LOW + 1;
+    CHECK(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)) && !ic.low);
+    s.percent = 0;
+    CHECK(!strcmp(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)), "0%") && ic.level == 0 && ic.low);
+    s.percent = 120;  // never past full
+    CHECK(!strcmp(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)), "100%") && ic.level == 100);
+    s = (yk_sheet_battery_t){.percent = 100, .usb = true, .charging = true, .full = true};  // full: no bolt
+    CHECK(!strcmp(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)), "100%") && !ic.charging && ic.level == 100);
+    s = (yk_sheet_battery_t){.percent = 64, .usb = true, .stopped = true};  // plugged in, not charging: worth the words
+    yk_sheet_battery_text(&s, false, false, b, sizeof(b));
+    char words[64];
+    snprintf(words, sizeof(words), "%s", b);
+    CHECK(!strcmp(yk_sheet_battery_value(&s, false, &ic, b, sizeof(b)), words) && strcmp(words, "64%"));
+    CHECK(ic.kind == YK_SHEET_ICON_BATTERY && !ic.charging);
+    const yk_sheet_battery_t worded[] = {{.percent = -1}, {.percent = 3, .usb = true, .low = true, .charging = true},
+                                         {.percent = 40, .usb = true, .fault = true}};
+    for (size_t i = 0; i < sizeof(worded) / sizeof(worded[0]); i++) {
+        ic.kind = YK_SHEET_ICON_WIFI;
+        yk_sheet_battery_text(&worded[i], false, false, words, sizeof(words));
+        CHECK(!strcmp(yk_sheet_battery_value(&worded[i], false, &ic, b, sizeof(b)), words) && ic.kind == YK_SHEET_ICON_NONE);
+    }
+    // The phone: added, the nickname and a tick (no 「已添加到」); the rest the words.
+    CHECK(!strcmp(yk_sheet_phone_value(2, "小明", false, &p, &ic, b, sizeof(b)), "小明") && !p);
+    CHECK(ic.kind == YK_SHEET_ICON_CHECK);
+    CHECK(!strcmp(yk_sheet_phone_value(2, "", true, &p, &ic, b, sizeof(b)), "") && ic.kind == YK_SHEET_ICON_CHECK);
+    CHECK(!strcmp(yk_sheet_phone_value(2, NULL, false, &p, &ic, b, sizeof(b)), ""));
+    for (int account = 0; account <= 3; account++) {
+        if (account == 2) continue;
+        bool want;
+        yk_sheet_phone_text(account, "小明", false, &want, words, sizeof(words));
+        CHECK(!strcmp(yk_sheet_phone_value(account, "小明", false, &p, &ic, b, sizeof(b)), words));
+        CHECK(ic.kind == YK_SHEET_ICON_NONE && p == want);
+    }
+    // No picture asked for (NULL): the words all the same.
+    CHECK(!strcmp(yk_sheet_wifi_value(3, "Home-5G", -50, 1, false, NULL, NULL, b, sizeof(b)), "Home-5G"));
+    CHECK(!strcmp(yk_sheet_battery_value(&(yk_sheet_battery_t){.percent = 50}, false, NULL, b, sizeof(b)), "50%"));
+    CHECK(!strcmp(yk_sheet_phone_value(2, "小明", false, NULL, NULL, b, sizeof(b)), "小明"));
+    // A row without a picture is as before: zero is none.
+    const yk_sheet_row_t old = {.name = "Wi-Fi", .value = "Home-5G · 信号好"};
+    CHECK(old.icon.kind == YK_SHEET_ICON_NONE);
+}
+
 int main(void) {
     test_taps();
     test_clock();
     test_battery();
     test_wifi();
     test_phone();
+    test_icons();
     printf("%s: %d checks, %d failed\n", failures ? "FAIL" : "ok", checks, failures);
     return failures ? 1 : 0;
 }

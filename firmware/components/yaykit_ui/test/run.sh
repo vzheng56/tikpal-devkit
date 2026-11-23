@@ -15,6 +15,15 @@ ACCENT_I="-I../generated"
 ACCENT_C="../yk_accent.c"
 cc $ACCENT_I $WORDS_I -std=c11 -Wall -Wextra -Werror -O1 -I.. -I../include -Istub -o "$OUT/test_ui" test_ui.c ../yk_ui_logic.c $WORDS_C $ACCENT_C -lm
 "$OUT/test_ui"
+# The shared notices' words in the four languages, held to yay/test/text_width.h (两套部署 · 语音单独同意 V3): at the
+# notice line's default height and the extensions' y 404. A kit has no yay/, and goes without it (as yaykit_app's).
+if [ -f ../../../yay/test/text_width.h ]; then
+  cc $ACCENT_I $WORDS_I -std=c11 -Wall -Wextra -Werror -O1 -I.. -I../include -Istub -I../../../yay/test \
+    -o "$OUT/test_words_fit" test_words_fit.c ../yk_ui_logic.c $WORDS_C $ACCENT_C -lm
+  "$OUT/test_words_fit"
+else
+  echo "yk_notice words: widths left out (no yay/test/text_width.h)"
+fi
 cc $ACCENT_I $WORDS_I -std=c11 -Wall -Wextra -Werror -O1 -I.. -I../include -Istub -o "$OUT/test_apps" test_apps.c ../yk_apps_logic.c \
   ../yk_ui_logic.c $WORDS_C $ACCENT_C -lm
 "$OUT/test_apps"

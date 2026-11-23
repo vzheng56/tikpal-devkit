@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #ifdef ESP_PLATFORM
@@ -47,7 +48,9 @@ static const char *TAG = "yk_yay";
 #define BLINK_MS 130
 #define LOOK_PX 3  // how far the eyes move to look somewhere (at 176 px)
 
-static struct {
+// In PSRAM where the firmware lets .bss go there (Yay 0.2: CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY; elsewhere internal,
+// as before): LVGL's descriptors and the prescale task's, never an interrupt's.
+EXT_RAM_BSS_ATTR static struct {
     const void *key;  // what it was made from: Pip's yay_art_t, or a figure's picture
     uint32_t paper;
     lv_image_dsc_t dsc;
@@ -628,6 +631,19 @@ void yk_yay_move(yk_yay_t *y, int cx, int cy) {
     if (!y) return;
     y->cx = cx, y->cy = cy;
     layout(y);
+}
+
+void yk_yay_paper(yk_yay_t *y, uint32_t paper) {
+    if (!y || paper == y->paper || paper == YK_YAY_TRANSPARENT || y->paper == YK_YAY_TRANSPARENT) return;
+    const uint32_t was = y->paper;
+    y->paper = paper;
+    // The pose again (pick: a figure's palette over the new paper for the patches; show: its picture over it).
+    const yk_yay_pose_t p = y->pose;
+    y->pose = YK_YAY_POSE_COUNT;
+    if (p != YK_YAY_POSE_COUNT) yk_yay_pose(y, p, 0);
+    // Over the old paper: gone now, not when the cache next fills (another Yay may still show one: it stays).
+    for (int i = 0; i < CACHE_MAX; i++)
+        if (s_cache[i].key && s_cache[i].paper == was && !on_screen(i)) slot_free(i);
 }
 
 void yk_yay_auto_blink(yk_yay_t *y, bool on) {

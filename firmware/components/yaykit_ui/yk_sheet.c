@@ -23,6 +23,11 @@
 #define HINT_BELOW 16      // ... this far under a second button
 #define BUTTON_H 46
 #define HINT_GAP 10        // the hint this far under the first button when four rows push it down (F-1077: 360)
+#define VALUE_W 196        // a row's words, right-aligned to the rows' end (294)
+#define ICON_W 26          // a row's picture at its end (yk_sheet_icon_t, 0.2): the battery's width, the widest
+#define ICON_H 16          // ... as tall as the 18 px words' letters
+#define ICON_GAP 8         // ... after the words
+#define ICON_DY 5          // ... down from the row's top (its 26 px line), centred on the letters
 
 struct yk_sheet {
     lv_obj_t *layer, *panel, *clock, *rows, *name[YK_SHEET_ROWS], *value[YK_SHEET_ROWS], *title, *line, *button,
@@ -34,7 +39,15 @@ struct yk_sheet {
     lv_obj_t *hit[YK_SHEET_ROWS];  // a row that takes taps (yk_sheet_on_row): over its words; made only then
     yk_sheet_row_cb_t on_row;
     void *row_ctx;
+    // A row's picture (0.2): made the first time that row has one, its parts made again only when its kind changes.
+    lv_obj_t *icon[YK_SHEET_ROWS];
+    lv_obj_t *part[YK_SHEET_ROWS][3];  // WIFI: its bars; BATTERY: its fill, its bolt; CHECK: the tick
+    yk_sheet_icon_t shown[YK_SHEET_ROWS];
 };
+
+// The pictures' lines (LVGL keeps the pointer: static). In a picture's own 26 x 16.
+static const lv_point_precise_t BOLT[] = {{13, 3}, {9, 9}, {13, 8}, {10, 14}};
+static const lv_point_precise_t TICK[] = {{6, 9}, {10, 13}, {19, 3}};
 
 static void take_swipes(lv_obj_t *o, lv_event_cb_t on_swipe, void *ctx) {
     lv_obj_set_gesture_bubble(o, false);
@@ -88,6 +101,64 @@ static void hidden(lv_obj_t *o, bool hide) {
 
 static void on_delete(lv_event_t *e) { lv_free(lv_event_get_user_data(e)); }
 
+static void bg(lv_obj_t *o, uint32_t c) {
+    if (!lv_color_eq(lv_obj_get_style_bg_color(o, 0), lv_color_hex(c))) lv_obj_set_style_bg_color(o, lv_color_hex(c), 0);
+}
+
+static lv_obj_t *line(lv_obj_t *parent, const lv_point_precise_t *p, uint32_t n, uint32_t c) {
+    lv_obj_t *l = lv_line_create(parent);
+    lv_line_set_points(l, p, n);
+    lv_obj_set_style_line_width(l, 2, 0);
+    lv_obj_set_style_line_rounded(l, true, 0);
+    lv_obj_set_style_line_color(l, lv_color_hex(c), 0);
+    return l;
+}
+
+/** Row `i`'s picture as `ic` says (0.2): its parts made again only when its kind changes, else only what changed. */
+static void draw_icon(yk_sheet_t *s, int i, const yk_sheet_icon_t *ic) {
+    lv_obj_t *o = s->icon[i];
+    if (!o) {
+        o = s->icon[i] = box(s->rows, VALUE_W + 98 - ICON_W, 0, ICON_W, ICON_H, -1);
+        lv_obj_set_clickable(o, false);  // a row's tap (yk_sheet_on_row) goes through it to the row's hit under
+    }
+    if (s->shown[i].kind != ic->kind) {
+        lv_obj_clean(o);
+        memset(s->part[i], 0, sizeof(s->part[i]));
+        s->shown[i] = (yk_sheet_icon_t){.kind = ic->kind, .level = 0xFF};  // its level drawn below
+        if (ic->kind == YK_SHEET_ICON_WIFI) {
+            for (int b = 0; b < YK_SHEET_WIFI_BARS; b++) {  // three bars of 5, 3 apart, 6 / 11 / 16 high, at the end
+                const int h = 6 + 5 * b;
+                lv_obj_t *bar = s->part[i][b] = box(o, ICON_W - 21 + 8 * b, ICON_H - h, 5, h, YK_INK3);
+                lv_obj_set_style_radius(bar, 1, 0);
+            }
+        } else if (ic->kind == YK_SHEET_ICON_BATTERY) {
+            lv_obj_t *body = box(o, 0, 1, 23, 14, -1);  // the case, the tip; the fill inside it, the bolt over
+            lv_obj_set_style_border_width(body, 2, 0);
+            lv_obj_set_style_border_color(body, lv_color_hex(YK_INK2), 0);
+            lv_obj_set_style_radius(body, 3, 0);
+            lv_obj_set_style_radius(box(o, 23, 5, 2, 6, YK_INK2), 1, 0);
+            s->part[i][0] = box(o, 3, 4, 17, 8, YK_INK);
+            lv_obj_set_style_radius(s->part[i][0], 1, 0);
+            s->part[i][1] = line(o, BOLT, sizeof(BOLT) / sizeof(BOLT[0]), YK_INK);
+        } else if (ic->kind == YK_SHEET_ICON_CHECK) {
+            s->part[i][0] = line(o, TICK, sizeof(TICK) / sizeof(TICK[0]), YK_SAGE);
+        }
+    }
+    if (ic->kind == YK_SHEET_ICON_WIFI && ic->level != s->shown[i].level) {
+        for (int b = 0; b < YK_SHEET_WIFI_BARS; b++) bg(s->part[i][b], b < ic->level ? YK_INK : YK_INK3);
+    } else if (ic->kind == YK_SHEET_ICON_BATTERY &&
+               (ic->level != s->shown[i].level || ic->charging != s->shown[i].charging || ic->low != s->shown[i].low)) {
+        const int w = ic->level ? (17 * ic->level + 99) / 100 : 0;  // at least 1 px of fill above 0 %
+        hidden(s->part[i][0], !w);
+        if (w && lv_obj_get_width(s->part[i][0]) != w) lv_obj_set_width(s->part[i][0], w);
+        bg(s->part[i][0], ic->charging ? YK_SAGE : ic->low ? YK_CORAL : YK_INK);
+        hidden(s->part[i][1], !ic->charging);
+    }
+    // None of it takes a finger: made after a row's hit, it would sit over it (yk_sheet_on_row).
+    for (uint32_t c = 0; c < lv_obj_get_child_count(o); c++) lv_obj_set_clickable(lv_obj_get_child(o, (int32_t)c), false);
+    s->shown[i] = *ic;
+}
+
 static void row_clicked(lv_event_t *e) {
     yk_sheet_t *s = lv_event_get_user_data(e);
     lv_obj_t *o = lv_event_get_current_target_obj(e);
@@ -119,7 +190,7 @@ yk_sheet_t *yk_sheet_create(lv_obj_t *parent, lv_event_cb_t on_dim, void *dim_ct
     s->rows = box(s->panel, 86, ROWS_Y, 294, YK_SHEET_ROWS * ROW_H, -1);
     for (int i = 0; i < YK_SHEET_ROWS; i++) {
         s->name[i] = text(s->rows, 0, i * ROW_H, 110, YK_SIZE_STATUS, YK_INK2, LV_TEXT_ALIGN_LEFT);
-        s->value[i] = text(s->rows, 98, i * ROW_H, 196, YK_SIZE_STATUS, YK_INK, LV_TEXT_ALIGN_RIGHT);
+        s->value[i] = text(s->rows, 98, i * ROW_H, VALUE_W, YK_SIZE_STATUS, YK_INK, LV_TEXT_ALIGN_RIGHT);
         one_line(s->value[i], 26);
     }
 
@@ -168,13 +239,22 @@ void yk_sheet_fill(yk_sheet_t *s, const yk_sheet_view_t *v) {
         int k = 0;  // the rows shown so far: one without a name leaves no gap
         for (int i = 0; i < YK_SHEET_ROWS; i++) {
             const yk_sheet_row_t *r = &v->row[i];
+            const bool pic = r->name && r->icon.kind != YK_SHEET_ICON_NONE;
             hidden(s->name[i], !r->name);
             hidden(s->value[i], !r->name);
             if (s->hit[i]) hidden(s->hit[i], !r->name || !r->tap);
+            if (s->icon[i]) hidden(s->icon[i], !pic);
             if (!r->name) continue;
             if (lv_obj_get_y(s->name[i]) != k * ROW_H) {
                 lv_obj_set_y(s->name[i], k * ROW_H);
                 lv_obj_set_y(s->value[i], k * ROW_H);
+            }
+            // The words end before the picture when there is one (0.2), at the rows' end when not.
+            const int w = pic ? VALUE_W - ICON_W - ICON_GAP : VALUE_W;
+            if (lv_obj_get_width(s->value[i]) != w) lv_obj_set_width(s->value[i], w);
+            if (pic) {
+                draw_icon(s, i, &r->icon);
+                if (lv_obj_get_y(s->icon[i]) != k * ROW_H + ICON_DY) lv_obj_set_y(s->icon[i], k * ROW_H + ICON_DY);
             }
             if (s->hit[i] && lv_obj_get_y(s->hit[i]) != k * ROW_H - 4) lv_obj_set_y(s->hit[i], k * ROW_H - 4);
             set(s->name[i], r->name);

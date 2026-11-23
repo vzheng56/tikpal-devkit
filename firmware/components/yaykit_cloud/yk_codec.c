@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "sdkconfig.h"
+#include "yk_region.h"
+
 static const char ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 size_t yk_b64url_encode(const uint8_t *in, size_t len, char *out, size_t out_size) {
@@ -90,6 +93,23 @@ int64_t yk_token_left_s(int64_t now_unix, int64_t expires_unix) {
 }
 
 bool yk_claim_valid(const char *claim) {
+#if CONFIG_YK_REGIONS
+    // 两套部署: a prefix of the region table's (yk_region_for_claim: "ykc_" global, "ykcn_" cn), then at least 20
+    // base64url characters, 100 in all at most: the contract's DEVICE_CLAIM_PATTERN and DEVICE_CLAIM_MAX_LENGTH
+    // (packages/contracts/src/deployments.ts). The prefix's row is where the claim is redeemed.
+    yk_region_row_t row;
+    if (!yk_region_row(yk_region_for_claim(claim), &row)) return false;
+    const size_t start = strlen(row.claim_prefix), all = strlen(claim);
+    if (all < start + 20 || all > 100) return false;
+    for (size_t i = start; i < all; i++) {
+        const char c = claim[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
+            return false;
+    }
+    return true;
+#else
+    // Off: global's claims only, as every firmware before the regions (yaykit/tests/deployments.test.ts reads this
+    // line): a mainland claim is refused here, BAD_CLAIM, and never goes to global's.
     if (!claim || strncmp(claim, "ykc_", 4)) return false;
     size_t len = strlen(claim);
     if (len < 20 || len > 100) return false;
@@ -99,6 +119,7 @@ bool yk_claim_valid(const char *claim) {
         if (!ok) return false;
     }
     return true;
+#endif
 }
 
 bool yk_send_again(bool reused, yk_sent_t sent) { return reused && sent != YK_SENT_ALL; }

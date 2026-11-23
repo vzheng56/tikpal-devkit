@@ -30,7 +30,7 @@
 #include "yk_http.h"
 
 #define NET_STACK 7168
-#define NET_PRIORITY 3
+#define NET_PRIORITY 3  // unless yk_folder_net_set_priority lowers it (Yay: IDLE's own); never above
 #define NET_TIMEOUT_MS 10000  // each HTTP step: the task's own, past the asker's wait
 #define SLUG_MAX 48           // device-api.ts: ^[a-z][a-z0-9-]{1,40}$
 
@@ -130,6 +130,12 @@ static void net_task(void *arg) {
     vTaskDelete(NULL);
 }
 
+static int s_priority = NET_PRIORITY;
+
+void yk_folder_net_set_priority(int priority) {
+    s_priority = priority < 0 ? 0 : priority > NET_PRIORITY ? NET_PRIORITY : priority;  // 0..3: never lifted
+}
+
 /** Runs `proto` on a task and waits `wait_ms` for it: its result, or 0 when there is none in time (or none at all). */
 static int run(const job_t *proto, uint32_t wait_ms, yk_api_grant_t *got) {
     memset(got, 0, sizeof(*got));
@@ -142,7 +148,7 @@ static int run(const job_t *proto, uint32_t wait_ms, yk_api_grant_t *got) {
         j->done = done;
         j->refs = 2;
     }
-    if (!done || xTaskCreatePinnedToCore(net_task, "yk_folder_net", NET_STACK, j, NET_PRIORITY, NULL, tskNO_AFFINITY) != pdPASS) {
+    if (!done || xTaskCreatePinnedToCore(net_task, "yk_folder_net", NET_STACK, j, s_priority, NULL, tskNO_AFFINITY) != pdPASS) {
         if (done) vSemaphoreDelete(done);
         heap_caps_free(j);
         busy_clear();

@@ -138,12 +138,12 @@
 
 ### F-08 挡：碰了别人的东西
 
-- **查什么**：TF 卡只经 `yaykit_tf`。自己的东西放自己的目录（`yk_tf_dir()`，就是 `/sdcard/apps/<你的简称>/`），路径用 `yk_tf_path()` 拼；读 Music、Stories、Pictures、Documents 只经 `yk_folder_*`，而且 `app.json` 的 `permissions.folders` 写了这一类。不自己挂卡（`esp_vfs_fat_*`、`sdmmc_*`、`sdspi_*`、FatFs 的 `f_*`），不调系统的卡接口（`yk_tf_sys_*`、`yk_tf_pkg_*`），代码里不写以 `/sdcard` 开头的路径；不读别的应用的目录和系统区；不往共享文件夹里写、删、改；不读写别的应用的记录。云和账号只用公开头文件里的 `yk_cloud_*`、`yk_account_*`（要令牌用 `yk_account_token()`），不调 `yaykit_cloud` 里面的函数（`yk_sign`、`yk_key_generate`、`yk_http_*`、`yk_api_*` 这些）：设备密钥、签名、令牌和对服务的请求归组件自己。姿态的标定（`yk_pref/imu_cal`）是所有固件共用的，归系统：读用 `yk_motion_calibration()`，不调 `yk_motion_save_calibration()`。振动马达（GPIO46）只经 `yaykit_haptic`，不自己用 `gpio_*`、LEDC 碰 46 号脚；振动的开关和强度是用户的设置，不调 `yk_haptic_set_settings()`，主固件专用的 `yk_haptic_set_battery_low()`、`yk_haptic_flash()`、`yk_haptic_metering()` 也不调。
+- **查什么**：TF 卡只经 `yaykit_tf`。自己的东西放自己的目录（`yk_tf_dir()`，就是 `/sdcard/apps/<你的简称>/`），路径用 `yk_tf_path()` 拼；读 Music、Stories、Pictures、Documents 只经 `yk_folder_*`，而且 `app.json` 的 `permissions.folders` 写了这一类。不自己挂卡（`esp_vfs_fat_*`、`sdmmc_*`、`sdspi_*`、FatFs 的 `f_*`），不调系统的卡接口（`yk_tf_sys_*`、`yk_tf_pkg_*`），代码里不写以 `/sdcard` 开头的路径；不读别的应用的目录和系统区；不往共享文件夹里写、删、改；不读写别的应用的记录。云和账号只用公开头文件里的 `yk_cloud_*`、`yk_account_*`（要令牌用 `yk_account_token()`），不调 `yaykit_cloud` 里面的函数（`yk_sign`、`yk_key_generate`、`yk_http_*`、`yk_api_*` 这些）：设备密钥、签名、令牌和对服务的请求归组件自己。`yaykit_account.h` 里管绑定的那几个只有 Tikpal 主固件用，应用不调：`yk_account_command()`（接手机的 `account.activate`、`account.forget`）、`yk_account_register_console()`、`yk_account_recover()`、`yk_account_release_mark()`、`yk_account_release()`、`yk_account_release_pending()`、`yk_account_binding_stored()`、`yk_account_unbound_by_server()`、`yk_account_owner_seen()`、`yk_account_locale_seen()`：绑定、地区和主人归系统，整台设备共用一份。姿态的标定（`yk_pref/imu_cal`）是所有固件共用的，归系统：读用 `yk_motion_calibration()`，不调 `yk_motion_save_calibration()`。振动马达（GPIO46）只经 `yaykit_haptic`，不自己用 `gpio_*`、LEDC 碰 46 号脚；振动的开关和强度是用户的设置，不调 `yk_haptic_set_settings()`，主固件专用的 `yk_haptic_set_battery_low()`、`yk_haptic_flash()`、`yk_haptic_metering()` 也不调。
 - **用途说实话**：`permissions.folders` 写的每一类，代码里都真读（代码里读了、却没写的那一类，`./kit check` 和机器检查已经挡了；写了却没读的，AI 核）；每类那句用途跟应用做的事对得上，比如计时器要读 Pictures，就对不上。我们的 AI 审这一步给每一类一个结论，申请的这几项能力就照它批或者退回（[app-json.md](app-json.md#共享文件夹-permissionsfolders)）。
 - **不行**：自己挂卡遍历整张卡找照片；`fopen("/sdcard/Music/…")`；往 Pictures 里存截图；改别的应用的目录；定时或者一开机就调 `yk_folder_ask()`，用户没点也反复弹授权问话。
 - **可以**：在自己的目录下建文件；写了 `music`、用户点了允许以后，用 `yk_folder_list()` 列出歌、`yk_folder_read()` 读出来自己解码。
 - **怎么改**：自己挂卡、拼 `/sdcard` 路径的，换成 `yk_tf_path()`；要读用户的文件，在 `permissions.folders` 写上那一类和用途，申请能力，用 `yk_folder_*` 读。
-- **从哪一版起**：上面这些从开发包 1.10 起（`app.json` 的 `apiLevel` 是 5 或更大）；自己挂卡、调系统的卡接口、写 `/sdcard` 开头的路径，`./kit check` 和机器审查也挡；调 `yaykit_cloud` 里面的函数，机器审查挡；调 `yk_motion_save_calibration()`，机器审查挡，哪一版开发包编的都挡。振动这几条从开发包 1.11 起，`./kit check` 和机器审查挡。用 1.9 编的应用（`apiLevel` 是 4），开发包里没有 `yaykit_tf`，照原来的查：TF 卡只读写自己的目录（`/sdcard/<你的简称>/` 下面），不读别的应用的目录，也不碰卡上原厂留下的文件；不读写别的应用的记录。
+- **从哪一版起**：上面这些从开发包 1.10 起（`app.json` 的 `apiLevel` 是 5 或更大）；自己挂卡、调系统的卡接口、写 `/sdcard` 开头的路径，`./kit check` 和机器审查也挡；调 `yaykit_cloud` 里面的函数，机器审查挡；调 `yk_motion_save_calibration()`、`yaykit_account.h` 里管绑定的那几个，机器审查挡，哪一版开发包编的都挡。振动这几条从开发包 1.11 起，`./kit check` 和机器审查挡。用 1.9 编的应用（`apiLevel` 是 4），开发包里没有 `yaykit_tf`，照原来的查：TF 卡只读写自己的目录（`/sdcard/<你的简称>/` 下面），不读别的应用的目录，也不碰卡上原厂留下的文件；不读写别的应用的记录。
 
 ### F-09 建议：Tikpal Voice 上的样子和反馈
 
@@ -168,6 +168,18 @@
 - **可以**：`own` 里登记 8「开始导航：低 4 位是目的地」，代码 `yk_vc_show(8, (mark << 4) | dest, &opts)`。
 - **怎么改**：亮之前先登记；要新意思就用一个新动作号。
 - **从哪一版起**：开发包 1.11 起（`./kit check` 也查写死的动作）。动作写死的 3–7、没登记的 8–15，`./kit check` 和机器审查挡；这里看机器看不出来的（变量、意思对不对得上）。
+
+### F-11 挡：局域网网页开得不对
+
+- **查什么**：应用在 Tikpal Voice 上开一个网页（`httpd_start` 之类），让同一个 Wi-Fi 里的手机、平板打开：
+  - 只在应用开着、屏幕上看得出来的时候开（比如屏幕上写着网址，或者「iPad 已连上」）；退出应用、切到别的应用、息屏，网页马上关；
+  - 网页里只有本应用的画面和数据，碰不到用户的数据、令牌、设置（NVS）和别的应用的东西；
+  - 只在局域网里，不连外网，也不把网页转到外网；
+  - 收到乱来的请求（超长的路径、发了一半的请求、一下连十几个），Tikpal Voice 不崩、不卡死。
+- **不行**：退出应用以后网页还开着；网页读得到录音、转写或令牌；把网页转发到外网。
+- **可以**：应用开着时，屏幕上写「在 iPad 上打开 http://192.168.1.23」，退出就关；网页只发倾斜数据和游戏画面。
+- **怎么改**：网页的开和关挂在应用自己开始、退出的地方，网页里只放本应用的东西；地址用 Tikpal Voice 当时拿到的，别写死（写死的局域网地址机器审查会退回）。开发包 1.11 起，手机和 Tikpal Voice 之间传东西，推荐改用小程序加设备通道（`device.link`，见 M-10）。
+- **从什么时候起**：2026-11-22 起交的版本；之前通过的不追溯。
 
 ## 小程序（M）
 
@@ -386,3 +398,4 @@
 - **2026-11-14**：F-08 加振动（开发包 1.11 起）：马达 GPIO46 只经 `yaykit_haptic`，不自己用 `gpio_*`、LEDC 碰它；不调 `yk_haptic_set_settings()`、`yk_haptic_set_battery_low()`、`yk_haptic_flash()`；`./kit check` 和机器审查挡。调了振动的函数，`permissions.device` 要写 `vibration`。
 - **2026-11-16**：F-08 主固件专用的振动钩子多一个 `yk_haptic_metering()`（主固件的电子吧唧只听麦克风音量时照样振），应用不能调，`./kit check` 和机器审查挡。
 - **2026-11-17**：F-05 加一句（开发包 1.11 起）：应用不调 `yk_ui_screen_taps()`（`yaykit_app` 判双击屏幕开应用环用的），`./kit check` 和机器审查挡；要双击屏幕开应用环，设 `double_tap_ring`。
+- **2026-11-22**：F-08 加一句：`yaykit_account.h` 里管绑定的那几个（`yk_account_command()`、`yk_account_release()`、`yk_account_unbound_by_server()` 这些）只有 Tikpal 主固件用，应用调了能清掉或换掉设备的绑定；机器审查挡，哪一版开发包编的都挡。

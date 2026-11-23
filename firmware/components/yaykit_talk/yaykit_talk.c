@@ -25,11 +25,13 @@
 #include "yaykit_session.h"
 #include "yaykit_speak.h"
 #include "yaykit_talk.h"
+#include "yk_talk_account.h"
 #include "yk_talk_close.h"
 #include "yk_talk_hello.h"
 #include "yk_talk_internal.h"
 #include "yk_talk_msg.h"
 #include "yk_mem.h"
+#include "yk_region.h"
 #include "yk_talk_setting.h"
 #include "yk_talk_setup.h"
 
@@ -56,6 +58,7 @@ typedef struct {
     char turn[YK_TALK_TURN_LEN + 1], text[TEXT_MAX], lang[8], muted[12], code[32], id[41];
     int line, credits;
     bool fix;
+    uint8_t consent;  // Q_SRV error: yk_srv_msg_t.consent (两套部署 · 语音单独同意 V3), 0 none
     int act_kind, level, step, mute, seconds;  // Q_ACTION (yk_srv_msg_t)
     yk_srv_msg_t *msg;  // Q_NET hello.ok, Q_MSG practice.turn: a copy in PSRAM, the item's own (yk_talk_msg_copy)
     uint16_t bytes;
@@ -82,6 +85,7 @@ static struct {
     int64_t prefs_due_ms;  // the loop's
     volatile bool held;
     volatile bool going_home;  // app.home: leaving for Yay because the phone asked (the app's wrap-up reads it)
+    volatile bool not_added;   // the production session, the device not added: no connection (yk_talk_not_added)
 #if CONFIG_YAY_DEV
     char dev_say[256];  // `yay say`: the words it stands for, sent as dev.say to a development server
 #endif
@@ -154,6 +158,7 @@ void yk_talk_stop_reply(void) { post_input(IN_STOP_REPLY); }
 void yk_talk_prefs_changed(void) { post_input(IN_PREFS); }
 yk_talk_state_t yk_talk_state(void) { return T.sm.state; }
 bool yk_talk_going_home(void) { return T.going_home; }
+bool yk_talk_not_added(void) { return T.not_added; }
 
 bool yk_talk_hold(bool hold) {
     if (!T.task) return false;
@@ -278,6 +283,7 @@ static void on_message(const yk_srv_msg_t *m, void *ctx) {
     case YK_SRV_ERROR:
         q->in = YK_TSM_ERROR;
         copy(q->code, sizeof(q->code), m->code);
+        q->consent = m->consent;  // V3: the end says the account has not agreed to voice (yk_talk_sm.c)
         q->credits = m->has_credits ? m->credits_remaining : -1;
         if (T.production && !strcmp(m->code, "TOKEN_EXPIRED")) yk_account_token_expired();
         break;
@@ -315,15 +321,37 @@ static void on_audio(int line, int seq, const uint8_t *packet, size_t bytes, voi
     post_ctl(q);
 }
 
-/** The session's token: the app's own in production; none for a development server (nothing asks the cloud). */
-static esp_err_t token(char *out, size_t size, bool fresh) {
-    if (!T.production) {
-        out[0] = 0;
-        return ESP_OK;
-    }
-    if (fresh) yk_account_token_expired();
+// The account, for the session's token (两套部署 E, yk_talk_account.h).
+static esp_err_t account_token(char *out, size_t size, void *ctx) {
+    (void)ctx;
     const char *code = NULL;
     return yk_account_token(out, size, &code);
+}
+
+static void account_expired(void *ctx) {
+    (void)ctx;
+    yk_account_token_expired();
+}
+
+static bool account_added(void *ctx) { return (void)ctx, yk_account_state() == YK_ACCOUNT_BOUND; }
+
+/** Not added any more (the cloud no longer knew the device, and yaykit_account forgot the binding): the session held,
+ *  so that it makes no connection without a token, now or later (let go with yk_talk_hold(false), it asks again and
+ *  is held again). In the session's task, as a connection begins or at session.reauth. */
+static void account_not_added(void *ctx) {
+    (void)ctx;
+    if (!T.not_added) printf("YK_TALK not added fw=%s account=%s at=session\n", T.fw, yk_account_state_name());
+    T.not_added = true;
+    yk_session_hold(true);
+}
+
+static const yk_talk_account_env_t ACCOUNT = {.token = account_token, .expired = account_expired,
+                                              .added = account_added, .not_added = account_not_added};
+
+/** The session's token: the app's own in production; none for a development server (nothing asks the cloud); none
+ *  and no connection once the device is not added. */
+static esp_err_t token(char *out, size_t size, bool fresh) {
+    return yk_talk_account_token(&ACCOUNT, T.production, out, size, fresh);
 }
 
 static char *make_hello(void *ctx) {
@@ -348,7 +376,11 @@ static char *make_hello(void *ctx) {
                                   .charging = battery && b.charging, .rssi = rssi, .volume = board_pref_volume(),
                                   .brightness_pct = board_pref_brightness(), .screen_off_s = board_pref_screen_off_s(),
                                   .mode = str(T.mode), .language = str(language), .level = str(level),
-                                  .pair = str(pair)};
+                                  .pair = str(pair),
+#if CONFIG_YK_REGIONS
+                                  .region = yk_region_name(),  // 两套部署: which side this device is, global's too
+#endif
+    };
     char *json = yk_talk_hello(&h);
     if (!json) ESP_LOGE(TAG, "hello: the mode's setup breaks the schema (mode=%s)", T.mode);
     printf("YK_TALK hello mode=%s language=%s level=%s pair=%s\n", str(T.mode) ? T.mode : "chat", language, level, pair);
@@ -466,7 +498,8 @@ static bool tells_app(yk_tsm_fx_type_t type) {
 static void feed(yk_tsm_input_type_t type, const q_item_t *q, int64_t at_ms) {
     const yk_talk_state_t before = T.sm.state;
     const yk_tsm_input_t in = {.type = type, .now_ms = at_ms, .turn = q ? q->turn : NULL, .text = q ? q->text : NULL,
-                               .code = q ? q->code : NULL, .muted = q ? q->muted : NULL};
+                               .code = q ? q->code : NULL, .muted = q ? q->muted : NULL,
+                               .consent = q ? q->consent : 0};
     // This turn's reply.end, for the END that follows (now, or once played): not one stopped or cancelled already.
     if (type == YK_TSM_REPLY_END && q && T.sm.turn_open && !strcmp(q->turn, T.sm.turn))
         copy(T.muted, sizeof(T.muted), q->muted);
@@ -646,12 +679,19 @@ esp_err_t yk_talk_start(const yk_talk_config_t *cfg) {
     copy(T.locale, sizeof(T.locale), cfg->locale);
     snprintf(T.fw, sizeof(T.fw), "%s/%s", T.slug, T.version);
 #if CONFIG_YAY_DEV
-    copy(T.url, sizeof(T.url), cfg->url && cfg->url[0] ? cfg->url : YK_SESSION_URL);
+    copy(T.url, sizeof(T.url), cfg->url && cfg->url[0] ? cfg->url : yk_session_url());
     yk_app_dev_on_say(on_say);
 #else
-    copy(T.url, sizeof(T.url), YK_SESSION_URL);  // release builds: the production session only
+    copy(T.url, sizeof(T.url), yk_session_url());  // release builds: the production session only
 #endif
-    T.production = !strcmp(T.url, YK_SESSION_URL);
+    T.production = !strcmp(T.url, yk_session_url());
+    // 两套部署 E: the production session only for a device added to an account (yk_talk_account.h), with
+    // CONFIG_YK_REGIONS on or off; a development server needs none. Not added: nothing started, nothing sent.
+    T.not_added = !yk_talk_may_start(T.production, yk_account_state() == YK_ACCOUNT_BOUND);
+    if (T.not_added) {
+        printf("YK_TALK not added fw=%s account=%s\n", T.fw, yk_account_state_name());
+        return YK_TALK_ERR_NOT_ADDED;
+    }
     T.cfg.slug = T.slug, T.cfg.version = T.version, T.cfg.mode = T.mode, T.cfg.language = T.setup.language;
     T.cfg.level = T.setup.level, T.cfg.pair = T.setup.pair, T.cfg.locale = T.locale, T.cfg.url = T.url;
     yk_tsm_init(&T.sm, cfg->max_hold_s, esp_random());

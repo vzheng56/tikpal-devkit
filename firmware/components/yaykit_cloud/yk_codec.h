@@ -1,5 +1,5 @@
 // Pure C helpers shared by the device and the host tests: base64url, the signed messages, claim checks and the
-// kept token.
+// kept token. No ESP-IDF but sdkconfig.h (test/stub has one for the host): the claim check follows CONFIG_YK_REGIONS.
 // The message formats must match packages/cloud/src/device-auth.ts.
 #pragma once
 
@@ -21,7 +21,9 @@ size_t yk_token_message(const char *device_id, const char *app, const char *nonc
 /** What POST /device/v1/release's signature is over (device-api.ts releaseMessage): `yaykit-release:v1:<id>:<nonce>`. */
 size_t yk_release_message(const char *device_id, const char *nonce, char *out, size_t size);
 
-/** A claim from /v1/me/device-claims: "ykc_" followed by base64url, 20–100 characters in total. */
+/** A claim from /v1/me/device-claims. CONFIG_YK_REGIONS off: "ykc_" followed by base64url, 20–100 characters in total, as
+ *  ever. On: a prefix of the region table's (yk_region_for_claim(), which says where it is redeemed), at least 20
+ *  base64url characters after it, at most 100 in all (the contract's DEVICE_CLAIM_PATTERN). */
 bool yk_claim_valid(const char *claim);
 
 /** The NVS key an app's kept token goes under: "tk" and 8 hex digits of the slug's FNV-1a (keys are at most 15). */

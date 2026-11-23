@@ -32,6 +32,7 @@ char *yk_talk_hello(const yk_talk_hello_in_t *in) {
         .screen_off_s = yk_talk_screen_off_s(in->screen_off_s),
         .caps = CAPS,
         .cap_count = sizeof(CAPS) / sizeof(CAPS[0]),
+        .region = in->region,
     };
     return yk_proto_hello(&h);
 }

@@ -13,9 +13,11 @@
 # 0.1.19: the system's question before an app reads the shared folders (yk_app_grant.c; its words the table's,
 # yaykit_strings' yaykit.folders.*, picked in yk_app_grant_words.c, pure, host tested); yaykit_tf's yk_folder_ask()
 # links yk_app_folder_question() weakly, and yk_app_ring.c's key brings the file into every image with the ring.
+# 11-21: development builds' `yay <name>` commands in PSRAM, no fixed limit (yk_app_dev.c, host tested on stubs); in
+# other builds the file is empty and yaykit_app.c keeps its table of 30.
 idf_component_register(SRCS "yaykit_app.c" "yk_app_logic.c" "yk_app_ring.c" "yk_recovery_logic.c" "yk_recovery.c"
                             "yk_app_power.c" "yk_app_power_logic.c" "yk_app_sheet.c" "yk_app_grant.c"
-                            "yk_app_grant_words.c"
+                            "yk_app_grant_words.c" "yk_app_dev.c"
     INCLUDE_DIRS "include"
     REQUIRES json esp_common yaykit_key
     PRIV_REQUIRES yaykit_link yaykit_ui yaykit_voicecode yaykit_board yaykit_strings lvgl__lvgl nvs_flash app_update console esp_system

@@ -43,6 +43,19 @@ const char *yk_api_error_code(const char *json) {
     return code;
 }
 
+yk_cloud_consent_t yk_api_error_consent(const char *json) {
+    // 两套部署 · 语音单独同意 (#2740, #2778): "voice" itself beside OPERATION_NOT_ALLOWED, nothing else; any other value,
+    // type or code is as none (a firmware before it never read the field).
+    cJSON *refusal = cJSON_Parse(json ? json : "");
+    const cJSON *error = cJSON_GetObjectItemCaseSensitive(refusal, "error");
+    const cJSON *consent = cJSON_GetObjectItemCaseSensitive(refusal, "consent");
+    const bool voice = cJSON_IsObject(refusal) && cJSON_IsString(error) && error->valuestring &&
+                       !strcmp(error->valuestring, "OPERATION_NOT_ALLOWED") && cJSON_IsString(consent) &&
+                       consent->valuestring && !strcmp(consent->valuestring, "voice");
+    cJSON_Delete(refusal);
+    return voice ? YK_CLOUD_CONSENT_VOICE : YK_CLOUD_CONSENT_NONE;
+}
+
 /** A copy of `s` (strdup is POSIX, not C11). */
 static char *copy(const char *s) {
     size_t n = strlen(s) + 1;

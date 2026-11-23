@@ -8,6 +8,10 @@
 // The key and the binding live in the shared NVS namespace `yk_acct`, so switching apps keeps the account;
 // a full USB install clears it. Access tokens are per app, 15 minutes, kept in RAM only. See
 // docs/architecture/cloud-services.md.
+//
+// With CONFIG_YK_REGIONS (两套部署, yk_region.h) the claim's prefix says the side it is redeemed at, stored as `rg`
+// before the request, and the binding is kept per side: `bound` in global (and always with the setting off, as every
+// firmware before it), `bound_<region>` elsewhere, which firmware built before never read.
 #pragma once
 
 #include <stdbool.h>
@@ -69,11 +73,18 @@ bool yk_account_recover(void);
  *  asks again first. */
 void yk_account_release_mark(void);
 bool yk_account_release_pending(void);
+/** Whether NVS holds this device's binding now (its region's key: `bound` in global and with CONFIG_YK_REGIONS off,
+ *  `bound_<region>` elsewhere), read as it stands. For a start before yk_account_init(): Yay's factory reset, whose
+ *  wipe goes on when a power cut came between the release's mark and the wipe. NVS reads: an internal-RAM stack. */
+bool yk_account_binding_stored(void);
 /** POST /device/v1/release, when marked; ESP_OK and the mark gone once it is answered (released, never added, or not the key
  *  it was added with). Otherwise the mark stays, `code` NETWORK or NO_WIFI. Blocking, and TLS: as yk_account_token. */
 esp_err_t yk_account_release(const char **code);
 
-/** Handles account.activate, account.status and account.forget. ESP_ERR_NOT_FOUND for other names. */
+/** Handles account.activate, account.status and account.forget. ESP_ERR_NOT_FOUND for other names. account.activate's
+ *  codes: BAD_CLAIM, BUSY, NO_MEMORY; with CONFIG_YK_REGIONS also OTHER_REGION (bound, and the claim is the other
+ *  side's: refused at once, nothing asked, nothing changed). account.forget forgets this region's binding only, never
+ *  the region. */
 esp_err_t yk_account_command(const char *name, const cJSON *args, cJSON *reply, const char **code);
 /** Fills the yk-info "account" object: state, error, owner, locale (the owner's language as kept, when bound). Pass
  *  to yk_link_config_t.describe_account. */

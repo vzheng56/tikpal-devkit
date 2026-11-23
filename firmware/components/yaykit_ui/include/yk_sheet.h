@@ -28,11 +28,25 @@ extern "C" {
 
 #define YK_SHEET_ROWS 4
 
+/** A row's picture at its right end, its words before it (Yay 0.2, user 11-20: the pictures everyone knows for a state
+ *  that is fine; a state to read and act on stays words). Drawn by the sheet with LVGL's own shapes, as tall as the
+ *  row's 18 px words: no picture or glyph in flash, the same in every language. NONE (zero): words only, as before. */
+typedef enum { YK_SHEET_ICON_NONE = 0, YK_SHEET_ICON_WIFI, YK_SHEET_ICON_BATTERY, YK_SHEET_ICON_CHECK } yk_sheet_icon_kind_t;
+typedef struct {
+    uint8_t kind;   // yk_sheet_icon_kind_t
+    uint8_t level;  // WIFI: the bars lit, 1..3; BATTERY: how full, 0..100
+    bool charging;  // BATTERY: a bolt in it, filled in sage
+    bool low;       // BATTERY: filled in coral (YK_SHEET_BATTERY_LOW and under, not charging)
+} yk_sheet_icon_t;
+#define YK_SHEET_WIFI_BARS 3
+#define YK_SHEET_BATTERY_LOW 15  // percent: the battery's fill in coral (Yay's own warning, 开发文档 0.2 C2)
+
 typedef struct {
     const char *name;   // 「Wi-Fi」; NULL: no row (the rows under it move up)
     const char *value;  // one line, cut with … at a character
     bool problem;       // the value in coral: it is wrong (not added, not connected); ink otherwise
     bool tap;           // a tap on the row is reported (yk_sheet_on_row; 0.1.20: an app's 「音量」 opens the volume dial)
+    yk_sheet_icon_t icon;  // its picture after the words (0.2); zero: none (yk_sheet_*_value give it with the words)
 } yk_sheet_row_t;
 
 typedef struct {
@@ -107,6 +121,24 @@ const char *yk_sheet_clock_text(int64_t utc_s, int offset_min, char *buf, size_t
  *  「正在连手机」, Bluetooth is off there). `account`: yk_account_state_t as an int (0 not added, 1 being added, 2 added,
  *  3 failed). 「已添加 · 昵称的手机」, 「已添加」, 「正在添加」, 「还没添加」 (coral). Into `buf`, which it returns. */
 const char *yk_sheet_phone_text(int account, const char *nickname, bool english, bool *problem, char *buf, size_t size);
+
+// ---------------------------------------------------------------- the rows' words with their pictures (Yay 0.2)
+// The same states as the *_text ones above, which stay as they were (an extension that calls them builds as ever). A
+// state that is fine is a picture and the least words; one to read or act on is the words above, no picture
+// (`*icon` zero). Pure, host tested.
+
+/** Connected and through: the network's name (「」 with none) and YK_SHEET_WIFI_BARS bars, lit as 信号好 / 一般 / 弱 are
+ *  (> -60 dBm three, > -72 two, else one). Else yk_sheet_wifi_text's words. */
+const char *yk_sheet_wifi_value(int wifi, const char *ssid, int rssi, int reach, bool english, bool *problem,
+                                yk_sheet_icon_t *icon, char *buf, size_t size);
+/** Read: a battery filled to its percent and 「76%」; charging, a bolt in it (full: none); not charging though plugged in
+ *  (stopped), yk_sheet_battery_text's 「76% · 没在充」 with it. Not read, very low and charging, a fault: the words, no
+ *  picture. */
+const char *yk_sheet_battery_value(const yk_sheet_battery_t *b, bool english, yk_sheet_icon_t *icon, char *buf,
+                                   size_t size);
+/** Added: a tick after the nickname (「小明 ✓」; 「」 and the tick with none). Being added, not added: the words. */
+const char *yk_sheet_phone_value(int account, const char *nickname, bool english, bool *problem, yk_sheet_icon_t *icon,
+                                 char *buf, size_t size);
 
 #ifdef __cplusplus
 }

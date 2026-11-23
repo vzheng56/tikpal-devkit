@@ -93,6 +93,10 @@ const char *yk_api_code(const char *error);
 const char *yk_api_error_code(const char *json);
 /** A number among a refusal's details ({"error":"VERSION_CONFLICT","version":4}), or `fallback`. */
 int yk_api_error_number(const char *json, const char *key, int fallback);
+/** What a refusal's body says it was held for want of (yk_cloud_consent_t, readRefusalConsent): VOICE only for
+ *  {"error":"OPERATION_NOT_ALLOWED","consent":"voice"}, the key and both values exactly so; NONE otherwise. The code is
+ *  read as ever (yk_api_error_code, yk_api_stream_code): `consent` changes nothing of it. */
+yk_cloud_consent_t yk_api_error_consent(const char *json);
 /** Whether `url` is an https:// URL with a host (part URLs must be). */
 bool yk_api_https(const char *url);
 /** `value` percent-encoded for a query string. Returns the length, or 0 when `out` is too small. */

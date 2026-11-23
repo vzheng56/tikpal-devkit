@@ -15,11 +15,17 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "sdkconfig.h"
+#include "yaykit_cloud.h"
 #include "yaykit_link.h"
 #include "yk_codec.h"
 #include "yk_folder_net.h"
 #include "yk_http.h"
 #include "yk_locale.h"
+#include "yk_region.h"
+#include "yk_region_store.h"
+#if CONFIG_YAY_DEV && CONFIG_YK_REGIONS
+#include "yk_region_test.h"
+#endif
 #include "yk_sign.h"
 
 static const char *TAG = "yk_account";
@@ -40,6 +46,35 @@ static char claim[128];
 #if CONFIG_YAY_DEV
 static bool drop_reply;  // `account drop`: the next activation's reply is dropped, as if the connection broke
 #endif
+#if CONFIG_YK_REGIONS
+// This region's binding key as stored (or about to be): what OTHER_REGION goes by. Not `state`: a claim of the device's
+// own side that the cloud refused leaves it FAILED here and bound all the same, there and in NVS.
+static bool bound_kept;
+#endif
+#if CONFIG_YAY_DEV && CONFIG_YK_REGIONS
+// `region set|clear` changed a test deployment (yk_region_test.h) for the next start: the kept tokens are dropped then,
+// and none is kept again before the restart (this start's server made it, not the next one's).
+static bool test_changed;
+#endif
+
+// 两套部署 4.3: the binding is kept per region, under a key of its own in yk_acct. Row 0, global, keeps `bound`, the key
+// every firmware before the regions reads; another row keeps `bound_<id>` ("bound_cn"), which none of them reads. So an
+// extension or app built before, or a Yay rolled back, sees a device bound in cn as not bound: it takes no token with
+// the device key from global's (the only address it has), gets no DEVICE_NOT_ACTIVATED, and never forget()s what all the
+// firmware share (附录 C 2.4). Ids are short enough (test/test_account.c checks every row's key fits NVS's 15).
+#define BINDING_KEY_SIZE 16  // NVS_KEY_NAME_MAX_SIZE: 15 characters and the end
+
+/** This device's region's binding key, in `out` or a literal. Off: `bound`, as ever. */
+static const char *binding_key(char out[BINDING_KEY_SIZE]) {
+#if CONFIG_YK_REGIONS
+    if (yk_region_current() != YK_REGION_GLOBAL) {
+        snprintf(out, BINDING_KEY_SIZE, "bound_%s", yk_region_name());
+        return out;
+    }
+#endif
+    (void)out;
+    return "bound";
+}
 
 static int rng(void *ctx, unsigned char *buf, size_t len) {
     (void)ctx;
@@ -60,16 +95,21 @@ static void set_state(yk_account_state_t next, const char *why) {
     changed();
 }
 
-/** Stores the binding and the owner. NVS writes: call from a task whose stack is in internal RAM. */
+/** Stores the binding (under this region's key) and the owner. NVS writes: call from a task whose stack is in internal
+ *  RAM. */
 static void save_binding(bool bound) {
     char nick[sizeof(nickname)], loc[sizeof(locale)];
     xSemaphoreTake(lock, portMAX_DELAY);
     strcpy(nick, nickname);
     strcpy(loc, locale);
+#if CONFIG_YK_REGIONS
+    bound_kept = bound;
+#endif
     xSemaphoreGive(lock);
     nvs_handle_t h;
     if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, "bound", bound ? 1 : 0);
+    char key[BINDING_KEY_SIZE];
+    nvs_set_u8(h, binding_key(key), bound ? 1 : 0);
     if (bound) {
         nvs_set_str(h, "nick", nick);
         nvs_set_str(h, "loc", loc);
@@ -110,6 +150,9 @@ typedef struct {
 } kept_token_t;
 
 static void kept_token_save(int64_t ttl_s) {
+#if CONFIG_YAY_DEV && CONFIG_YK_REGIONS
+    if (test_changed) return;  // `region set`: the next start talks to another server
+#endif
     const int64_t now = (int64_t)time(NULL);
     kept_token_t *k = calloc(1, sizeof(*k));
     if (!k) return;
@@ -159,6 +202,44 @@ static void kept_token_drop(void) {
     if (nvs_erase_key(h, key) == ESP_OK) nvs_commit(h);
     nvs_close(h);
 }
+
+#if CONFIG_YK_REGIONS
+/** yk_token_key's: "tk" and 8 hex digits. */
+static bool token_key(const char *key) {
+    if (strlen(key) != 10 || key[0] != 't' || key[1] != 'k') return false;
+    for (int i = 2; i < 10; i++)
+        if (!((key[i] >= '0' && key[i] <= '9') || (key[i] >= 'a' && key[i] <= 'f'))) return false;
+    return true;
+}
+
+/** Every app's kept token, not only this one's: they were the other region's, its user's id in them, and an extension
+ *  would send its own to the new region before it asked for one (附录 C 2.5). A batch at a time: an NVS iterator does
+ *  not outlive a change. NVS writes: an internal-RAM stack. */
+static void kept_tokens_drop_all(void) {
+    enum { BATCH = 8 };
+    int dropped = 0;
+    for (int round = 0; round < 8; round++) {
+        char keys[BATCH][BINDING_KEY_SIZE];
+        int n = 0;
+        nvs_iterator_t it = NULL;
+        esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, NS, NVS_TYPE_BLOB, &it);
+        while (err == ESP_OK && n < BATCH) {
+            nvs_entry_info_t info;
+            nvs_entry_info(it, &info);
+            if (token_key(info.key)) snprintf(keys[n++], sizeof(keys[0]), "%s", info.key);
+            err = nvs_entry_next(&it);
+        }
+        nvs_release_iterator(it);
+        nvs_handle_t h;
+        if (!n || nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) break;
+        for (int i = 0; i < n; i++) nvs_erase_key(h, keys[i]);
+        nvs_commit(h);
+        nvs_close(h);
+        dropped += n;
+    }
+    ESP_LOGI(TAG, "another region: %d kept token%s dropped", dropped, dropped == 1 ? "" : "s");
+}
+#endif
 
 static void keep_token(const cJSON *json) {
     const cJSON *t = cJSON_GetObjectItemCaseSensitive(json, "accessToken");
@@ -261,6 +342,17 @@ static void release_keep(bool on) {
 void yk_account_release_mark(void) { release_keep(true); }
 
 bool yk_account_release_pending(void) { return release_wanted; }
+
+bool yk_account_binding_stored(void) {
+    nvs_handle_t h;
+    uint8_t bound = 0;
+    if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
+        char key[BINDING_KEY_SIZE];
+        nvs_get_u8(h, binding_key(key), &bound);
+        nvs_close(h);
+    }
+    return bound;
+}
 
 esp_err_t yk_account_release(const char **code) {
     if (code) *code = NULL;
@@ -369,10 +461,32 @@ static void owner_changed(void) {
     if (yk_rs_owner_changed) yk_rs_owner_changed();
 }
 
+#if CONFIG_YK_REGIONS
+/** The claim's region becomes the device's (yk_region_store), before anything is asked of it: from here
+ *  yk_cloud_origin() is that side's. Another region than before: every app's kept token goes. NULL, or NETWORK when NVS
+ *  would not take it: then nothing is asked (a binding stored under the claim's region's key, with `rg` still the old
+ *  one, would be lost at the next start). Not undone if the activation fails: the device is not bound either way, and
+ *  the next claim stores its own. */
+static const char *take_region(const char *claim_text) {
+    bool changed = false;
+    if (!yk_region_store(yk_region_for_claim(claim_text), &changed)) return "NETWORK";
+    if (changed) kept_tokens_drop_all();
+    return NULL;
+}
+#endif
+
 static void activate_task(void *arg) {
     (void)arg;
     const char *code = NULL;
+#if CONFIG_YK_REGIONS
+    // 两套部署 (附录 C 2.6): Wi-Fi; a factory reset's release not answered yet, to the region it is for (`rg` as it
+    // stands: refused or unreachable, NETWORK, and nothing changes); the claim's region stored, before the request, so
+    // that what a power cut leaves (bound_anyway, yk_account_recover) asks the side it went to; then the activation there.
+    if (yk_http_prepare(&code) == ESP_OK && yk_account_release(&code) == ESP_OK && !(code = take_region(claim)))
+        code = activate_now(claim);
+#else
     if (yk_http_prepare(&code) == ESP_OK && yk_account_release(&code) == ESP_OK) code = activate_now(claim);
+#endif
     memset(claim, 0, sizeof(claim));
     // Claimed: a new binding, so a new link key on the platform's side (device-link.ts: claimed again, by anyone, the
     // key changes). What the unpaired mode kept was the binding before's, and forget() never saw it go when the claim
@@ -407,7 +521,14 @@ static esp_err_t start_activation(const char *claim_text, const char **code) {
     }
     xSemaphoreTake(lock, portMAX_DELAY);
     bool busy = state == YK_ACCOUNT_ACTIVATING;
+#if CONFIG_YK_REGIONS
+    // Bound, and the claim is the other side's (附录 C 2.6): refused now, nothing asked of either side, nothing changed.
+    // The owner removes it there first, or resets it (the region is cached: no NVS read here).
+    const bool other = !busy && bound_kept && yk_region_for_claim(claim_text) != yk_region_current();
+    if (!busy && !other) {
+#else
     if (!busy) {
+#endif
         snprintf(claim, sizeof(claim), "%s", claim_text);
         state = YK_ACCOUNT_ACTIVATING;
         error = "";
@@ -418,6 +539,13 @@ static esp_err_t start_activation(const char *claim_text, const char **code) {
         *code = "BUSY";
         return ESP_ERR_INVALID_STATE;
     }
+#if CONFIG_YK_REGIONS
+    if (other) {
+        ESP_LOGW(TAG, "a claim of another region, bound in %s: refused", yk_region_name());
+        *code = "OTHER_REGION";
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
     changed();
     if (xTaskCreatePinnedToCore(activate_after_link, "yk_act_link", 4096, NULL, 5, NULL, yk_link_ble_core()) != pdPASS) {
         memset(claim, 0, sizeof(claim));
@@ -502,11 +630,18 @@ esp_err_t yk_account_init(const yk_account_config_t *config) {
     yk_folder_net_offer();  // the shared folders' grants at the service, to yaykit_tf when the firmware has it
     if (!lock) lock = xSemaphoreCreateMutex();
     if (!lock) return ESP_ERR_NO_MEM;
+#if CONFIG_YK_REGIONS
+    yk_region_current();  // the region's `rg` read once now, from the start's task (its stack internal), and kept
+#endif
+#if CONFIG_YAY_DEV && CONFIG_YK_REGIONS
+    test_changed = false;  // a start: its test deployments are the ones in use (read with `rg` just now)
+#endif
     nvs_handle_t h;
     uint8_t bound = 0;
     release_wanted = false;
     if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_u8(h, "bound", &bound);
+        char key[BINDING_KEY_SIZE];
+        nvs_get_u8(h, binding_key(key), &bound);  // this region's: `bound` off, and in global
         uint8_t rel = 0;
         nvs_get_u8(h, "rel", &rel);
         release_wanted = rel;
@@ -519,6 +654,9 @@ esp_err_t yk_account_init(const yk_account_config_t *config) {
                    nvs_get_blob(h, "pk", public_key, &pk_len) == ESP_OK && pk_len == sizeof(public_key);
         nvs_close(h);
     }
+#if CONFIG_YK_REGIONS
+    bound_kept = bound;
+#endif
     state = bound && have_key ? YK_ACCOUNT_BOUND : YK_ACCOUNT_UNBOUND;
     if (state == YK_ACCOUNT_BOUND) kept_token_load();
     ESP_LOGI(TAG, "%s", yk_account_state_name());
@@ -595,6 +733,11 @@ void yk_account_describe(cJSON *account) {
         yk_account_locale(loc, sizeof(loc));
         cJSON_AddStringToObject(account, "locale", loc);
     }
+#if CONFIG_YK_REGIONS
+    // 两套部署 (deployments.ts deviceRegionOf): the side this device is on, bound or not, global's too. Off it is not
+    // said at all: a firmware that says it is one that picks its side by the claim (with yk-info's `region` capability).
+    cJSON_AddStringToObject(account, "region", yk_region_name());
+#endif
 }
 
 esp_err_t yk_account_command(const char *name, const cJSON *args, cJSON *reply, const char **code) {
@@ -699,9 +842,67 @@ static int account_cmd(int argc, char **argv) {
     char nick[64];
     yk_account_nickname(nick, sizeof(nick));
     printf("YK_ACCOUNT state=%s error=%s owner=%s device=%s origin=%s\n", yk_account_state_name(), error,
-           *nick ? nick : "-", yk_link_device_id(), CONFIG_YK_CLOUD_ORIGIN);
+           *nick ? nick : "-", yk_link_device_id(), yk_cloud_origin());
     return 0;
 }
+
+#if CONFIG_YAY_DEV && CONFIG_YK_REGIONS
+// `region` (development builds with the regions; yk_region_test.h): the region this device is in, each row's two
+// addresses as used now and whether a test deployment stands in for it, and a row's test deployment set or cleared for
+// the next start. The session commands of before (`yay server` and the like) are not this: with one set too, the session
+// is that one's and HTTPS this row's.
+#define REGION_ACTIONS "status | set <global|cn> <https://host[:port]> | clear <global|cn>"
+
+static void region_lines(void) {
+    printf("YK_REGION region=%s origin=%s\n", yk_region_name(), yk_cloud_origin());
+    for (int i = 0; i < yk_region_count(); i++) {
+        yk_region_row_t r;
+        if (!yk_region_row(i, &r)) continue;
+        const char *test = yk_region_test_origin(i), *session = yk_region_test_session(i);
+        const char *origin = test ? test : i == YK_REGION_GLOBAL ? CONFIG_YK_CLOUD_ORIGIN : r.device_origin;
+        char next[YK_REGION_TEST_ORIGIN_MAX + 2];
+        const bool read = yk_region_test_stored(i, next, sizeof(next));
+        printf("YK_REGION row=%s origin=%s session=%s test=%s", r.id, origin, session ? session : r.session_url,
+               test ? "on" : "-");
+        if (!read) printf(" next=? (not read)");
+        else if (strcmp(next, test ? test : "")) printf(" next=%s (after a restart)", *next ? next : "-");
+        printf("\n");
+    }
+}
+
+static int region_cmd(int argc, char **argv) {
+    const char *action = argc > 1 ? argv[1] : "status";
+    const bool set = !strcmp(action, "set"), clear = !strcmp(action, "clear");
+    if ((set && argc != 4) || (clear && argc != 3) || (!set && !clear && (strcmp(action, "status") || argc > 2))) {
+        printf("usage: region %s\n", REGION_ACTIONS);
+        return 1;
+    }
+    if (set || clear) {
+        const int row = yk_region_find(argv[2]);
+        bool was_changed = false;
+        const char *why = NULL;
+        if (!yk_region_test_store(row, set ? argv[3] : NULL, &was_changed, &why)) {
+            printf("YK_REGION error=%s\n", why ? why : "not stored");
+            return 1;
+        }
+        // This device's own row: the next start talks to another server, and what this one made is not sent to it.
+        // Another row's: nothing kept is that side's (an activation there drops them anyway, yk_region_store()).
+        const bool own = was_changed && row == yk_region_current();
+        if (own) {
+            test_changed = true;
+            kept_tokens_drop_all();
+        }
+        printf("YK_REGION %s=%s%s%s (after a restart%s)\n", action, argv[2], set ? " origin=" : "", set ? argv[3] : "",
+               !was_changed ? ", as it was" : own ? ", kept tokens dropped" : "");
+        // Bound on that side: a deployment that does not know this device answers DEVICE_NOT_ACTIVATED, and the binding
+        // here is forgotten (yk_account_unbound_by_server(); the other side's is not touched).
+        if (own && bound_kept)
+            printf("YK_REGION note=bound in %s: a deployment that does not know this device unbinds it here\n", argv[2]);
+    }
+    region_lines();
+    return 0;
+}
+#endif
 
 esp_err_t yk_account_register_console(void) {
     account_args.action = arg_str0(NULL, NULL, "<status|claim|forget>", "action");
@@ -713,5 +914,17 @@ esp_err_t yk_account_register_console(void) {
         .func = account_cmd,
         .argtable = &account_args,
     };
+#if CONFIG_YAY_DEV && CONFIG_YK_REGIONS
+    const esp_err_t err = esp_console_cmd_register(&cmd);
+    if (err != ESP_OK) return err;
+    const esp_console_cmd_t region = {
+        .command = "region",
+        .help = "Development: the region's addresses; a test deployment for a row, from the next start",
+        .hint = REGION_ACTIONS,
+        .func = region_cmd,
+    };
+    return esp_console_cmd_register(&region);
+#else
     return esp_console_cmd_register(&cmd);
+#endif
 }

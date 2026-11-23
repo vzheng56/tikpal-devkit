@@ -36,6 +36,12 @@ typedef enum {
     YK_TALK_NO_CREDITS,  // CREDITS_EXHAUSTED
     YK_TALK_STOPPED,     // stopped here: a press during the reply, a tap while held, yk_talk_stop_reply()
     YK_TALK_NO_NET,      // the session went (or a hold with none): TOKEN_EXPIRED, SESSION_REPLACED, …
+    // 两套部署 · 语音单独同意 V3 (only added to): a turn the user held to talk, refused because the account has not
+    // agreed to voice yet (OPERATION_NOT_ALLOWED with consent "voice", yk_proto's YK_PROTO_CONSENT_VOICE). Show
+    // YK_NOTICE_VOICE_CONSENT; nothing is tried again (its sound is not kept), the next hold asks again. A turn the
+    // server started is never held for it (the platform holds the user's voice); one that came would end BUSY, as
+    // today. Without consent (a frozen account, an older server, overseas) OPERATION_NOT_ALLOWED is BUSY, as today.
+    YK_TALK_VOICE_CONSENT,
 } yk_talk_end_t;
 
 const char *yk_talk_state_name(yk_talk_state_t state);
@@ -65,6 +71,7 @@ typedef struct {
     yk_tsm_input_type_t type;
     int64_t now_ms;  // the key's: yaykit_key's at_ms (the same clock: esp_timer, ms)
     const char *turn, *text, *code, *muted;
+    uint8_t consent;  // YK_TSM_ERROR: yk_srv_msg_t.consent (yaykit_session's yk_proto_consent_t), 0 none (V3, added)
 } yk_tsm_input_t;
 
 typedef enum {

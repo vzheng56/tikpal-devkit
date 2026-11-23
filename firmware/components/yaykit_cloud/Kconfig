@@ -8,6 +8,19 @@ config YK_CLOUD_ORIGIN
         image signing ships (docs/architecture/device-platform.md 6.2), cloud firmware goes only to
         internal test builds, not public releases.
 
+config YK_REGIONS
+    bool "Choose the deployment by the device's region (two deployments)"
+    default n
+    help
+        Two deployments, elsewhere (global) and mainland China (cn), from one firmware (docs/delivery/
+        2026-11-20-两套部署-总纲.md; the firmware's plan 4.1-4.5). The addresses are the contract's region table,
+        include/yk_regions_gen.h (pnpm contracts:sync writes it), which only yk_region.c reads. On, the device's
+        region is yk_acct `rg` as stored, read once at start: no `rg`, or a name not in the table, is row 0, global.
+        yk_cloud_origin() and yk_session_url() (yaykit_session) are then that row's addresses; global's stay
+        CONFIG_YK_CLOUD_ORIGIN and YK_SESSION_URL, so a development build's own origin still works.
+        Off (the default, every firmware until the release that turns it on): always global, nothing read from NVS,
+        the addresses exactly today's. This setting writes no `rg`: activation by the claim's prefix does, later.
+
 config YK_CLOUD_HTTP_BUFFER_MIN
     int "Smallest HTTP buffer, in bytes"
     default 0

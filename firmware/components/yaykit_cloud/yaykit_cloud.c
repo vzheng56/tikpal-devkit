@@ -23,8 +23,6 @@ static const char *TAG = "yk_cloud";
 /** This app's capabilities and settings from the last /me (used from the app's own task). */
 static cJSON *s_capabilities, *s_settings;
 
-const char *yk_cloud_origin(void) { return CONFIG_YK_CLOUD_ORIGIN; }
-
 /** After a refused call: forget an expired token or a binding the cloud no longer knows. */
 static bool handle_refusal(int status, const char *code) {
     if (status == 401 && !strcmp(code, "TOKEN_EXPIRED")) {
@@ -81,6 +79,7 @@ typedef struct {
     void *ctx;
     int events;
     bool precise;  // level 2: refusals as the API names them
+    yk_cloud_consent_t consent;  // the last answer's refusal held for want of (yk_api_error_consent), NONE none
 } stream_t;
 
 static void on_sse(const char *event, const char *data, void *ctx) {
@@ -112,6 +111,7 @@ static int stream_on(esp_http_client_handle_t client, const char *path, const ui
     // A lookup is speech recognition plus a model call; a slow cross-border hop can take ~12 s.
     esp_http_client_set_timeout_ms(client, 30000);
     int status = 0;
+    stream->consent = YK_CLOUD_CONSENT_NONE;
     p->start = now_ms();
     esp_err_t err = esp_http_client_open(client, (int)len);
     p->open = now_ms();
@@ -144,6 +144,7 @@ static int stream_on(esp_http_client_handle_t client, const char *path, const ui
         yk_http_response_t res = {.status = status};
         yk_http_read_body(client, &res);
         *code = stream->precise ? yk_api_error_code(res.body) : yk_http_error_code(&res);
+        stream->consent = yk_api_error_consent(res.body);  // why, beside the code (两套部署 · 语音单独同意 V5): never instead
         yk_http_free(&res);
         ESP_LOGW(TAG, "%s refused: HTTP %d %s", path, status, *code);
     } else {
@@ -172,6 +173,7 @@ static int stream_post(const char *path, const char *token, const char *content_
 #define WARM_KEEP_MS 30000
 static esp_http_client_handle_t s_warm;
 static int64_t s_warm_ms;
+static yk_cloud_consent_t s_hanzi_consent;  // the last lookup's refusal held for want of (yk_cloud_hanzi_consent)
 
 static void drop_client(esp_http_client_handle_t client) {
     esp_http_client_close(client);
@@ -249,6 +251,7 @@ static esp_err_t hanzi_post(const char *type, const uint8_t *body, size_t len, y
     static const char path[] = "/device/v1/hanzi/lookup";
     const uint8_t *wav = body;
     stream_t stream = {.on_event = on_event, .ctx = ctx};
+    s_hanzi_consent = YK_CLOUD_CONSENT_NONE;  // only this lookup's own refusal says it
     for (int attempt = 0; attempt < 2; attempt++) {
         char token[512];
         if (yk_account_token(token, sizeof(token), code) != ESP_OK || yk_http_prepare(code) != ESP_OK) {
@@ -259,7 +262,7 @@ static esp_err_t hanzi_post(const char *type, const uint8_t *body, size_t len, y
         bool reused = client != NULL;
         if (reused) {  // the same connection: this request's line and headers, the token as it is now
             char url[160], auth[640];
-            snprintf(url, sizeof(url), "%s%s", CONFIG_YK_CLOUD_ORIGIN, path);
+            snprintf(url, sizeof(url), "%s%s", yk_cloud_origin(), path);
             snprintf(auth, sizeof(auth), "Bearer %s", token);
             esp_http_client_set_url(client, url);
             esp_http_client_set_method(client, HTTP_METHOD_POST);
@@ -278,6 +281,7 @@ static esp_err_t hanzi_post(const char *type, const uint8_t *body, size_t len, y
             reused = false;
             status = client ? stream_on(client, path, wav, len, &stream, code, &p) : 0;
         }
+        s_hanzi_consent = status ? stream.consent : YK_CLOUD_CONSENT_NONE;
         printf("YK_CLOUD hanzi conn=%s bytes=%u connect_ms=%lld upload_ms=%lld headers_ms=%lld status=%d\n",
                reused ? "reused" : "new", (unsigned)len, (long long)(p.open - p.start), (long long)(p.sent - p.open),
                (long long)(p.head - p.sent), status);
@@ -300,6 +304,7 @@ esp_err_t yk_cloud_hanzi_text(const char *text, yk_cloud_event_fn on_event, void
     char *json = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!json) {
+        s_hanzi_consent = YK_CLOUD_CONSENT_NONE;
         *code = "NO_MEMORY";
         return ESP_ERR_NO_MEM;
     }
@@ -307,6 +312,8 @@ esp_err_t yk_cloud_hanzi_text(const char *text, yk_cloud_event_fn on_event, void
     cJSON_free(json);
     return err;
 }
+
+yk_cloud_consent_t yk_cloud_hanzi_consent(void) { return s_hanzi_consent; }
 
 // ---- Level 2: the device API v1 (docs/design/yay-device.md §13.4) ----
 
